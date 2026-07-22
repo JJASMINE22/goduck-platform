@@ -1,0 +1,262 @@
+/* MCP 运维页（DESIGN §10）—— server CRUD（触发后端 refresh）+ 全量工具列表 + 健康状态 + 强制重连。
+   config 是动态 JSON：stdio={command,args,env} | http={url,headers}。表单用 JSON 文本编辑。 */
+import {
+  App as AntApp,
+  Button,
+  Collapse,
+  Drawer,
+  Flex,
+  Form,
+  Input,
+  Popconfirm,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Typography,
+} from 'antd'
+import type { ColumnsType } from 'antd/es/table'
+import { useState, type ReactNode } from 'react'
+import { Pencil, Plus, RefreshCw, Trash2, Wrench } from 'lucide-react'
+import {
+  useCreateMcpServer,
+  useDeleteMcpServer,
+  useMcpServers,
+  useMcpStatus,
+  useMcpTools,
+  useRefreshMcp,
+  useUpdateMcpServer,
+} from '@/hooks/useMcp'
+import { PageContainer } from '@/components/layout/PageContainer'
+import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
+import { formatDateTime } from '@/lib/format'
+import { toastError } from '@/lib/antdStatic'
+import type { McpKind, McpServerOut, ToolInfo } from '@/types'
+
+interface FormValues {
+  name: string
+  kind: McpKind
+  configText: string
+  enabled: boolean
+}
+
+const templates: Record<McpKind, string> = {
+  http: JSON.stringify({ url: 'http://127.0.0.1:8088/mcp' }, null, 2),
+  stdio: JSON.stringify({ command: 'python', args: ['-m', 'some_mcp'], env: {} }, null, 2),
+}
+
+const emptyForm: FormValues = { name: '', kind: 'http', configText: templates.http, enabled: true }
+
+export function McpPage(): ReactNode {
+  const servers = useMcpServers()
+  const tools = useMcpTools()
+  const status = useMcpStatus()
+  const createServer = useCreateMcpServer()
+  const updateServer = useUpdateMcpServer()
+  const deleteServer = useDeleteMcpServer()
+  const refresh = useRefreshMcp()
+  const { modal } = AntApp.useApp()
+
+  const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<McpServerOut | null>(null)
+  const [form] = Form.useForm<FormValues>()
+
+  const openCreate = () => {
+    setEditing(null)
+    form.resetFields()
+    form.setFieldsValue(emptyForm)
+    setOpen(true)
+  }
+
+  const openEdit = (record: McpServerOut) => {
+    setEditing(record)
+    form.setFieldsValue({
+      name: record.name,
+      kind: record.kind as McpKind,
+      configText: JSON.stringify(record.config_json, null, 2),
+      enabled: record.enabled,
+    })
+    setOpen(true)
+  }
+
+  const handleSave = async () => {
+    try {
+      const v = await form.validateFields()
+      let config: Record<string, unknown>
+      try {
+        config = JSON.parse(v.configText)
+      } catch {
+        toastError('config 不是合法 JSON')
+        return
+      }
+      const body = { name: v.name, kind: v.kind, config, enabled: v.enabled }
+      if (editing) await updateServer.mutateAsync({ id: editing.id, body })
+      else await createServer.mutateAsync(body)
+      setOpen(false)
+    } catch {
+      // 校验/接口失败：接口错误由全局提示
+    }
+  }
+
+  const handleDelete = (record: McpServerOut) => {
+    modal.confirm({
+      title: `删除 MCP server「${record.name}」？`,
+      content: '删除后将触发重连，引用该 server 工具的智能体需重新配置。',
+      okType: 'danger',
+      okText: '删除',
+      cancelText: '取消',
+      onOk: () => deleteServer.mutateAsync(record.id),
+    })
+  }
+
+  const serverCols: ColumnsType<McpServerOut> = [
+    { title: '名称', dataIndex: 'name', key: 'name', render: (v: string) => <code>{v}</code> },
+    {
+      title: '类型',
+      dataIndex: 'kind',
+      key: 'kind',
+      width: 90,
+      render: (v: string) => <Tag color={v === 'http' ? 'blue' : 'purple'}>{v}</Tag>,
+    },
+    {
+      title: '启用',
+      dataIndex: 'enabled',
+      key: 'enabled',
+      width: 80,
+      render: (v: boolean) => (v ? <Tag color="green">是</Tag> : <Tag>否</Tag>),
+    },
+    {
+      title: '注册时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 170,
+      render: formatDateTime,
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 110,
+      render: (_, r) => (
+        <Flex gap={4}>
+          <Button type="link" size="small" icon={<Pencil size={14} />} onClick={() => openEdit(r)} />
+          <Popconfirm title="删除该 server？" onConfirm={() => handleDelete(r)} okText="删除" cancelText="取消">
+            <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
+          </Popconfirm>
+        </Flex>
+      ),
+    },
+  ]
+
+  const toolCols: ColumnsType<ToolInfo> = [
+    { title: '工具名（命名空间）', dataIndex: 'name', key: 'name', render: (v: string) => <code>{v}</code> },
+    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
+  ]
+
+  const busy = createServer.isPending || updateServer.isPending
+
+  return (
+    <PageContainer
+      title="MCP 服务"
+      subtitle="工具全 MCP 化；工具按 {server}__{tool} 命名防跨 server 冲突"
+      extra={
+        <Space>
+          <Button icon={<RefreshCw size={14} />} loading={refresh.isPending} onClick={() => refresh.mutate()}>
+            强制重连
+          </Button>
+          <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
+            注册服务
+          </Button>
+        </Space>
+      }
+    >
+      {/* 状态卡 */}
+      <Flex gap={16} wrap style={{ marginBottom: 16 }}>
+        <Tag color={status.data?.healthy ? 'green' : 'red'} style={{ padding: '4px 12px' }}>
+          {status.isLoading ? '检测中' : status.data?.healthy ? '连接正常' : '连接异常'}
+        </Tag>
+        <Typography.Text type="secondary">
+          server 数：<b>{status.data?.server_count ?? '—'}</b>
+        </Typography.Text>
+        <Typography.Text type="secondary">
+          工具数：<b>{status.data?.tool_count ?? tools.data?.length ?? '—'}</b>
+        </Typography.Text>
+      </Flex>
+
+      {servers.isLoading ? (
+        <PageLoading />
+      ) : servers.isError ? (
+        <ErrorState onRetry={() => servers.refetch()} />
+      ) : !servers.data?.length ? (
+        <EmptyState title="暂无 MCP server" extra={<Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>注册服务</Button>} />
+      ) : (
+        <Table<McpServerOut> rowKey="id" columns={serverCols} dataSource={servers.data} pagination={false} size="middle" />
+      )}
+
+      {/* 全量工具列表（agent 编辑器多选来源） */}
+      <Collapse
+        style={{ marginTop: 16 }}
+        items={[
+          {
+            key: 'tools',
+            label: (
+              <span>
+                <Wrench size={14} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+                全量工具（{tools.data?.length ?? 0}）
+              </span>
+            ),
+            children: (
+              <Table<ToolInfo>
+                rowKey="name"
+                columns={toolCols}
+                dataSource={tools.data ?? []}
+                pagination={{ pageSize: 8, size: 'small' }}
+                size="small"
+              />
+            ),
+          },
+        ]}
+      />
+
+      <Drawer
+        title={editing ? `编辑服务：${editing.name}` : '注册 MCP 服务'}
+        open={open}
+        onClose={() => setOpen(false)}
+        width={520}
+        destroyOnClose
+        footer={
+          <Flex justify="flex-end" gap={8}>
+            <Button onClick={() => setOpen(false)}>取消</Button>
+            <Button type="primary" loading={busy} onClick={handleSave}>保存</Button>
+          </Flex>
+        }
+      >
+        <Form<FormValues> form={form} layout="vertical" initialValues={emptyForm}>
+          <Form.Item name="name" label="名称（工具名前缀）" rules={[{ required: true, message: '请输入名称' }]}>
+            <Input placeholder="如 UnifiedGateway" />
+          </Form.Item>
+          <Form.Item name="kind" label="类型">
+            <Select
+              options={[
+                { value: 'http', label: 'HTTP' },
+                { value: 'stdio', label: 'STDIO' },
+              ]}
+              onChange={(k: McpKind) => form.setFieldValue('configText', templates[k])}
+            />
+          </Form.Item>
+          <Form.Item
+            name="configText"
+            label="config（JSON）"
+            rules={[{ required: true, message: '请填写 config' }]}
+            extra="http: {url, headers}  ·  stdio: {command, args, env}"
+          >
+            <Input.TextArea rows={8} style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }} />
+          </Form.Item>
+          <Form.Item name="enabled" label="启用" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        </Form>
+      </Drawer>
+    </PageContainer>
+  )
+}

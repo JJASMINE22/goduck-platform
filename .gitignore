@@ -1,0 +1,77 @@
+# ===================== Secrets — 绝对不要提交 =====================
+# 所有 .env 一律忽略；仅保留各类 *.example / *.development / *.production 模板
+.env
+.env.*
+!.env.example
+!.env.development
+!.env.production
+
+# ===================== Python =====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+build/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.coverage
+.coverage.*
+htmlcov/
+
+# ===================== Node / 前端 =====================
+node_modules/
+dist/
+dist-ssr/
+*.local
+*.tsbuildinfo
+
+# ===================== 日志 =====================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===================== 编辑器 / IDE =====================
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*~
+
+# ===================== 操作系统 =====================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===================== 本仓库暂不纳入的内容 =====================
+# demo/ 是迁移前的原型/参考代码，不属于正式平台
+demo/
+# mcp-servers 后续单独纳入；先整体忽略防止误提交，纳入时删掉此行
+mcp-servers/
+# Kilo 本地配置（个人，不入库）
+.kilo/
+
+# ---- backend/app/mcps/ 内部的 demo / 临时脚本（不属于核心）----
+# 纯 scratch 脚本（含硬编码内网地址与本地路径）
+/backend/app/mcps/demo.py
+# 第三方 MCP 包装原型（含硬编码 API Key），已被独立 mcp-servers/ 项目取代
+/backend/app/mcps/mcp_third_part_server.py
+# 临时文件目录
+/backend/app/mcps/tmp/

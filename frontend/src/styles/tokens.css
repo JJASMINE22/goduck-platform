@@ -1,0 +1,64 @@
+/* goduck-platform 设计 token —— 全局 CSS 变量，与 AntD theme.ts 同步。
+   变更配色只动这里，组件引用 var(--xxx)。预留暗色模式（data-theme="dark"）。 */
+
+:root {
+  /* —— 中性色 —— */
+  --color-bg: #f5f7fa;
+  --color-bg-elevated: #ffffff;
+  --color-surface: #ffffff;
+  --color-border: #e5e7eb;
+  --color-border-soft: #f0f0f0;
+
+  /* —— 文本 —— */
+  --color-text: #1f2937;
+  --color-text-secondary: #6b7280;
+  --color-text-tertiary: #9ca3af;
+
+  /* —— 主色（工作台蓝） —— */
+  --color-primary: #1677ff;
+  --color-primary-hover: #4096ff;
+  --color-primary-bg: #e6f4ff;
+
+  /* —— 语义色 —— */
+  --color-success: #52c41a;
+  --color-warning: #faad14;
+  --color-danger: #ff4d4f;
+  --color-info: #1677ff;
+
+  /* —— 聊天消息角色色（准则 F2：主/子代理/工具/用户 区分） —— */
+  --color-role-user: #1677ff;
+  --color-role-agent-main: #722ed1;
+  --color-role-agent-sub: #13c2c2;
+  --color-role-tool: #8c8c8c;
+
+  /* —— 间距/圆角 —— */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* —— 字体 —— */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo,
+    Courier, monospace;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* 暗色模式预留（一期不启用，token 结构先就位） */
+[data-theme="dark"] {
+  --color-bg: #141414;
+  --color-bg-elevated: #1f1f1f;
+  --color-surface: #1f1f1f;
+  --color-border: #303030;
+  --color-text: #e5e7eb;
+  --color-text-secondary: #9ca3af;
+}
