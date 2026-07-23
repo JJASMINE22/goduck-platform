@@ -1,0 +1,26 @@
+# 后端运行时依赖（与 pyproject.toml [project.dependencies] 对齐）。
+# 仅运行依赖，不含 dev 依赖。如需可复现的精确锁定版本：
+#   uv pip compile pyproject.toml -o requirements.txt
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sse-starlette>=2.1
+asyncpg>=0.29
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+pydantic>=2.7
+pydantic-settings>=2.3
+langchain>=0.3
+langchain-openai>=0.2
+langchain-mcp-adapters>=0.1
+langgraph>=0.2
+langgraph-checkpoint-postgres>=2.0
+deepagents
+fastmcp>=2.0
+tavily-python>=0.5
+python-dotenv>=1.0
+python-multipart>=0.0.9
+pyyaml>=6.0
+requests>=2.32
+minio>=7.2
+filetype>=1.2
+python-docx>=1.1

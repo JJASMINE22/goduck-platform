@@ -81,7 +81,13 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="goduck-platform", version="0.1.0", lifespan=lifespan)
+    settings = get_settings()
+    app = FastAPI(
+        title="goduck-platform",
+        version="0.1.0",
+        lifespan=lifespan,
+        root_path=settings.root_path,
+    )
 
     from app.api import agents, mcp, models, sessions, skills, stream, uploads
 

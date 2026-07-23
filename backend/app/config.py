@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     # ---- App ----
     app_host: str = "0.0.0.0"
     app_port: int = 8000
+    root_path: str = Field(
+        default="",
+        description=(
+            "ASGI root_path：反代剥离前缀后，用于正确生成 docs/openapi.json 链接。"
+            "生产经 nginx（剥 /api）时设为 /api；本地直连后端留空。仅影响文档链接，不参与路由。"
+        ),
+    )
     log_level: str = "INFO"
 
     # ---- PostgreSQL ----

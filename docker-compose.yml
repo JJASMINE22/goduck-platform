@@ -1,11 +1,15 @@
-# goduck-platform 本地开发基础设施。
-# 所有凭据走 ${VAR:-默认值} 内联默认值：克隆后直接 `docker-compose up -d` 即可，
-# 无需任何 .env 即开箱可用；如需自定义，在同目录建 .env 覆盖对应变量。
+# goduck-platform 一体化部署（单文件，直观易改）。
 #
-# NOTE: backend / mcp 网关在开发期仍本地运行（uvicorn / python main.py）。
-# 待 MCP stdio 稳定后再考虑容器化后端。
+# 一条命令拉起全部：docker-compose up -d --build
+# 浏览器访问：      http://<服务器IP>   （nginx 唯一对外入口 :80）
+# 凭据自定义：      同目录建 .env 覆盖 ${VAR:-默认值}
+#
+# 架构：所有服务共享 compose 默认网络，按"服务名"互访（无需显式 networks）。
+#       仅 nginx 发布 :80；backend/frontend 不对宿主发布，经 nginx 转发。
+#       postgres/minio 的 ports: 仅供本机调试，生产可删。
 
 services:
+  # ============ 基础设施 ============
   postgres:
     image: postgres:16-alpine
     container_name: goduck-postgres
@@ -14,7 +18,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       POSTGRES_DB: ${POSTGRES_DB:-langgraph_db}
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "${POSTGRES_PORT:-5433}:5432"      # 本机调试；生产建议删除
     volumes:
       - goduck_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -22,9 +26,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   minio:
-    # 附件字节持久层（图片 / 文档）。bucket 由后端启动时自动创建（见 storage.py）。
+    # 附件字节持久层（图片/文档）。bucket 由后端启动时自动创建。
     image: minio/minio:latest
     container_name: goduck-minio
     command: server /data --console-address ":9001"
@@ -32,15 +37,61 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     ports:
-      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_PORT:-9000}:9000"         # 本机调试；生产建议删除
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - goduck_miniodata:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
+    restart: unless-stopped
+
+  # ============ 后端 ============
+  backend:
+    build: ./backend
+    image: goduck-backend:latest
+    container_name: goduck-backend
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      # nginx 剥 /api，让 docs/openapi.json 链接正确（本地直连留空）
+      ROOT_PATH: ${ROOT_PATH:-/api}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # 容器间走服务名 + 内部端口
+      DATABASE_URL: postgresql://${POSTGRES_USER:-goduck}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-langgraph_db}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-10}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_BUCKET: ${MINIO_BUCKET:-uploads}
+      MINIO_SECURE: "false"
+      MCP_ALLOW_LOOPBACK: "true"
+      MAX_INVOKE_RETRIES: ${MAX_INVOKE_RETRIES:-2}
+    expose: ["8000"]                       # 仅内部网络可见，不对宿主发布
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    restart: unless-stopped
+
+  # ============ 前端 ============
+  frontend:
+    build: ./frontend
+    image: goduck-frontend:latest
+    container_name: goduck-frontend
+    expose: ["80"]                         # 仅内部，由 nginx 转发
+    restart: unless-stopped
+
+  # ============ 边缘网关（唯一对外入口）============
+  nginx:
+    image: nginx:alpine
+    container_name: goduck-nginx
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${EDGE_PORT:-80}:80"              # 唯一对外端口
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
 
 volumes:
   goduck_pgdata:

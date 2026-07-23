@@ -125,7 +125,12 @@ async def init_business_schema(pool: AsyncConnectionPool) -> None:
     """Create business tables if absent + run column migrations. Safe to repeat."""
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(BUSINESS_DDL)
+            # 连接池 prepare_threshold=0 会强制预编译，而预编译语句不支持一次执行多条
+            # SQL；故把 BUSINESS_DDL 按 ';' 拆成单条逐条执行（DDL 内无字面量分号，安全）。
+            for stmt in BUSINESS_DDL.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    await cur.execute(stmt)
             for stmt in _MIGRATIONS:
                 await cur.execute(stmt)
     logger.info("business schema ready (model / agent / agent_config_history / session / mcp_server / upload)")
