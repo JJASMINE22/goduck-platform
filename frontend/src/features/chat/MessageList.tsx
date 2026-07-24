@@ -1,8 +1,9 @@
 /* 聊天消息流 —— 合并 chatStore.messages + toolCalls 按 createdAt 排序成统一时间线。
-   user/agent 气泡（按 agentPath 区分主/子代理，准则 F2 角色色）+ 工具调用折叠卡。 */
+   user/agent 气泡（按 agentPath 区分主/子代理，准则 F2 角色色）+ 工具调用折叠卡。
+   [Demo] 入场动画 / 头像 / 角色色带 / 流式打字指示 / 工具执行脉动。 */
 import { Collapse, Flex, Tag, Typography } from 'antd'
 import { type ReactNode } from 'react'
-import { Wrench } from 'lucide-react'
+import { Bot, Check, User, Wrench } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage, ToolCallEntry } from '@/store/chatStore'
 import { Markdown } from '@/components/markdown/Markdown'
@@ -11,15 +12,25 @@ type TimelineItem =
   | { kind: 'msg'; ts: number; data: ChatMessage }
   | { kind: 'tool'; ts: number; data: ToolCallEntry }
 
-function agentLabel(path: string): { label: string; color: string } {
+function agentMeta(path: string): { label: string; color: string } {
   if (path === 'root' || path === 'user') return { label: '主代理', color: 'var(--color-role-agent-main)' }
   const seg = path.split('/').pop() ?? path
   return { label: `子代理 · ${seg}`, color: 'var(--color-role-agent-sub)' }
 }
 
+function Avatar({ role, color }: { role: 'user' | 'agent'; color: string }): ReactNode {
+  return (
+    <div className="chat-avatar" style={{ background: role === 'user' ? 'var(--color-primary)' : color }}>
+      {role === 'user' ? <User size={17} /> : <Bot size={17} />}
+    </div>
+  )
+}
+
 export function MessageList(): ReactNode {
   const messages = useChatStore((s) => s.messages)
   const toolCalls = useChatStore((s) => s.toolCalls)
+  const status = useChatStore((s) => s.status)
+  const streaming = status === 'streaming'
 
   const timeline: TimelineItem[] = [
     ...messages.map((m) => ({ kind: 'msg' as const, ts: m.createdAt, data: m })),
@@ -32,29 +43,32 @@ export function MessageList(): ReactNode {
         if (item.kind === 'tool') return <ToolCallCard key={`t-${item.data.id}`} entry={item.data} />
         return <MessageBubble key={item.data.id} msg={item.data} />
       })}
+      {streaming ? <TypingIndicator /> : null}
     </Flex>
   )
 }
 
 function MessageBubble({ msg }: { msg: ChatMessage }): ReactNode {
   const isUser = msg.role === 'user'
-  const { label, color } = agentLabel(msg.agentPath)
+  const { label, color } = agentMeta(msg.agentPath)
   return (
-    <Flex justify={isUser ? 'flex-end' : 'flex-start'}>
+    <Flex justify={isUser ? 'flex-end' : 'flex-start'} align="flex-start" gap={10} className="msg-in">
+      {!isUser ? <Avatar role="agent" color={color} /> : null}
       <div
+        className="chat-bubble"
         style={{
           maxWidth: '78%',
           background: isUser ? 'var(--color-primary-bg)' : 'var(--color-bg-elevated)',
           border: `1px solid ${isUser ? 'var(--color-primary)' : 'var(--color-border)'}`,
+          borderLeft: isUser ? undefined : `3px solid ${color}`,
           borderRadius: 12,
           padding: '10px 14px',
+          boxShadow: 'var(--shadow-sm)',
         }}
       >
         {!isUser ? (
           <div style={{ marginBottom: 4 }}>
-            <Tag color="purple" style={{ color, borderColor: color, background: 'transparent' }}>
-              {label}
-            </Tag>
+            <Tag style={{ color, borderColor: color, background: 'transparent' }}>{label}</Tag>
           </div>
         ) : null}
         {isUser ? (
@@ -63,14 +77,44 @@ function MessageBubble({ msg }: { msg: ChatMessage }): ReactNode {
           <Markdown>{msg.content}</Markdown>
         )}
       </div>
+      {isUser ? <Avatar role="user" color={color} /> : null}
+    </Flex>
+  )
+}
+
+/** 流式生成中：主代理头像 + 三点打字气泡 */
+function TypingIndicator(): ReactNode {
+  return (
+    <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
+      <Avatar role="agent" color="var(--color-role-agent-main)" />
+      <div
+        className="chat-bubble"
+        style={{
+          background: 'var(--color-bg-elevated)',
+          border: '1px solid var(--color-border)',
+          borderLeft: '3px solid var(--color-role-agent-main)',
+          borderRadius: 12,
+          padding: '12px 14px',
+          boxShadow: 'var(--shadow-sm)',
+        }}
+      >
+        <span className="typing-dots">
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+        </span>
+      </div>
     </Flex>
   )
 }
 
 function ToolCallCard({ entry }: { entry: ToolCallEntry }): ReactNode {
   return (
-    <Flex justify="flex-start">
-      <div style={{ maxWidth: '78%', width: '78%' }}>
+    <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
+      <div className="chat-avatar" style={{ background: 'var(--color-role-tool)', width: 28, height: 28 }}>
+        {entry.hasResult ? <Check size={14} /> : <Wrench size={14} className="executing" />}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
         <Collapse
           size="small"
           items={[
@@ -78,14 +122,17 @@ function ToolCallCard({ entry }: { entry: ToolCallEntry }): ReactNode {
               key: entry.id,
               label: (
                 <Flex align="center" gap={6}>
-                  <Wrench size={13} style={{ color: 'var(--color-role-tool)' }} />
                   <code style={{ fontSize: 12 }}>{entry.name}</code>
                   {entry.caller ? (
                     <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                       by {entry.caller}
                     </Typography.Text>
                   ) : null}
-                  {entry.hasResult ? <Tag color="green" style={{ marginInlineStart: 4 }}>已返回</Tag> : <Tag>执行中</Tag>}
+                  {entry.hasResult ? (
+                    <Tag color="green" style={{ marginInlineStart: 4 }}>已返回</Tag>
+                  ) : (
+                    <Tag color="processing" style={{ marginInlineStart: 4 }}>执行中</Tag>
+                  )}
                 </Flex>
               ),
               children: (

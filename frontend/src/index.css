@@ -50,3 +50,72 @@ pre,
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.25);
 }
+
+/* ===== [Demo] 聊天动效预览（纯 CSS，零依赖）===== */
+
+/* 消息入场：淡入 + 上滑 */
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.msg-in { animation: msg-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* 气泡悬浮微浮 + 阴影过渡 */
+.chat-bubble {
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+.chat-bubble:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+/* 头像圆底 */
+.chat-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+/* 流式打字三点 */
+.typing-dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 2px 0;
+  line-height: 1;
+}
+.typing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+  animation: dot-bounce 1.2s infinite ease-in-out;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* 工具"执行中"脉动 */
+.executing {
+  animation: exec-pulse 1.1s infinite ease-in-out;
+}
+@keyframes exec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-in,
+  .typing-dot,
+  .executing {
+    animation: none !important;
+  }
+}
