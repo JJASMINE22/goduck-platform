@@ -16,13 +16,26 @@ body,
 
 body {
   font-family: var(--font-sans);
-  background: var(--color-bg);
+  background-color: var(--color-bg);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 22px 22px;
   color: var(--color-text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 #root {
+  display: flex;
+  flex-direction: column;
+}
+
+/* AntD <App> 外壳 —— 打通高度链：#root(flex column) → .ant-app 填满视口高
+   → AppShell Layout 的 height:100% 才能解析到定高，否则整条 flex/100% 链塌缩为内容高。 */
+.ant-app {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -44,11 +57,11 @@ pre,
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
+  background: rgba(255, 255, 255, 0.15);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.25);
+  background: rgba(255, 255, 255, 0.3);
 }
 
 /* ===== [Demo] 聊天动效预览（纯 CSS，零依赖）===== */
@@ -118,4 +131,235 @@ pre,
   .executing {
     animation: none !important;
   }
+}
+
+/* ===== 智能体画布编辑器 ===== */
+
+/* 画布容器 */
+.agent-canvas {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+/* 自定义节点卡（精简紧凑 · 精而美） */
+.agent-node {
+  --node-color: var(--color-primary);
+  width: 196px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--node-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  position: relative;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.agent-node:hover {
+  border-color: var(--node-color);
+  box-shadow: 0 0 0 1px var(--node-color), var(--shadow-md);
+  transform: translateY(-1px);
+}
+.agent-node--selected {
+  border-color: var(--node-color);
+  box-shadow: 0 0 0 2px var(--node-color), var(--shadow-md);
+}
+.agent-node__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 0 9px;
+}
+.agent-node__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--node-color);
+  box-shadow: 0 0 8px var(--node-color);
+}
+.agent-node__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--node-color);
+}
+.agent-node__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.agent-node__del {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+.agent-node:hover .agent-node__del,
+.agent-node--selected .agent-node__del {
+  opacity: 1;
+}
+.agent-node__del:hover {
+  background: var(--color-danger);
+  color: #fff;
+}
+.agent-node__body {
+  padding: 4px 10px 8px;
+}
+.agent-node__desc {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-node__desc--empty {
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+.agent-node__meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  color: var(--color-text-tertiary);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+.agent-node__dict {
+  margin-left: 2px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  line-height: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-role-agent-main);
+}
+.agent-handle {
+  width: 8px;
+  height: 8px;
+  background: var(--node-color, var(--color-primary));
+  border: 2px solid var(--color-bg-elevated);
+  border-radius: 50%;
+}
+
+/* 模块面板（左侧） */
+.node-palette {
+  width: 196px;
+  flex-shrink: 0;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  cursor: grab;
+  user-select: none;
+  transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+}
+.palette-item:hover {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+.palette-item:active {
+  cursor: grabbing;
+}
+.palette-item__label {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.palette-item__name {
+  font-size: 13px;
+}
+.palette-item__hint {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+/* 节点详情面板（右侧） */
+.node-detail {
+  width: 356px;
+  flex-shrink: 0;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 14px;
+  overflow: auto;
+}
+.node-detail__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* 详情面板空态 */
+.node-detail--empty {
+  display: grid;
+  place-items: center;
+}
+.node-detail__hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-tertiary);
+  text-align: center;
+  padding: 40px 0;
+}
+.node-detail__hint p {
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+.node-detail__hint small {
+  font-size: 12px;
+}
+
+/* 空会话欢迎占位 */
+.chat-welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+.chat-welcome__title {
+  margin: 6px 0 0;
+  font-size: 18px;
+  color: var(--color-text-secondary);
+}
+.chat-welcome__hint {
+  font-size: 12px;
 }

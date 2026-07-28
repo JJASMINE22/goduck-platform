@@ -14,7 +14,7 @@ export function PageContainer({
   children: ReactNode
 }): ReactNode {
   return (
-    <Flex vertical gap={16} style={{ height: '100%' }}>
+    <Flex vertical gap={16} style={{ height: '100%', padding: '20px 24px' }}>
       <Flex justify="space-between" align="flex-end" wrap gap={12}>
         <div>
           <Typography.Title level={4} style={{ margin: 0 }}>
@@ -28,7 +28,7 @@ export function PageContainer({
         </div>
         {extra ? <Flex gap={8}>{extra}</Flex> : null}
       </Flex>
-      <div style={{ flex: 1, minHeight: 0 }}>{children}</div>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>{children}</div>
     </Flex>
   )
 }

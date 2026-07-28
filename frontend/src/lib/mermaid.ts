@@ -9,7 +9,7 @@ function ensureInit() {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict', // 禁止 mermaid 里的交互脚本/html
-    theme: 'default',
+    theme: 'dark',
     flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
   })
   initialized = true

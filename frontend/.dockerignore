@@ -1,0 +1,6 @@
+# 不打包进前端镜像（容器内全新安装/构建）。
+# 注意：不要排除 .env.production —— vite build 需要它注入 VITE_API_BASE。
+node_modules
+dist
+.git
+.vscode

@@ -81,7 +81,7 @@ export function ChatPage(): ReactNode {
   }
 
   return (
-    <Flex vertical gap={0} style={{ height: '100%' }}>
+    <Flex vertical gap={0} style={{ height: '100%', padding: '16px 20px' }}>
       {/* 顶部 */}
       <Flex justify="space-between" align="center" style={{ paddingBottom: 8 }}>
         <Space>

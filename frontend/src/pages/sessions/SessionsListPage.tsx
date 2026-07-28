@@ -1,4 +1,4 @@
-/* 会话列表页 —— 按 user_id 列出会话（个人工具，user_id 可切换，默认 admin）。
+/* 会话列表页 —— 按 user_id 列出会话（个人工具；user_id 由顶栏统一切换，默认 admin）。
    新建会话需选智能体；点行进入聊天。 */
 import { App as AntApp, Button, Flex, Form, Input, Modal, Select, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -7,16 +7,15 @@ import { useNavigate } from 'react-router-dom'
 import { MessageSquare, Plus, Trash2 } from 'lucide-react'
 import { useSessions, useCreateSession, useArchiveSession } from '@/hooks/useSessions'
 import { useAgents } from '@/hooks/useAgents'
+import { useCurrentUser } from '@/store/userStore'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
 import { formatRelative } from '@/lib/format'
 import type { SessionOut } from '@/types'
 
-const USER_KEY = 'goduck.user_id'
-
 export function SessionsListPage(): ReactNode {
   const navigate = useNavigate()
-  const [userId, setUserId] = useState(() => localStorage.getItem(USER_KEY) || 'admin')
+  const userId = useCurrentUser((s) => s.userId)
   const sessions = useSessions(userId)
   const agents = useAgents()
   const createSession = useCreateSession()
@@ -25,11 +24,6 @@ export function SessionsListPage(): ReactNode {
 
   const [open, setOpen] = useState(false)
   const [form] = Form.useForm<{ agent_id: string; title?: string }>()
-
-  const changeUser = (v: string) => {
-    setUserId(v)
-    localStorage.setItem(USER_KEY, v)
-  }
 
   const handleCreate = async () => {
     const v = await form.validateFields()
@@ -94,18 +88,9 @@ export function SessionsListPage(): ReactNode {
       title="会话"
       subtitle="选择智能体开启对话；会话绑定 thread_id（LangGraph checkpointer 键）"
       extra={
-        <Flex gap={8}>
-          <Input
-            size="middle"
-            value={userId}
-            onChange={(e) => changeUser(e.target.value)}
-            addonBefore="用户"
-            style={{ width: 200 }}
-          />
-          <Button type="primary" icon={<Plus size={16} />} onClick={() => setOpen(true)} disabled={!activeAgents.length}>
-            新建会话
-          </Button>
-        </Flex>
+        <Button type="primary" icon={<Plus size={16} />} onClick={() => setOpen(true)} disabled={!activeAgents.length}>
+          新建会话
+        </Button>
       }
     >
       {sessions.isLoading ? (

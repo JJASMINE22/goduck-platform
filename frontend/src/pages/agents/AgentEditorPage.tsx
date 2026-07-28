@@ -1,23 +1,11 @@
-/* 智能体编辑器（DESIGN §10.1）—— AgentConfig 树形编辑 + 实时 validate + mermaid 预览 + 历史/还原。
-   草稿由 agentEditorStore 持有（准则 F8）。保存：新建 POST /agents；更新 PUT（二次确认级联删会话）。 */
-import {
-  Alert,
-  App as AntApp,
-  Button,
-  Card,
-  Drawer,
-  Empty,
-  Flex,
-  Input,
-  List,
-  Select,
-  Space,
-  Tag,
-  Typography,
-} from 'antd'
+/* 智能体编辑器（画布版）—— 三栏：模块面板 | 节点画布 | 节点详情面板。
+   草稿由 agentEditorStore（归一化 nodes）持有（准则 F8）。保存前 toConfigTree(nodes) 序列化为
+   AgentConfig 树：新建 POST /agents；更新 PUT（二次确认级联删会话）。后端契约不变。
+   实时校验走 POST /agents/validate（防抖 600ms，准则 F6）。 */
+import { Alert, App as AntApp, Button, Card, Drawer, Empty, Flex, Input, List, Select, Space, Tag, Typography } from 'antd'
 import { type ReactNode, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, History, RotateCcw, Save, Sparkles } from 'lucide-react'
+import { ArrowLeft, History, RotateCcw, Save } from 'lucide-react'
 import {
   useAgent,
   useAgentHistory,
@@ -28,15 +16,15 @@ import {
 } from '@/hooks/useAgents'
 import { useModels } from '@/hooks/useModels'
 import { useAgentEditorStore } from '@/store/agentEditorStore'
-import { NodeEditor } from '@/features/agent-editor/NodeEditor'
-import { MermaidPreview } from '@/features/topology/MermaidPreview'
+import { useCurrentUser } from '@/store/userStore'
+import { toConfigTree } from '@/features/agent-editor/graphModel'
+import { NodePalette } from '@/features/agent-editor/canvas/NodePalette'
+import { AgentCanvas } from '@/features/agent-editor/canvas/AgentCanvas'
+import { NodeDetailPanel } from '@/features/agent-editor/NodeDetailPanel'
 import { PageLoading } from '@/components/feedback/states'
 import { formatDateTime } from '@/lib/format'
 import { toastError } from '@/lib/antdStatic'
-import type { UUID } from '@/types'
-
-const USER_KEY = 'goduck.user_id'
-const currentUser = () => localStorage.getItem(USER_KEY) || 'admin'
+import type { AgentConfig, UUID } from '@/types'
 
 export function AgentEditorPage(): ReactNode {
   const { id } = useParams<{ id: string }>()
@@ -51,13 +39,14 @@ export function AgentEditorPage(): ReactNode {
   const restoreAgent = useRestoreAgent()
   const historyQ = useAgentHistory(id ?? null)
   const { modal } = AntApp.useApp()
+  const currentUserId = useCurrentUser((s) => s.userId)
 
-  const config = useAgentEditorStore((s) => s.config)
+  const nodes = useAgentEditorStore((s) => s.nodes)
+  const agentIdInStore = useAgentEditorStore((s) => s.agentId)
   const name = useAgentEditorStore((s) => s.name)
   const description = useAgentEditorStore((s) => s.description)
   const modelId = useAgentEditorStore((s) => s.modelId)
   const errors = useAgentEditorStore((s) => s.validationErrors)
-  const mermaid = useAgentEditorStore((s) => s.mermaidPreview)
   const initNew = useAgentEditorStore((s) => s.initNew)
   const loadFromAgent = useAgentEditorStore((s) => s.loadFromAgent)
   const setName = useAgentEditorStore((s) => s.setName)
@@ -67,18 +56,26 @@ export function AgentEditorPage(): ReactNode {
 
   const [histOpen, setHistOpen] = useState(false)
 
-  // —— 初始化草稿 ——
+  // —— 初始化草稿（保留跨页面切换的进度）——
+  // 新建：仅当无草稿、或草稿属于已存在智能体时才初始化，避免切到设置页再回来被清空
   useEffect(() => {
-    if (isCreate) initNew()
-  }, [isCreate, initNew])
+    if (isCreate && (nodes === null || agentIdInStore !== null)) initNew()
+  }, [isCreate, nodes, agentIdInStore, initNew])
 
+  // 编辑：仅当尚未加载该智能体时才灌入，避免覆盖未保存的编辑
   useEffect(() => {
-    if (!isCreate && agentQ.data) loadFromAgent(agentQ.data)
-  }, [isCreate, agentQ.data, loadFromAgent])
+    if (!isCreate && agentQ.data && agentIdInStore !== id) loadFromAgent(agentQ.data)
+  }, [isCreate, id, agentQ.data, agentIdInStore, loadFromAgent])
 
-  // —— 实时校验（防抖 600ms）——
+  // —— 实时校验（防抖 600ms）：nodes → AgentConfig → /validate ——
   useEffect(() => {
-    if (!config) return
+    if (!nodes) return
+    let config: AgentConfig
+    try {
+      config = toConfigTree(nodes)
+    } catch {
+      return
+    }
     const t = setTimeout(() => {
       validate
         .mutateAsync({ config })
@@ -90,13 +87,19 @@ export function AgentEditorPage(): ReactNode {
         })
     }, 600)
     return () => clearTimeout(t)
-  }, [config, validate, setValidation])
+  }, [nodes, validate, setValidation])
 
   const handleSave = () => {
-    if (!config) return
+    if (!nodes) return
+    let config: AgentConfig
+    try {
+      config = toConfigTree(nodes)
+    } catch {
+      return toastError('配置无效：缺少主代理节点')
+    }
     if (!name.trim()) return toastError('请填写智能体名称')
     if (!modelId) return toastError('请绑定模型')
-    const user = currentUser()
+    const user = currentUserId
 
     const doUpdate = () =>
       updateAgent.mutateAsync({
@@ -134,7 +137,7 @@ export function AgentEditorPage(): ReactNode {
       onOk: async () => {
         await restoreAgent.mutateAsync({
           id: id as UUID,
-          body: { history_id: historyId, operator: currentUser() },
+          body: { history_id: historyId, operator: currentUserId },
         })
         await agentQ.refetch()
         setHistOpen(false)
@@ -143,7 +146,7 @@ export function AgentEditorPage(): ReactNode {
   }
 
   if (!isCreate && agentQ.isLoading) return <PageLoading />
-  if (!config) return <PageLoading />
+  if (!nodes) return <PageLoading />
 
   const modelOptions = (models.data ?? []).map((m) => ({
     value: m.id,
@@ -152,7 +155,7 @@ export function AgentEditorPage(): ReactNode {
   }))
 
   return (
-    <Flex vertical gap={16} style={{ height: '100%' }}>
+    <Flex vertical gap={12} style={{ height: '100%', padding: '16px 20px' }}>
       <Flex justify="space-between" align="center">
         <Space>
           <Button icon={<ArrowLeft size={14} />} onClick={() => navigate('/agents')}>
@@ -183,76 +186,57 @@ export function AgentEditorPage(): ReactNode {
         </Space>
       </Flex>
 
-      <Flex gap={16} style={{ flex: 1, minHeight: 0 }}>
-        {/* 左：表单 */}
-        <div style={{ flex: 1, minWidth: 0, overflow: 'auto', paddingRight: 4 }}>
-          <Card title="基本信息" size="small" style={{ marginBottom: 12 }}>
-            <Flex vertical gap={12}>
-              <FieldRow label="名称（唯一）">
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="如 代码评审助手" />
-              </FieldRow>
-              <FieldRow label="描述">
-                <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="一句话说明" />
-              </FieldRow>
-              <FieldRow label="绑定模型（必选）">
-                <Select
-                  style={{ width: '100%' }}
-                  placeholder="选择已注册模型"
-                  value={modelId ?? undefined}
-                  onChange={(v) => setModelId(v)}
-                  options={modelOptions}
-                  loading={models.isLoading}
-                  showSearch
-                  optionFilterProp="label"
-                />
-              </FieldRow>
-            </Flex>
-          </Card>
+      {/* 基本信息 + 绑定模型 */}
+      <Card size="small">
+        <Flex gap={24} wrap="wrap" align="center">
+          <FieldRow label="名称（唯一）">
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="如 代码评审助手" style={{ width: 220 }} />
+          </FieldRow>
+          <FieldRow label="描述">
+            <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="一句话说明" style={{ width: 240 }} />
+          </FieldRow>
+          <FieldRow label="绑定模型（必选）">
+            <Select
+              style={{ width: 260 }}
+              placeholder="选择已注册模型"
+              value={modelId ?? undefined}
+              onChange={(v) => setModelId(v)}
+              options={modelOptions}
+              loading={models.isLoading}
+              showSearch
+              optionFilterProp="label"
+            />
+          </FieldRow>
+        </Flex>
+      </Card>
 
-          <Card title="配置树（AgentConfig）" size="small">
-            <NodeEditor path={[]} defaultOpen />
-          </Card>
-        </div>
+      {/* 校验状态 */}
+      {errors.length ? (
+        <Alert
+          type="error"
+          showIcon
+          message="配置校验未通过"
+          description={
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {errors.map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
+            </ul>
+          }
+        />
+      ) : (
+        <Alert type="success" showIcon message="配置校验通过" />
+      )}
 
-        {/* 右：实时预览 + 校验 */}
-        <div style={{ width: 380, flexShrink: 0, overflow: 'auto' }}>
-          <Card
-            size="small"
-            title={
-              <span>
-                <Sparkles size={14} style={{ verticalAlign: '-2px', marginRight: 6 }} />
-                拓扑预览 & 校验
-              </span>
-            }
-          >
-            {errors.length ? (
-              <Alert
-                type="error"
-                style={{ marginBottom: 12 }}
-                message="配置校验未通过"
-                description={
-                  <ul style={{ margin: 0, paddingLeft: 18 }}>
-                    {errors.map((e, i) => (
-                      <li key={i}>{e}</li>
-                    ))}
-                  </ul>
-                }
-              />
-            ) : (
-              <Alert type="success" message="配置校验通过" style={{ marginBottom: 12 }} />
-            )}
-            <MermaidPreview code={mermaid} />
-          </Card>
-        </div>
+      {/* 三栏：模块面板 | 画布 | 详情 */}
+      <Flex gap={12} style={{ flex: 1, minHeight: 0 }}>
+        <NodePalette />
+        <AgentCanvas />
+        <NodeDetailPanel />
       </Flex>
 
       {/* 配置历史 / 还原 */}
-      <Drawer
-        title="配置历史（可还原）"
-        open={histOpen}
-        onClose={() => setHistOpen(false)}
-        width={440}
-      >
+      <Drawer title="配置历史（可还原）" open={histOpen} onClose={() => setHistOpen(false)} width={440}>
         {historyQ.isLoading ? (
           <PageLoading />
         ) : !historyQ.data?.length ? (
@@ -263,12 +247,7 @@ export function AgentEditorPage(): ReactNode {
             renderItem={(item) => (
               <List.Item
                 actions={[
-                  <Button
-                    key="restore"
-                    size="small"
-                    icon={<RotateCcw size={13} />}
-                    onClick={() => handleRestore(item.id)}
-                  >
+                  <Button key="restore" size="small" icon={<RotateCcw size={13} />} onClick={() => handleRestore(item.id)}>
                     还原
                   </Button>,
                 ]}
@@ -293,9 +272,9 @@ export function AgentEditorPage(): ReactNode {
 
 function FieldRow({ label, children }: { label: string; children: ReactNode }): ReactNode {
   return (
-    <Flex align="center" gap={12}>
-      <div style={{ width: 110, flexShrink: 0, fontSize: 13, color: 'var(--color-text-secondary)' }}>{label}</div>
-      <div style={{ flex: 1 }}>{children}</div>
+    <Flex align="center" gap={8}>
+      <div style={{ width: 90, flexShrink: 0, fontSize: 13, color: 'var(--color-text-secondary)' }}>{label}</div>
+      {children}
     </Flex>
   )
 }

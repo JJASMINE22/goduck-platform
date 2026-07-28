@@ -14,7 +14,6 @@ export function AppShell(): ReactNode {
   return (
     <Layout style={{ height: '100%' }}>
       <Sider
-        theme="light"
         collapsible
         collapsed={collapsed}
         onCollapse={setCollapsed}
@@ -27,7 +26,7 @@ export function AppShell(): ReactNode {
         <Header style={{ padding: 0, height: 56, lineHeight: '56px' }}>
           <Topbar />
         </Header>
-        <Content style={{ overflow: 'auto', padding: 20 }}>
+        <Content style={{ overflow: 'hidden', padding: 0 }}>
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>

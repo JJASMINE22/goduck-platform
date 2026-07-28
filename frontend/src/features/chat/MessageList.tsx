@@ -38,7 +38,14 @@ export function MessageList(): ReactNode {
   ].sort((a, b) => a.ts - b.ts)
 
   return (
-    <Flex vertical gap={12} style={{ padding: '16px 0' }}>
+    <Flex vertical gap={12} style={{ padding: '16px 0', height: '100%' }}>
+      {!timeline.length ? (
+        <div className="chat-welcome">
+          <Bot size={40} />
+          <p className="chat-welcome__title">开始对话</p>
+          <small className="chat-welcome__hint">在下方输入消息，Enter 发送 / Shift+Enter 换行</small>
+        </div>
+      ) : null}
       {timeline.map((item) => {
         if (item.kind === 'tool') return <ToolCallCard key={`t-${item.data.id}`} entry={item.data} />
         return <MessageBubble key={item.data.id} msg={item.data} />
