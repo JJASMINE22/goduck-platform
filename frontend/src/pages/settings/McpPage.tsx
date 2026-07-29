@@ -14,10 +14,11 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Pencil, Plus, RefreshCw, Trash2, Wrench } from 'lucide-react'
 import {
   useCreateMcpServer,
@@ -57,6 +58,12 @@ export function McpPage(): ReactNode {
   const deleteServer = useDeleteMcpServer()
   const refresh = useRefreshMcp()
   const { modal } = AntApp.useApp()
+
+  // 按 server 名建立健康状态索引，供表格"状态"列 join（/mcp/servers 行 ↔ /mcp/status 明细）
+  const statusMap = useMemo(
+    () => new Map((status.data?.servers ?? []).map((s) => [s.name, s])),
+    [status.data],
+  )
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<McpServerOut | null>(null)
@@ -125,6 +132,22 @@ export function McpPage(): ReactNode {
       key: 'enabled',
       width: 80,
       render: (v: boolean) => (v ? <Tag color="green">是</Tag> : <Tag>否</Tag>),
+    },
+    {
+      title: '状态',
+      key: 'health',
+      width: 140,
+      render: (_, r) => {
+        const s = statusMap.get(r.name)
+        if (!s) return <Tag>未知</Tag>
+        return s.healthy ? (
+          <Tag color="green">正常 · {s.tool_count} 工具</Tag>
+        ) : (
+          <Tooltip title={s.error ?? '连接失败'} placement="top">
+            <Tag color="red">异常</Tag>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '注册时间',

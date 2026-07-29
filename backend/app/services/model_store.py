@@ -30,19 +30,38 @@ def build_chat_model(
     model_type: str,
     api_key: str,
     base_url: Optional[str],
+    *,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    enable_thinking: bool = False,
 ) -> BaseChatModel:
     """Construct a chat client by provider family. Single dispatch seam.
 
     Adding a non-OpenAI-compatible family later = one new branch here + the
     matching langchain-<vendor> package. Schema stays unchanged.
+
+    temperature/top_p 可空（None=用 provider 默认）；
+    enable_thinking 注入 thinking 请求体（GLM/openai_compatible 约定：
+    {"thinking":{"type":"enabled"}}），仅思考模型有效，由注册者自行开启。
     """
     if provider_kind == "openai_compatible":
         from langchain_openai import ChatOpenAI
 
+        kwargs: dict = {}
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        if enable_thinking:
+            # thinking 必须走 extra_body（OpenAI SDK 的"未校验请求体"通道），
+            # 不能放进 model_kwargs——后者会被当作 create() 的顶层关键字参数，
+            # SDK 校验签名不认 'thinking' → "unexpected keyword argument 'thinking'"。
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
         return ChatOpenAI(
             model=model_type,
             api_key=api_key,
             base_url=base_url or None,
+            **kwargs,
         )
     raise ValueError(f"不支持的 provider_kind: {provider_kind}")
 
@@ -57,6 +76,10 @@ class ModelStore:
         self._started = False
 
     async def startup(self) -> None:
+        # langchain-openai 1.x 不透传 reasoning_content，需注入提取（幂等）
+        from app.services.thinking_patch import apply_once
+
+        apply_once()
         await self.refresh()
         self._started = True
         logger.info("ModelStore started: %d enabled models", len(self._models))
@@ -73,6 +96,9 @@ class ModelStore:
                     row["model_type"],
                     row["api_key"],
                     row.get("base_url"),
+                    temperature=row.get("temperature"),
+                    top_p=row.get("top_p"),
+                    enable_thinking=row.get("enable_thinking", False),
                 )
                 new_models[mid] = {
                     "client": client,

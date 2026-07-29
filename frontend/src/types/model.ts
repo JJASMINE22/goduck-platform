@@ -13,6 +13,9 @@ export interface ModelCreate {
   api_key: string
   base_url?: string | null // OpenAI 兼容端点；原生 OpenAI 留空
   supports_vision: boolean
+  temperature?: number | null // 0–2，留空=provider 默认
+  top_p?: number | null // 0–1，留空=provider 默认
+  enable_thinking: boolean // 思考模式开关（仅思考模型有效）
   enabled: boolean
 }
 
@@ -23,6 +26,9 @@ export interface ModelUpdate {
   api_key?: string | null // null/undefined = 保留旧 key；非空则覆盖（轮换密钥）
   base_url?: string | null
   supports_vision: boolean
+  temperature?: number | null
+  top_p?: number | null
+  enable_thinking: boolean
   enabled: boolean
 }
 
@@ -33,6 +39,9 @@ export interface ModelOut {
   model_type: string
   base_url?: string | null
   supports_vision: boolean
+  temperature?: number | null
+  top_p?: number | null
+  enable_thinking: boolean
   enabled: boolean
   created_at: ISODateTime
   updated_at: ISODateTime

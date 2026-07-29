@@ -14,6 +14,7 @@ export interface ChatMessage {
   role: 'user' | 'agent'
   agentPath: string // "root" | "root/researcher"
   content: string
+  reasoning?: string // 思考过程（仅 agent 思考消息，可折叠展示）
   createdAt: number
 }
 
@@ -45,6 +46,7 @@ export interface ChatState {
   // —— 动作 ——
   pushUser: (content: string) => void
   pushAgent: (agentPath: string, content: string) => void
+  pushReasoning: (agentPath: string, reasoning: string) => void
   upsertToolCall: (tc: Omit<ToolCallEntry, 'hasResult' | 'createdAt'>) => void
   setToolResult: (toolCallId: string, result: string) => void
   setStatus: (s: ChatStreamStatus) => void
@@ -86,6 +88,14 @@ export const useChatStore = create<ChatState>((set) => ({
       messages: [
         ...s.messages,
         { id: genId(), role: 'agent', agentPath, content, createdAt: Date.now() },
+      ],
+    })),
+
+  pushReasoning: (agentPath, reasoning) =>
+    set((s) => ({
+      messages: [
+        ...s.messages,
+        { id: genId(), role: 'agent', agentPath, content: '', reasoning, createdAt: Date.now() },
       ],
     })),
 

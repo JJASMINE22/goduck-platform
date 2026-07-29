@@ -47,6 +47,7 @@ export function AgentEditorPage(): ReactNode {
   const description = useAgentEditorStore((s) => s.description)
   const modelId = useAgentEditorStore((s) => s.modelId)
   const errors = useAgentEditorStore((s) => s.validationErrors)
+  const configDirty = useAgentEditorStore((s) => s.configDirty)
   const initNew = useAgentEditorStore((s) => s.initNew)
   const loadFromAgent = useAgentEditorStore((s) => s.loadFromAgent)
   const setName = useAgentEditorStore((s) => s.setName)
@@ -68,8 +69,10 @@ export function AgentEditorPage(): ReactNode {
   }, [isCreate, id, agentQ.data, agentIdInStore, loadFromAgent])
 
   // —— 实时校验（防抖 600ms）：nodes → AgentConfig → /validate ——
+  // 仅在「配置树已被改动」后触发：顶层名称/描述/模型改动不算配置改动，不打校验请求；
+  // 未填 system_prompt 的空草稿不会即时弹红条，校验作为保存门禁而非持续报警（准则 F6）。
   useEffect(() => {
-    if (!nodes) return
+    if (!nodes || !configDirty) return
     let config: AgentConfig
     try {
       config = toConfigTree(nodes)
@@ -87,7 +90,7 @@ export function AgentEditorPage(): ReactNode {
         })
     }, 600)
     return () => clearTimeout(t)
-  }, [nodes, validate, setValidation])
+  }, [nodes, configDirty, validate, setValidation])
 
   const handleSave = () => {
     if (!nodes) return
@@ -210,8 +213,10 @@ export function AgentEditorPage(): ReactNode {
         </Flex>
       </Card>
 
-      {/* 校验状态 */}
-      {errors.length ? (
+      {/* 校验状态：未改动配置前保持中性提示，避免空表单红/绿闪烁；改动后才红/绿 */}
+      {!configDirty ? (
+        <Alert type="info" showIcon message="编辑配置后将自动校验（配置树改动后触发）" />
+      ) : errors.length ? (
         <Alert
           type="error"
           showIcon

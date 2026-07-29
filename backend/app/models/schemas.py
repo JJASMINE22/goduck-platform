@@ -168,6 +168,28 @@ class McpServerOut(BaseModel):
     created_at: datetime
 
 
+class McpServerStatus(BaseModel):
+    """单个 MCP server 的连接状态（health_check 聚合结构的成员）。"""
+
+    name: str
+    healthy: bool
+    tool_count: int
+    kind: str
+    error: Optional[str] = None
+
+
+class McpStatusResponse(BaseModel):
+    """GET /mcp/status 返回：顶部聚合指标 + 每 server 明细。
+
+    healthy = 无任何 server 处于 down（空集为 True）。
+    """
+
+    healthy: bool
+    server_count: int
+    tool_count: int
+    servers: list[McpServerStatus]
+
+
 class SkillInfo(BaseModel):
     name: str
     file_count: int
@@ -208,6 +230,9 @@ class ModelCreate(BaseModel):
     api_key: str = Field(..., min_length=1)
     base_url: Optional[str] = Field(default=None, description="OpenAI 兼容端点；原生 OpenAI 留空")
     supports_vision: bool = Field(default=False)
+    temperature: Optional[float] = Field(default=None, ge=0, le=2, description="可空=None 用默认")
+    top_p: Optional[float] = Field(default=None, ge=0, le=1, description="可空=None 用默认")
+    enable_thinking: bool = Field(default=False, description="思考模式开关（仅思考模型有效）")
     enabled: bool = True
 
 
@@ -220,6 +245,9 @@ class ModelUpdate(BaseModel):
     )
     base_url: Optional[str] = None
     supports_vision: bool = False
+    temperature: Optional[float] = Field(default=None, ge=0, le=2)
+    top_p: Optional[float] = Field(default=None, ge=0, le=1)
+    enable_thinking: bool = False
     enabled: bool = True
 
 
@@ -230,6 +258,9 @@ class ModelOut(BaseModel):
     model_type: str
     base_url: Optional[str] = None
     supports_vision: bool
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    enable_thinking: bool
     enabled: bool
     created_at: datetime
     updated_at: datetime

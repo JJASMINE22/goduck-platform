@@ -32,10 +32,43 @@ def _content_str(content: Any) -> str:
     return str(content)
 
 
+def _extract_reasoning(msg) -> Optional[str]:
+    """Best-effort 思考内容提取（reasoning / thinking）。
+
+    覆盖常见约定：
+    - OpenAI 兼容思考模型（GLM / DeepSeek / Qwen）：reasoning 落在
+      additional_kwargs['reasoning_content']。
+    - Anthropic 式 'thinking' 内容块。
+    无思考内容时返回 None。
+    """
+    ak = getattr(msg, "additional_kwargs", None) or {}
+    rc = ak.get("reasoning_content")
+    if isinstance(rc, str) and rc.strip():
+        return rc
+    content = getattr(msg, "content", None)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in ("thinking", "reasoning"):
+                text = block.get("thinking") or block.get("text") or block.get("reasoning")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+        if parts:
+            return "\n\n".join(parts)
+    return None
+
+
 def _msg_to_events(msg, agent_path: str) -> list[SSEEvent]:
     """Map a single langgraph message to zero or more SSE events."""
     events: list[SSEEvent] = []
     if isinstance(msg, AIMessage):
+        reasoning = _extract_reasoning(msg)
+        if reasoning:
+            events.append(SSEEvent(
+                type="thinking",
+                agent_path=agent_path,
+                payload={"content": reasoning},
+            ))
         if msg.tool_calls:
             for tc in msg.tool_calls:
                 events.append(SSEEvent(

@@ -26,6 +26,10 @@ interface AgentEditorState {
   description: string
   modelId: UUID | null
   dirty: boolean
+  /** 用户是否改动过「配置树」（节点增删 / 字段编辑 / 换父级）。
+   *  顶层名称/描述/模型绑定不算配置改动，不置位。
+   *  用作实时校验的触发门控：未改动配置时不打 /validate，避免空表单红条闪烁与无谓请求（准则 F6）。 */
+  configDirty: boolean
 
   // —— 校验/预览（来自 POST /agents/validate，不落库）——
   validationErrors: string[]
@@ -59,6 +63,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
     description: '',
     modelId: null,
     dirty: false,
+    configDirty: false,
     validationErrors: [],
     mermaidPreview: null,
 
@@ -72,6 +77,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
         s.modelId = null
         s.selectedNodeId = root.id
         s.dirty = false
+        s.configDirty = false
         s.validationErrors = []
         s.mermaidPreview = null
       }),
@@ -87,6 +93,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
         s.modelId = detail.model_id ?? null
         s.selectedNodeId = root?.id ?? null
         s.dirty = false
+        s.configDirty = false
         s.validationErrors = []
         s.mermaidPreview = detail.active_mermaid ?? null
       }),
@@ -106,6 +113,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
         s.nodes.push(node)
         s.selectedNodeId = node.id
         s.dirty = true
+        s.configDirty = true
       })
       return node.id
     },
@@ -124,6 +132,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
           s.selectedNodeId = rootId
         }
         s.dirty = true
+        s.configDirty = true
       })
     },
 
@@ -133,6 +142,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
         if (n) {
           Object.assign(n, patch)
           s.dirty = true
+          s.configDirty = true
         }
       }),
 
@@ -150,6 +160,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
           n.parentId = newParentId
           n.order = order
           s.dirty = true
+          s.configDirty = true
         }
       })
     },
@@ -187,6 +198,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
         s.modelId = null
         s.selectedNodeId = null
         s.dirty = false
+        s.configDirty = false
         s.validationErrors = []
         s.mermaidPreview = null
       }),

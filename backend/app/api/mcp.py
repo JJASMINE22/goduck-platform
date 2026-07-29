@@ -7,12 +7,12 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.deps import get_appstate
 from app.models import db as dbmod
-from app.models.schemas import McpServerCreate, McpServerOut, ToolInfo
+from app.models.schemas import McpServerCreate, McpServerOut, McpStatusResponse, ToolInfo
 
 router = APIRouter(prefix="/mcp", tags=["MCP运维"])
 
 
-@router.get("/status")
+@router.get("/status", response_model=McpStatusResponse)
 async def mcp_status(request: Request):
     st = get_appstate(request)
     return await st.mcp_lifecycle.health_check()

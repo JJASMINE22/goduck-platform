@@ -3,7 +3,7 @@
    [Demo] 入场动画 / 头像 / 角色色带 / 流式打字指示 / 工具执行脉动。 */
 import { Collapse, Flex, Tag, Typography } from 'antd'
 import { type ReactNode } from 'react'
-import { Bot, Check, User, Wrench } from 'lucide-react'
+import { Bot, Brain, Check, User, Wrench } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage, ToolCallEntry } from '@/store/chatStore'
 import { Markdown } from '@/components/markdown/Markdown'
@@ -48,6 +48,7 @@ export function MessageList(): ReactNode {
       ) : null}
       {timeline.map((item) => {
         if (item.kind === 'tool') return <ToolCallCard key={`t-${item.data.id}`} entry={item.data} />
+        if (item.data.reasoning) return <ThinkingBlock key={item.data.id} msg={item.data} />
         return <MessageBubble key={item.data.id} msg={item.data} />
       })}
       {streaming ? <TypingIndicator /> : null}
@@ -85,6 +86,36 @@ function MessageBubble({ msg }: { msg: ChatMessage }): ReactNode {
         )}
       </div>
       {isUser ? <Avatar role="user" color={color} /> : null}
+    </Flex>
+  )
+}
+
+/** 思考过程（可折叠，默认收起）—— thinking 事件落为独立消息条，紧邻其后是正式回复 */
+function ThinkingBlock({ msg }: { msg: ChatMessage }): ReactNode {
+  const { label, color } = agentMeta(msg.agentPath)
+  return (
+    <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
+      <Avatar role="agent" color={color} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Collapse
+          size="small"
+          ghost
+          items={[
+            {
+              key: msg.id,
+              label: (
+                <Flex align="center" gap={6}>
+                  <Brain size={13} style={{ color }} />
+                  <span style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}>
+                    {label} · 思考过程
+                  </span>
+                </Flex>
+              ),
+              children: <div className="chat-thinking__body">{msg.reasoning}</div>,
+            },
+          ]}
+        />
+      </div>
     </Flex>
   )
 }

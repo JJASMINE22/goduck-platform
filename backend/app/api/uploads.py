@@ -5,10 +5,11 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 
 from app.core.schema_utils import AgentConfig
 from app.deps import get_appstate
@@ -105,6 +106,19 @@ async def upload_file(
         page_count=upload["page_count"],
         preview=upload["preview"],
     )
+
+
+@router.get("/{session_id}/uploads/{upload_id}/preview")
+async def preview_upload(session_id: uuid.UUID, upload_id: uuid.UUID, request: Request):
+    """返回附件字节供前端缩略图渲染（仅 image；docx 无二进制预览 → 404，前端回退图标）。"""
+    st = _appstate(request)
+    upload = await dbmod.get_upload(st.pool, upload_id)
+    if upload is None or upload["session_id"] != session_id:
+        raise HTTPException(status_code=404, detail="upload not found")
+    if upload["kind"] != "image":
+        raise HTTPException(status_code=404, detail="非图片附件无二进制预览")
+    raw = await asyncio.to_thread(st.minio_storage.get_object, upload["bucket_key"])
+    return Response(content=raw, media_type=upload["mime"])
 
 
 @router.get("/{session_id}/attachment-capability", response_model=AttachmentCapability)

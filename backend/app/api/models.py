@@ -52,6 +52,9 @@ async def create_model(body: ModelCreate, request: Request):
             api_key=body.api_key,
             base_url=body.base_url,
             supports_vision=body.supports_vision,
+            temperature=body.temperature,
+            top_p=body.top_p,
+            enable_thinking=body.enable_thinking,
             enabled=body.enabled,
         )
     except FileExistsError:
@@ -75,6 +78,9 @@ async def update_model(model_id: uuid.UUID, body: ModelUpdate, request: Request)
             api_key=body.api_key,
             base_url=body.base_url,
             supports_vision=body.supports_vision,
+            temperature=body.temperature,
+            top_p=body.top_p,
+            enable_thinking=body.enable_thinking,
             enabled=body.enabled,
         )
     except KeyError:

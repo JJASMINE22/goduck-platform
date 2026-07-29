@@ -9,6 +9,7 @@ export type SSEEventType =
   | 'token'
   | 'tool_call'
   | 'tool_result'
+  | 'thinking'
   | 'agent_message'
   | 'interrupt'
   | 'done'
@@ -28,6 +29,10 @@ export interface SSEEvent<P = Record<string, unknown>> {
 export interface AgentMessagePayload {
   content: string
   name?: string | null
+}
+
+export interface ThinkingPayload {
+  content: string
 }
 
 export interface ToolCallPayload {

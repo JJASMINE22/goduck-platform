@@ -14,6 +14,7 @@ EventType = Literal[
     "token",
     "tool_call",
     "tool_result",
+    "thinking",
     "agent_message",
     "interrupt",
     "done",

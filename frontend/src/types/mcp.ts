@@ -27,17 +27,21 @@ export interface ToolInfo {
   description: string
 }
 
-/** GET /mcp/status 返回（mcp_lifecycle.health_check，形状宽松） */
+/** 单个 MCP server 的连接状态（/mcp/status 的 servers 成员） */
+export interface McpServerStatus {
+  name: string
+  healthy: boolean
+  tool_count: number
+  kind: string
+  error?: string | null
+}
+
+/** GET /mcp/status 返回（mcp_lifecycle.health_check 聚合结构） */
 export interface McpStatus {
-  healthy?: boolean
-  server_count?: number
-  tool_count?: number
-  servers?: Array<{
-    name: string
-    healthy: boolean
-    tool_count: number
-  }>
-  [k: string]: unknown
+  healthy: boolean
+  server_count: number
+  tool_count: number
+  servers: McpServerStatus[]
 }
 
 /** 技能（schemas.py SkillInfo） */

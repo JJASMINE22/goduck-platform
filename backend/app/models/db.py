@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS model (
     api_key         TEXT NOT NULL,
     base_url        TEXT,
     supports_vision BOOLEAN NOT NULL DEFAULT false,
+    temperature     REAL,                                  -- 可空：None=用 provider 默认
+    top_p           REAL,                                  -- 可空：None=用 provider 默认
+    enable_thinking BOOLEAN NOT NULL DEFAULT false,        -- 思考模式开关（GLM: 注入 thinking={"type":"enabled"}）
     enabled         BOOLEAN NOT NULL DEFAULT true,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -118,6 +121,9 @@ CREATE INDEX IF NOT EXISTS idx_upload_user ON upload(user_id);
 _MIGRATIONS = [
     "ALTER TABLE agent ADD COLUMN IF NOT EXISTS model_id UUID",
     "ALTER TABLE agent_config_history ADD COLUMN IF NOT EXISTS model_id UUID",
+    "ALTER TABLE model ADD COLUMN IF NOT EXISTS temperature REAL",
+    "ALTER TABLE model ADD COLUMN IF NOT EXISTS top_p REAL",
+    "ALTER TABLE model ADD COLUMN IF NOT EXISTS enable_thinking BOOLEAN NOT NULL DEFAULT false",
 ]
 
 
@@ -495,8 +501,8 @@ async def list_uploads_by_session(pool: AsyncConnectionPool, session_id: uuid.UU
 # ============================ Model ops ==================================
 
 _MODEL_COLUMNS = (
-    "id, name, provider_kind, model_type, base_url, supports_vision, enabled, "
-    "created_at, updated_at"
+    "id, name, provider_kind, model_type, base_url, supports_vision, "
+    "temperature, top_p, enable_thinking, enabled, created_at, updated_at"
 )
 
 
@@ -508,6 +514,9 @@ async def insert_model(
     api_key: str,
     base_url: Optional[str],
     supports_vision: bool,
+    temperature: Optional[float],
+    top_p: Optional[float],
+    enable_thinking: bool,
     enabled: bool,
 ) -> dict:
     """Insert a registered model definition. api_key stored at the row level."""
@@ -515,9 +524,11 @@ async def insert_model(
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"INSERT INTO model (name, provider_kind, model_type, api_key, base_url, "
-                f"supports_vision, enabled) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                f"supports_vision, temperature, top_p, enable_thinking, enabled) "
+                f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 f"RETURNING {_MODEL_COLUMNS}",
-                (name, provider_kind, model_type, api_key, base_url, supports_vision, enabled),
+                (name, provider_kind, model_type, api_key, base_url, supports_vision,
+                 temperature, top_p, enable_thinking, enabled),
             )
             row = await cur.fetchone()
     return row
@@ -533,6 +544,9 @@ async def update_model(
     api_key: Optional[str],
     base_url: Optional[str],
     supports_vision: bool,
+    temperature: Optional[float],
+    top_p: Optional[float],
+    enable_thinking: bool,
     enabled: bool,
 ) -> Optional[dict]:
     """Update a registered model's mutable fields. model_id (PK) never changes.
@@ -543,13 +557,15 @@ async def update_model(
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             params = (
-                [name, provider_kind, model_type, base_url, supports_vision, enabled]
+                [name, provider_kind, model_type, base_url, supports_vision,
+                 temperature, top_p, enable_thinking, enabled]
                 + ([api_key] if api_key is not None else [])
                 + [model_id]
             )
             await cur.execute(
                 f"UPDATE model SET name = %s, provider_kind = %s, model_type = %s, "
-                f"base_url = %s, supports_vision = %s, enabled = %s, {set_api_key}, "
+                f"base_url = %s, supports_vision = %s, temperature = %s, top_p = %s, "
+                f"enable_thinking = %s, enabled = %s, {set_api_key}, "
                 f"updated_at = now() WHERE id = %s RETURNING {_MODEL_COLUMNS}",
                 tuple(params),
             )

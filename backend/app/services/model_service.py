@@ -27,7 +27,16 @@ class ModelInUseError(Exception):
         super().__init__(f"{len(referencing)} 个智能体仍在使用该模型: {names}")
 
 
-def _ensure_buildable(provider_kind: str, model_type: str, api_key: str, base_url: Optional[str]) -> None:
+def _ensure_buildable(
+    provider_kind: str,
+    model_type: str,
+    api_key: str,
+    base_url: Optional[str],
+    *,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    enable_thinking: bool = False,
+) -> None:
     """Construction-level pre-check (no network). Guarantees persisted ⟹ instantiable.
 
     Catches param-class errors only (bad provider_kind, missing model_type, ...).
@@ -36,7 +45,10 @@ def _ensure_buildable(provider_kind: str, model_type: str, api_key: str, base_ur
     time rather than silently dropped by ModelStore.refresh().
     """
     try:
-        build_chat_model(provider_kind, model_type, api_key, base_url)
+        build_chat_model(
+            provider_kind, model_type, api_key, base_url,
+            temperature=temperature, top_p=top_p, enable_thinking=enable_thinking,
+        )
     except ValueError:
         raise
     except Exception as e:  # noqa: BLE001
@@ -55,9 +67,15 @@ class ModelService:
         api_key: str,
         base_url: Optional[str],
         supports_vision: bool,
+        temperature: Optional[float],
+        top_p: Optional[float],
+        enable_thinking: bool,
         enabled: bool,
     ) -> dict:
-        _ensure_buildable(provider_kind, model_type, api_key, base_url)
+        _ensure_buildable(
+            provider_kind, model_type, api_key, base_url,
+            temperature=temperature, top_p=top_p, enable_thinking=enable_thinking,
+        )
         if await dbmod.get_model_by_name(self.pool, name) is not None:
             raise FileExistsError(name)  # router maps -> 409
         return await dbmod.insert_model(
@@ -68,6 +86,9 @@ class ModelService:
             api_key=api_key,
             base_url=base_url,
             supports_vision=supports_vision,
+            temperature=temperature,
+            top_p=top_p,
+            enable_thinking=enable_thinking,
             enabled=enabled,
         )
 
@@ -81,6 +102,9 @@ class ModelService:
         api_key: Optional[str],
         base_url: Optional[str],
         supports_vision: bool,
+        temperature: Optional[float],
+        top_p: Optional[float],
+        enable_thinking: bool,
         enabled: bool,
     ) -> dict:
         existing = await dbmod.get_model_public(self.pool, model_id)
@@ -88,7 +112,10 @@ class ModelService:
             raise KeyError(f"model {model_id} not found")  # router maps -> 404
         # key rotation path: re-validate constructability with the new key
         if api_key is not None:
-            _ensure_buildable(provider_kind, model_type, api_key, base_url)
+            _ensure_buildable(
+                provider_kind, model_type, api_key, base_url,
+                temperature=temperature, top_p=top_p, enable_thinking=enable_thinking,
+            )
         # name collision against a DIFFERENT model
         if name != existing["name"]:
             clash = await dbmod.get_model_by_name(self.pool, name)
@@ -103,6 +130,9 @@ class ModelService:
             api_key=api_key,
             base_url=base_url,
             supports_vision=supports_vision,
+            temperature=temperature,
+            top_p=top_p,
+            enable_thinking=enable_thinking,
             enabled=enabled,
         )
 

@@ -13,6 +13,7 @@ import type {
   Decision,
   InterruptPayload,
   SSEEvent,
+  ThinkingPayload,
   ToolCallPayload,
   ToolResultPayload,
   UUID,
@@ -48,6 +49,11 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       case 'agent_message': {
         const p = e.payload as unknown as AgentMessagePayload
         store.pushAgent(e.agent_path ?? 'root', p.content)
+        break
+      }
+      case 'thinking': {
+        const p = e.payload as unknown as ThinkingPayload
+        store.pushReasoning(e.agent_path ?? 'root', p.content)
         break
       }
       case 'tool_call': {
@@ -105,6 +111,9 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
         kb_collections: opts?.kbCollections,
         kb_versions: opts?.kbVersions,
       }
+      // 已把附件 id 捕获进 body，立即清空 composer（与文本输入 setValue('') 同步，
+      // 不再等到 done 事件，避免"发送后附件还贴在输入框"的观感）
+      store.clearAttachments()
 
       abortRef.current?.abort()
       const controller = new AbortController()

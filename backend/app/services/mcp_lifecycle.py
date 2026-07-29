@@ -153,9 +153,28 @@ class MCPLifecycle:
             await self.startup()
         return self._tools
 
-    async def health_check(self) -> dict[str, dict]:
-        """Return per-server connection status + tool counts."""
-        return dict(self._per_server_status)
+    async def health_check(self) -> dict:
+        """聚合 + 每 server 连接状态，供 /mcp/status 顶部指标与表格状态列。
+
+        返回 {healthy, server_count, tool_count, servers:[{name,healthy,tool_count,kind,error}]}。
+        healthy = 无任何 server 处于 down（空集为 True，即未配置 server 视为无异常）。
+        """
+        servers = [
+            {
+                "name": name,
+                "healthy": s["status"] == "ok",
+                "tool_count": s["tool_count"],
+                "kind": s["kind"],
+                "error": s["error"],
+            }
+            for name, s in self._per_server_status.items()
+        ]
+        return {
+            "healthy": all(s["healthy"] for s in servers),
+            "server_count": len(servers),
+            "tool_count": sum(s["tool_count"] for s in servers),
+            "servers": servers,
+        }
 
     async def shutdown(self) -> None:
         self._tools = []

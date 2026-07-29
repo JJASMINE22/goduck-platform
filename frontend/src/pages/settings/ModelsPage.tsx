@@ -1,7 +1,7 @@
 /* 模型管理页（DESIGN §10.6）—— 注册表的增删改查 + 保存前 /test 连通探测。
    api_key 列表永不返回；编辑时留空 = 保留旧 key（轮换密钥）。
    删除被引用模型 → 后端 409 含 referencing_agents，弹窗提示先解绑。 */
-import { App as AntApp, Button, Drawer, Flex, Form, Input, Popconfirm, Select, Switch, Table, Tag, Tooltip } from 'antd'
+import { App as AntApp, Button, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Select, Switch, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState, type ReactNode } from 'react'
 import { Eye, Pencil, Plug, Plus, Trash2 } from 'lucide-react'
@@ -26,6 +26,9 @@ interface FormValues {
   api_key?: string
   base_url?: string
   supports_vision: boolean
+  temperature?: number | null
+  top_p?: number | null
+  enable_thinking: boolean
   enabled: boolean
 }
 
@@ -36,6 +39,9 @@ const emptyForm: FormValues = {
   api_key: '',
   base_url: '',
   supports_vision: false,
+  temperature: null,
+  top_p: null,
+  enable_thinking: false,
   enabled: true,
 }
 
@@ -67,6 +73,9 @@ export function ModelsPage(): ReactNode {
       api_key: '', // 安全：不回填，留空保留
       base_url: record.base_url ?? '',
       supports_vision: record.supports_vision,
+      temperature: record.temperature ?? null,
+      top_p: record.top_p ?? null,
+      enable_thinking: record.enable_thinking,
       enabled: record.enabled,
     })
     setOpen(true)
@@ -159,6 +168,13 @@ export function ModelsPage(): ReactNode {
       key: 'supports_vision',
       width: 80,
       render: (v: boolean) => (v ? <Tag color="blue">支持</Tag> : <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>),
+    },
+    {
+      title: '思考',
+      dataIndex: 'enable_thinking',
+      key: 'enable_thinking',
+      width: 70,
+      render: (v: boolean) => (v ? <Tag color="purple">开</Tag> : <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>),
     },
     {
       title: '状态',
@@ -282,6 +298,22 @@ export function ModelsPage(): ReactNode {
           </Form.Item>
           <Form.Item name="base_url" label="Base URL" extra="OpenAI 兼容端点；原生 OpenAI 留空">
             <Input placeholder="如 https://api.deepseek.com/v1" />
+          </Form.Item>
+          <Flex gap={24}>
+            <Form.Item name="temperature" label="温度（temperature）" extra="0–2，留空=默认">
+              <InputNumber min={0} max={2} step={0.1} style={{ width: 150 }} placeholder="默认" />
+            </Form.Item>
+            <Form.Item name="top_p" label="Top P" extra="0–1，留空=默认">
+              <InputNumber min={0} max={1} step={0.05} style={{ width: 150 }} placeholder="默认" />
+            </Form.Item>
+          </Flex>
+          <Form.Item
+            name="enable_thinking"
+            label="思考模式"
+            valuePropName="checked"
+            extra="开启后注入 thinking 请求体（仅思考模型有效）"
+          >
+            <Switch />
           </Form.Item>
           <Flex gap={24}>
             <Form.Item name="supports_vision" label="多模态（视觉）" valuePropName="checked">

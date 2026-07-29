@@ -1,0 +1,53 @@
+"""langchain-openai 1.x 故意不提取 DeepSeek/GLM 的 `reasoning_content`。
+
+其源码多处注明："reasoning_content, reasoning_details are **not** extracted. Use a
+provider-specific subclass."（只认 OpenAI 原生 `reasoning`）。GLM 的思考内容走
+`reasoning_content`（DeepSeek 约定），会被直接丢弃，导致 stream_adapter._extract_reasoning
+无内容可取。
+
+本模块在响应转换入口（_convert_dict_to_message 非流式 / _convert_delta_to_message_chunk
+流式）注入提取：把原始响应里的 reasoning_content 写入 AIMessage(Chunk).additional_kwargs。
+流式聚合时 additional_kwargs 的字符串值会被 langchain 拼接，故逐 chunk 注入可正确累加。
+
+幂等：进程内只 patch 一次。
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Mapping
+
+logger = logging.getLogger(__name__)
+
+_applied = False
+
+
+def apply_once() -> None:
+    """Patch langchain_openai 的两个消息转换函数以透传 reasoning_content。幂等。"""
+    global _applied
+    if _applied:
+        return
+    try:
+        from langchain_core.messages import AIMessage, AIMessageChunk
+        import langchain_openai.chat_models.base as base
+
+        _orig_to_message = base._convert_dict_to_message
+        _orig_to_chunk = base._convert_delta_to_message_chunk
+
+        def _inject_reasoning(message: Any, _dict: Mapping[str, Any]) -> Any:
+            rc = _dict.get("reasoning_content") if isinstance(_dict, Mapping) else None
+            if isinstance(rc, str) and rc and isinstance(message, (AIMessage, AIMessageChunk)):
+                message.additional_kwargs["reasoning_content"] = rc
+            return message
+
+        def _patched_to_message(_dict: Mapping[str, Any]):
+            return _inject_reasoning(_orig_to_message(_dict), _dict)
+
+        def _patched_to_chunk(_dict: Mapping[str, Any], default_class: type):
+            return _inject_reasoning(_orig_to_chunk(_dict, default_class), _dict)
+
+        base._convert_dict_to_message = _patched_to_message
+        base._convert_delta_to_message_chunk = _patched_to_chunk
+        _applied = True
+        logger.info("reasoning_content extraction patch applied (langchain_openai)")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("应用 reasoning_content 透传 patch 失败: %s", e)

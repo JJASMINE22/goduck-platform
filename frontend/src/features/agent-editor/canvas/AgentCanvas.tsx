@@ -125,16 +125,18 @@ function CanvasInner(): ReactNode {
         onConnect={onConnect}
         deleteKeyCode={null}
         fitView
+        fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={18} size={1} color="rgba(255,255,255,0.08)" />
+        <Background gap={18} size={1} color="rgba(60, 64, 67, 0.12)" />
         <Controls showInteractive={false} />
         <MiniMap
           pannable
           zoomable
           nodeStrokeWidth={2}
-          maskColor="rgba(0,0,0,0.6)"
-          style={{ background: '#0b1020' }}
+          nodeColor="var(--color-role-agent-sub)"
+          maskColor="rgba(60, 64, 67, 0.08)"
+          style={{ background: 'var(--color-bg-elevated)' }}
         />
       </ReactFlow>
     </div>

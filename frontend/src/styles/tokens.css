@@ -1,35 +1,37 @@
-/* goduck-platform 设计 token —— 全局 CSS 变量，与 AntD theme.ts 同步。
-   暗色终端风（默认暗色，配色集中管理）。组件引用 var(--xxx)。 */
+/* goduck-platform 设计 token —— 全局 CSS 变量，与 AntD theme.ts 同源。
+   浅色（Google AI Studio 风）：近白底 + Google 蓝 + 大圆角软阴影 + 低对比细分割。
+   组件引用 var(--xxx)。配色集中管理，换肤只改本文件 + theme.ts。 */
 
 :root {
-  /* —— 中性色（暗色终端）—— */
-  --color-bg: #0b1020;
-  --color-bg-elevated: #131a2b;
-  --color-surface: #131a2b;
-  --color-border: #243049;
-  --color-border-soft: #1b2436;
+  /* —— 中性色（浅色）——
+     页面底用极浅灰 #f8f9fa，卡片/抬升面用纯白，形成 AI Studio 式的"白卡浮于浅底"分层。 */
+  --color-bg: #f8f9fa;
+  --color-bg-elevated: #ffffff;
+  --color-surface: #ffffff;
+  --color-border: #dadce0;
+  --color-border-soft: #e8eaed;
 
-  /* —— 文本 —— */
-  --color-text: #e6edf6;
-  --color-text-secondary: #9aa7bd;
-  --color-text-tertiary: #64748b;
+  /* —— 文本（Google 灰阶）—— */
+  --color-text: #1f1f1f;
+  --color-text-secondary: #5f6368;
+  --color-text-tertiary: #80868b;
 
-  /* —— 主色（电光青）—— */
-  --color-primary: #22d3ee;
-  --color-primary-hover: #67e8f9;
-  --color-primary-bg: rgba(34, 211, 238, 0.12);
+  /* —— 主色（Google 蓝）—— */
+  --color-primary: #1a73e8;
+  --color-primary-hover: #1765cc;
+  --color-primary-bg: rgba(26, 115, 232, 0.08);
 
-  /* —— 语义色 —— */
-  --color-success: #34d399;
-  --color-warning: #fbbf24;
-  --color-danger: #fb7185;
-  --color-info: #22d3ee;
+  /* —— 语义色（Material）—— */
+  --color-success: #1e8e3e;
+  --color-warning: #f9ab00;
+  --color-danger: #d93025;
+  --color-info: #1a73e8;
 
-  /* —— 聊天消息角色色（主/子代理/工具/用户 区分）—— */
-  --color-role-user: #22d3ee;
-  --color-role-agent-main: #a78bfa;
-  --color-role-agent-sub: #2dd4bf;
-  --color-role-tool: #94a3b8;
+  /* —— 聊天消息角色色（主/子代理/工具/用户 区分，浅底友好）—— */
+  --color-role-user: #1a73e8;
+  --color-role-agent-main: #8430ce;
+  --color-role-agent-sub: #00897b;
+  --color-role-tool: #5f6368;
 
   /* —— 间距 —— */
   --space-1: 4px;
@@ -39,18 +41,18 @@
   --space-5: 24px;
   --space-6: 32px;
 
-  /* —— 圆角（更锐利）—— */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+  /* —— 圆角（更圆润，AI Studio 式）—— */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
 
-  /* —— 字体（JetBrains Mono 提到首位）—— */
+  /* —— 字体（Roboto 友好的系统无衬线；等宽仅用于代码）—— */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
     Courier, monospace;
 
-  /* —— 阴影（暗色更深）—— */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.55);
+  /* —— 阴影（浅色下的柔和高程，Material 式双层）—— */
+  --shadow-sm: 0 1px 2px rgba(60, 64, 67, 0.1), 0 1px 3px rgba(60, 64, 67, 0.06);
+  --shadow-md: 0 1px 3px rgba(60, 64, 67, 0.12), 0 4px 12px rgba(60, 64, 67, 0.1);
 }
