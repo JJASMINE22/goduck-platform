@@ -1,7 +1,7 @@
 /* 聊天页面（DESIGN §10.3）—— SSE 消息流 + HITL 决策 + 附件（能力驱动）+ 历史灌入。
    状态机由 useStreamChat 驱动（准则 F3）。进入会话 reset + 灌历史；auto-scroll 跟随新消息。 */
 import { Alert, App as AntApp, Button, Flex, Space, Tag, Typography } from 'antd'
-import { type ReactNode, useEffect, useRef } from 'react'
+import { type ReactNode, useCallback, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
@@ -29,7 +29,20 @@ export function ChatPage(): ReactNode {
   const msgCount = useChatStore((s) => s.messages.length)
   const toolCount = useChatStore((s) => s.toolCalls.length)
 
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  // 是否"贴底"：用户没主动上滑翻历史。发消息/新条目出现时强制置 true。
+  const pinnedRef = useRef(true)
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [])
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96
+  }, [])
 
   // 会话切换：重置 store
   useEffect(() => {
@@ -48,13 +61,27 @@ export function ChatPage(): ReactNode {
         content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
         createdAt: i,
       }))
+      // 跳过纯工具调用的空 AI 消息：实时流仅在 msg.content 非空时才产出气泡，
+      // 历史灌入需保持一致，避免出现空气泡。
+      .filter((m) => m.role === 'user' || m.content.trim() !== '')
     loadHistory(mapped)
   }, [historyQ.data, loadHistory])
 
-  // auto-scroll
+  // 新消息 / 工具卡出现：用户发起动作 → 强制贴底滚到最新
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [msgCount, toolCount])
+    pinnedRef.current = true
+    scrollToBottom()
+  }, [msgCount, toolCount, scrollToBottom])
+
+  // token 流式增长：仅在贴底时跟随（用户上滑翻历史则不打扰）。
+  // 订阅 store 而非派生状态，避免逐 token 重渲染整页；rAF 等布局就绪再滚动。
+  useEffect(() => {
+    const unsub = useChatStore.subscribe(() => {
+      if (!pinnedRef.current) return
+      requestAnimationFrame(scrollToBottom)
+    })
+    return unsub
+  }, [scrollToBottom])
 
   if (sessionQ.isLoading) return <PageLoading tip="加载会话…" />
   if (!sessionQ.data) {
@@ -110,10 +137,13 @@ export function ChatPage(): ReactNode {
       ) : null}
 
       {/* 消息流 */}
-      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', paddingInline: 4 }}>
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        style={{ flex: 1, minHeight: 0, overflow: 'auto', paddingInline: 4 }}
+      >
         <MessageList />
         <HitlCard resume={stream.resume} />
-        <div ref={bottomRef} />
       </div>
 
       {/* 输入 */}

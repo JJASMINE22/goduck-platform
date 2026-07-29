@@ -35,6 +35,16 @@ export interface ThinkingPayload {
   content: string
 }
 
+/** token 事件 payload：逐 token 增量（后端 stream_adapter._token_events） */
+export interface TokenPayload {
+  /** 流式消息聚合键（同一条 LLM 消息的 content/reasoning 共享此 id） */
+  id: string
+  /** 本次增量文本片段 */
+  delta: string
+  /** true=思考过程增量；false=正文增量 */
+  reasoning?: boolean
+}
+
 export interface ToolCallPayload {
   name: string
   args: Record<string, unknown>

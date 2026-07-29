@@ -15,6 +15,8 @@ export interface ChatMessage {
   agentPath: string // "root" | "root/researcher"
   content: string
   reasoning?: string // 思考过程（仅 agent 思考消息，可折叠展示）
+  /** true=仍在 token 流式接收中（按纯文本渲染，避免逐 token 重解析 Markdown） */
+  streaming?: boolean
   createdAt: number
 }
 
@@ -47,6 +49,10 @@ export interface ChatState {
   pushUser: (content: string) => void
   pushAgent: (agentPath: string, content: string) => void
   pushReasoning: (agentPath: string, reasoning: string) => void
+  /** 追加一个 token 增量：按 (tokenId, reasoning) 聚合到既有流式消息或新建一条 */
+  appendToken: (agentPath: string, tokenId: string, delta: string, reasoning: boolean) => void
+  /** 结束流式：把所有 streaming 消息固化为可 Markdown 渲染 */
+  finalizeStreaming: () => void
   upsertToolCall: (tc: Omit<ToolCallEntry, 'hasResult' | 'createdAt'>) => void
   setToolResult: (toolCallId: string, result: string) => void
   setStatus: (s: ChatStreamStatus) => void
@@ -97,6 +103,34 @@ export const useChatStore = create<ChatState>((set) => ({
         ...s.messages,
         { id: genId(), role: 'agent', agentPath, content: '', reasoning, createdAt: Date.now() },
       ],
+    })),
+
+  appendToken: (agentPath, tokenId, delta, reasoning) =>
+    set((s) => {
+      // content 与 reasoning 即便共享同一条 LLM 消息 id，也作为独立条目聚合
+      const msgId = reasoning ? `${tokenId}#r` : `${tokenId}#c`
+      const idx = s.messages.findIndex((m) => m.id === msgId)
+      if (idx >= 0) {
+        const next = [...s.messages]
+        const m = next[idx]
+        next[idx] = reasoning
+          ? { ...m, reasoning: (m.reasoning ?? '') + delta }
+          : { ...m, content: (m.content ?? '') + delta }
+        return { messages: next }
+      }
+      // 新流式条目：先把上一条仍在流式的固化（转 Markdown 渲染）
+      const finalized = s.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m))
+      const created: ChatMessage = reasoning
+        ? { id: msgId, role: 'agent', agentPath, content: '', reasoning: delta, streaming: true, createdAt: Date.now() }
+        : { id: msgId, role: 'agent', agentPath, content: delta, streaming: true, createdAt: Date.now() }
+      return { messages: [...finalized, created] }
+    }),
+
+  finalizeStreaming: () =>
+    set((s) => ({
+      messages: s.messages.some((m) => m.streaming)
+        ? s.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m))
+        : s.messages,
     })),
 
   upsertToolCall: (tc) =>

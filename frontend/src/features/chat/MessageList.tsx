@@ -81,6 +81,9 @@ function MessageBubble({ msg }: { msg: ChatMessage }): ReactNode {
         ) : null}
         {isUser ? (
           <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+        ) : msg.streaming ? (
+          // 流式接收中：纯文本渲染，避免逐 token 重解析 Markdown（性能 + 防半截语法抖动）
+          <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
         ) : (
           <Markdown>{msg.content}</Markdown>
         )}

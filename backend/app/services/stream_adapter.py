@@ -1,8 +1,17 @@
 """astream -> SSE event conversion (plan §5.2).
 
-Adapts the validated _stream_response pattern from
-scripts/pg_compiled_subagent_test_run.py — replaces print() with SSE event
-yields. All "message -> SSE event" mapping centralized here (plan §11.3.2).
+Streams in two modes simultaneously to deliver **token-level** output:
+- stream_mode="messages" : LLM token deltas  -> `token` events (live content + reasoning)
+- stream_mode="updates"  : node-complete msgs -> `tool_call` / `tool_result`
+  (and `thinking` / `agent_message` as an atomic fallback for any AI message
+  that was NOT streamed token-by-token).
+
+Dedup: every AI message delivered as tokens is recorded in `streamed_ids`
+(matched by message id). In updates mode its content/reasoning are skipped to
+avoid double-emitting, while its tool_calls still emit (those are not streamed).
+This keeps the existing event contract intact — `tool_call` / `tool_result` /
+`interrupt` / `done` / `error` behave exactly as before; `token` is the only
+new event, and content/reasoning now flow through it when the provider streams.
 
 HITL origins (declarative interrupt_on vs interrupt() primitive) are unified at
 the SSE layer: both surface as `event: interrupt`, front-end does not
@@ -32,14 +41,29 @@ def _content_str(content: Any) -> str:
     return str(content)
 
 
-def _extract_reasoning(msg) -> Optional[str]:
-    """Best-effort 思考内容提取（reasoning / thinking）。
+def _text_delta(content: Any) -> str:
+    """Plain-text fragment carried by a streaming chunk's content."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
 
-    覆盖常见约定：
-    - OpenAI 兼容思考模型（GLM / DeepSeek / Qwen）：reasoning 落在
-      additional_kwargs['reasoning_content']。
-    - Anthropic 式 'thinking' 内容块。
-    无思考内容时返回 None。
+
+def _extract_reasoning(msg) -> Optional[str]:
+    """Best-effort 思考内容提取（reasoning / thinking）for a COMPLETE message.
+
+    Used only for the atomic fallback path (messages that weren't streamed).
+    Covers GLM/DeepSeek/Qwen (additional_kwargs['reasoning_content']) and
+    Anthropic-style 'thinking' content blocks. None when no reasoning present.
     """
     ak = getattr(msg, "additional_kwargs", None) or {}
     rc = ak.get("reasoning_content")
@@ -58,17 +82,49 @@ def _extract_reasoning(msg) -> Optional[str]:
     return None
 
 
-def _msg_to_events(msg, agent_path: str) -> list[SSEEvent]:
-    """Map a single langgraph message to zero or more SSE events."""
+def _reasoning_delta(chunk) -> str:
+    """Reasoning fragment from a streaming chunk (GLM/DeepSeek reasoning_content).
+
+    langchain merges additional_kwargs string values via `+=` across chunks
+    (see thinking_patch.py), so per-chunk deltas accumulate correctly.
+    """
+    ak = getattr(chunk, "additional_kwargs", None) or {}
+    rc = ak.get("reasoning_content")
+    return rc if isinstance(rc, str) and rc else ""
+
+
+def _stream_id(chunk, meta: dict, agent_path: str) -> str:
+    """Stable id for one streaming message (front-end aggregation + dedup key).
+
+    Prefers the provider message id (consistent across chunks and the final
+    node-complete message); falls back to a (path, node, step) synthetic key.
+    """
+    cid = getattr(chunk, "id", None)
+    if cid:
+        return str(cid)
+    return f"{agent_path}:{meta.get('langgraph_node', '?')}:{meta.get('langgraph_step', '?')}"
+
+
+def _msg_to_events(msg, agent_path: str, streamed_ids: set[str]) -> list[SSEEvent]:
+    """Map a node-complete message to zero or more SSE events.
+
+    tool_call / tool_result always emit (not token-streamed). thinking /
+    agent_message emit ONLY when the message was NOT delivered as tokens
+    (recorded in streamed_ids) — otherwise they were already sent as `token`
+    events and re-emitting would duplicate them.
+    """
     events: list[SSEEvent] = []
     if isinstance(msg, AIMessage):
+        already_streamed = bool(msg.id) and str(msg.id) in streamed_ids
+
         reasoning = _extract_reasoning(msg)
-        if reasoning:
+        if reasoning and not already_streamed:
             events.append(SSEEvent(
                 type="thinking",
                 agent_path=agent_path,
                 payload={"content": reasoning},
             ))
+
         if msg.tool_calls:
             for tc in msg.tool_calls:
                 events.append(SSEEvent(
@@ -81,7 +137,8 @@ def _msg_to_events(msg, agent_path: str) -> list[SSEEvent]:
                         "caller": msg.name or agent_path,
                     },
                 ))
-        if msg.content:
+
+        if msg.content and not already_streamed:
             events.append(SSEEvent(
                 type="agent_message",
                 agent_path=agent_path,
@@ -170,23 +227,32 @@ class StreamAdapter:
         payload,
         config: dict,
     ) -> AsyncIterator[SSEEvent]:
+        # ids of AI messages already delivered token-by-token (dedup vs updates)
+        streamed_ids: set[str] = set()
         try:
             while True:
-                async for namespace, update in agent.astream(
+                # Dual mode + subgraphs => each item is (namespace, mode, data):
+                #   mode=="messages": data = (message_chunk, metadata)
+                #   mode=="updates" : data = {node_name: state_update}
+                async for namespace, mode, data in agent.astream(
                     payload,
                     config=config,
-                    stream_mode="updates",
+                    stream_mode=["messages", "updates"],
                     subgraphs=True,
                 ):
                     agent_path = _path(namespace)
-                    if not isinstance(update, dict):
-                        continue
-                    for _node_name, state in update.items():
-                        if not isinstance(state, dict):
+                    if mode == "messages":
+                        for ev in self._token_events(data, agent_path, streamed_ids):
+                            yield ev
+                    elif mode == "updates":
+                        if not isinstance(data, dict):
                             continue
-                        for msg in state.get("messages", []):
-                            for ev in _msg_to_events(msg, agent_path):
-                                yield ev
+                        for _node_name, state in data.items():
+                            if not isinstance(state, dict):
+                                continue
+                            for msg in state.get("messages", []):
+                                for ev in _msg_to_events(msg, agent_path, streamed_ids):
+                                    yield ev
 
                 state = await agent.aget_state(config)
 
@@ -210,3 +276,41 @@ class StreamAdapter:
             # Error floor: always close the stream with an error event so the
             # front-end can determine final state (plan §11.2.3).
             yield SSEEvent(type="error", payload={"message": str(e)})
+
+    @staticmethod
+    def _token_events(
+        data,
+        agent_path: str,
+        streamed_ids: set[str],
+    ) -> list[SSEEvent]:
+        """Turn one messages-mode chunk (chunk, metadata) into token events.
+
+        Only AI text/reasoning streams token-by-token; ToolMessage / HumanMessage
+        chunks are ignored here (tool results are emitted atomically via updates).
+        """
+        if not isinstance(data, tuple) or len(data) != 2:
+            return []
+        chunk, meta = data
+        if not isinstance(chunk, AIMessage):
+            return []
+        meta = meta if isinstance(meta, dict) else {}
+        sid = _stream_id(chunk, meta, agent_path)
+
+        events: list[SSEEvent] = []
+        reasoning = _reasoning_delta(chunk)
+        if reasoning:
+            streamed_ids.add(sid)
+            events.append(SSEEvent(
+                type="token",
+                agent_path=agent_path,
+                payload={"id": sid, "delta": reasoning, "reasoning": True},
+            ))
+        content = _text_delta(getattr(chunk, "content", None))
+        if content:
+            streamed_ids.add(sid)
+            events.append(SSEEvent(
+                type="token",
+                agent_path=agent_path,
+                payload={"id": sid, "delta": content, "reasoning": False},
+            ))
+        return events
