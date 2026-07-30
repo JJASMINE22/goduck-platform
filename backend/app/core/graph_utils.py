@@ -130,6 +130,12 @@ def create_agent_recursive(
     agentic_middleware = (
         [*tool_middleware, rubric_middleware] if rubric_middleware else tool_middleware
     )
+    if agent_config.get("dynamic_dispatch", False):
+        # lazy import: langchain_quickjs 仅在启用动态子代理时需要,
+        # 避免对不使用 dynamic_dispatch 的部署强制该依赖 (需 `pip install -e ".[quickjs]"`)。
+        from langchain_quickjs import CodeInterpreterMiddleware
+
+        agentic_middleware = [*agentic_middleware, CodeInterpreterMiddleware()]
 
     create_kwargs = dict(
         model=ctx.model,

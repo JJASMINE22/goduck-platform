@@ -3,7 +3,7 @@
    AgentConfig 树：新建 POST /agents；更新 PUT（二次确认级联删会话）。后端契约不变。
    实时校验走 POST /agents/validate（防抖 600ms，准则 F6）。 */
 import { Alert, App as AntApp, Button, Card, Drawer, Empty, Flex, Input, List, Select, Space, Tag, Typography } from 'antd'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, History, RotateCcw, Save } from 'lucide-react'
 import {
@@ -56,6 +56,29 @@ export function AgentEditorPage(): ReactNode {
   const setValidation = useAgentEditorStore((s) => s.setValidation)
 
   const [histOpen, setHistOpen] = useState(false)
+  const [detailWidth, setDetailWidth] = useState(360)
+  const draggingRef = useRef(false)
+
+  const onResizerMouseDown = (e: ReactMouseEvent) => {
+    e.preventDefault()
+    draggingRef.current = true
+    const startX = e.clientX
+    const startWidth = detailWidth
+    const onMove = (ev: MouseEvent) => {
+      if (!draggingRef.current) return
+      // 向左拖(clientX 减小) → 详情面板变宽
+      setDetailWidth(Math.min(720, Math.max(280, startWidth + (startX - ev.clientX))))
+    }
+    const onUp = () => {
+      draggingRef.current = false
+      document.body.style.cursor = ''
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.body.style.cursor = 'col-resize'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
 
   // —— 初始化草稿（保留跨页面切换的进度）——
   // 新建：仅当无草稿、或草稿属于已存在智能体时才初始化，避免切到设置页再回来被清空
@@ -233,11 +256,14 @@ export function AgentEditorPage(): ReactNode {
         <Alert type="success" showIcon message="配置校验通过" />
       )}
 
-      {/* 三栏：模块面板 | 画布 | 详情 */}
+      {/* 三栏：模块面板 | 画布 | 详情（详情宽度可拖拽） */}
       <Flex gap={12} style={{ flex: 1, minHeight: 0 }}>
         <NodePalette />
         <AgentCanvas />
-        <NodeDetailPanel />
+        <div className="panel-resizer" onMouseDown={onResizerMouseDown} />
+        <div style={{ width: detailWidth, flexShrink: 0 }}>
+          <NodeDetailPanel />
+        </div>
       </Flex>
 
       {/* 配置历史 / 还原 */}

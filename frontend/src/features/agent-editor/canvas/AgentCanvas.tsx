@@ -22,6 +22,7 @@ import {
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { useAgentEditorStore } from '@/store/agentEditorStore'
 import { findTemplate } from '../templates'
+import { descendantIds } from '../graphModel'
 import { layoutTree, type XYPos } from './layout'
 import { AgentNodeCard } from './AgentNode'
 
@@ -53,12 +54,19 @@ function CanvasInner(): ReactNode {
     if (!nodes) return { rfNodes: [] as Node[], rfEdges: [] as Edge[] }
     const laid = layoutTree(nodes)
     const resolved = { ...laid, ...positions }
+    // 收集所有 dynamic_dispatch 子树(含自身)的节点 id: 这些节点显示动态光环
+    const dynamicIds = new Set<string>()
+    for (const n of nodes) {
+      if (n.dynamic_dispatch) {
+        for (const id of descendantIds(nodes, n.id)) dynamicIds.add(id)
+      }
+    }
     return {
       rfNodes: nodes.map((n) => ({
         id: n.id,
         type: 'agent',
         position: resolved[n.id] ?? { x: 0, y: 0 },
-        data: { node: n, selected: n.id === selectedNodeId },
+        data: { node: n, selected: n.id === selectedNodeId, dynamic: dynamicIds.has(n.id) },
       })),
       rfEdges: nodes
         .filter((n) => n.parentId)

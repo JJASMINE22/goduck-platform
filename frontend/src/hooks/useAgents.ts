@@ -14,8 +14,11 @@ import type {
 } from '@/types'
 import { queryKeys } from './queryKeys'
 
-export function useAgents() {
-  return useQuery({ queryKey: queryKeys.agents, queryFn: agentsApi.list })
+export function useAgents(includeArchived = false) {
+  return useQuery({
+    queryKey: [...queryKeys.agents, { includeArchived }],
+    queryFn: () => agentsApi.list(includeArchived),
+  })
 }
 
 export function useAgent(id: UUID | null | undefined) {
@@ -92,6 +95,17 @@ export function useArchiveAgent() {
     onSuccess: async (agent) => {
       await invalidateAgent(qc, agent.id)
       toastSuccess('智能体已归档')
+    },
+  })
+}
+
+export function usePurgeAgent() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: UUID) => agentsApi.purge(id),
+    onSuccess: async () => {
+      await invalidateAgent(qc)
+      toastSuccess('智能体已彻底删除')
     },
   })
 }

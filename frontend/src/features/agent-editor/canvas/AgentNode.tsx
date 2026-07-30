@@ -9,6 +9,7 @@ import type { AgentGraphNode } from '../graphModel'
 export interface AgentNodeData {
   node: AgentGraphNode
   selected: boolean
+  dynamic?: boolean
   [key: string]: unknown
 }
 export type AgentCanvasNode = Node<AgentNodeData, 'agent'>
@@ -27,7 +28,9 @@ export function AgentNodeCard({ id, data }: NodeProps<AgentCanvasNode>): React.R
 
   return (
     <div
-      className={`agent-node${data.selected ? ' agent-node--selected' : ''}`}
+      className={`agent-node${data.selected ? ' agent-node--selected' : ''}${
+        data.dynamic ? ' agent-node--dynamic' : ''
+      }`}
       style={{ '--node-color': color } as React.CSSProperties}
     >
       <Handle type="target" position={Position.Top} className="agent-handle" />

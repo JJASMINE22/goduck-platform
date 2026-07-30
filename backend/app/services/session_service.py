@@ -40,14 +40,18 @@ class SessionService:
             title=title,
         )
 
-    async def list_by_user(self, user_id: str) -> list[dict]:
-        return await dbmod.list_sessions_by_user(self.pool, user_id)
+    async def list_by_user(self, user_id: str, include_archived: bool = False) -> list[dict]:
+        return await dbmod.list_sessions_by_user(self.pool, user_id, include_archived=include_archived)
 
     async def get(self, session_id: uuid.UUID) -> Optional[dict]:
         return await dbmod.get_session(self.pool, session_id)
 
     async def archive(self, session_id: uuid.UUID) -> Optional[dict]:
         return await dbmod.archive_session(self.pool, session_id)
+
+    async def delete(self, session_id: uuid.UUID) -> bool:
+        """Hard delete (physical) + checkpoint cleanup. Irreversible."""
+        return await dbmod.delete_session(self.pool, session_id)
 
     async def touch(self, session_id: uuid.UUID) -> None:
         await dbmod.touch_session(self.pool, session_id)

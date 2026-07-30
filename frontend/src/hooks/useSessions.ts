@@ -6,10 +6,10 @@ import { toastSuccess } from '@/lib/antdStatic'
 import type { SessionCreate, UUID } from '@/types'
 import { queryKeys } from './queryKeys'
 
-export function useSessions(userId: string | null | undefined) {
+export function useSessions(userId: string | null | undefined, includeArchived = false) {
   return useQuery({
-    queryKey: queryKeys.sessions(userId ?? ''),
-    queryFn: () => sessionsApi.listByUser(userId!),
+    queryKey: [...queryKeys.sessions(userId ?? ''), { includeArchived }],
+    queryFn: () => sessionsApi.listByUser(userId!, includeArchived),
     enabled: !!userId,
   })
 }
@@ -46,6 +46,17 @@ export function useArchiveSession() {
     onSuccess: (session) => {
       qc.invalidateQueries({ queryKey: queryKeys.sessions(session.user_id) })
       toastSuccess('会话已归档')
+    },
+  })
+}
+
+export function usePurgeSession() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: UUID) => sessionsApi.purge(id),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['sessions'] })
+      toastSuccess('会话已彻底删除')
     },
   })
 }

@@ -267,12 +267,13 @@ async def restore_agent(
     )
 
 
-async def list_agents(pool: AsyncConnectionPool) -> list[dict]:
+async def list_agents(pool: AsyncConnectionPool, include_archived: bool = False) -> list[dict]:
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
+            where = "" if include_archived else " WHERE status != 'archived'"
             await cur.execute(
-                "SELECT id, name, description, model_id, status, creator, updater, created_at, updated_at "
-                "FROM agent ORDER BY updated_at DESC"
+                f"SELECT id, name, description, model_id, status, creator, updater, created_at, updated_at "
+                f"FROM agent{where} ORDER BY updated_at DESC"
             )
             rows = await cur.fetchall()
     return rows
@@ -325,6 +326,35 @@ async def archive_agent(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> Optio
     return row
 
 
+async def delete_agent(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> bool:
+    """Physically delete an agent + cascade (sessions, config history, checkpoints).
+
+    Irreversible (vs archive_agent). Returns True if the agent row was deleted,
+    False if not found.
+    """
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT thread_id FROM session WHERE agent_id = %s", (agent_id,)
+                )
+                thread_ids = [r[0] for r in await cur.fetchall()]
+                await cur.execute("DELETE FROM session WHERE agent_id = %s", (agent_id,))
+                await cur.execute(
+                    "DELETE FROM agent_config_history WHERE agent_id = %s", (agent_id,)
+                )
+                if thread_ids:
+                    for tbl in _CHECKPOINT_TABLES:
+                        await cur.execute(
+                            f"DELETE FROM {tbl} WHERE thread_id = ANY(%s)", (thread_ids,)
+                        )
+                await cur.execute("DELETE FROM agent WHERE id = %s", (agent_id,))
+                deleted = cur.rowcount > 0
+    if deleted:
+        logger.info("agent %s hard-deleted; purged %d sessions", agent_id, len(thread_ids))
+    return deleted
+
+
 async def list_history(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> list[dict]:
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -358,14 +388,17 @@ async def create_session(
     return row
 
 
-async def list_sessions_by_user(pool: AsyncConnectionPool, user_id: str) -> list[dict]:
+async def list_sessions_by_user(
+    pool: AsyncConnectionPool, user_id: str, include_archived: bool = False
+) -> list[dict]:
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
+            extra = "" if include_archived else " AND s.status != 'archived'"
             await cur.execute(
-                "SELECT s.id, s.agent_id, s.user_id, s.thread_id, s.title, s.status, "
-                "s.created_at, s.updated_at, a.name AS agent_name "
-                "FROM session s JOIN agent a ON a.id = s.agent_id "
-                "WHERE s.user_id = %s ORDER BY s.updated_at DESC",
+                f"SELECT s.id, s.agent_id, s.user_id, s.thread_id, s.title, s.status, "
+                f"s.created_at, s.updated_at, a.name AS agent_name "
+                f"FROM session s JOIN agent a ON a.id = s.agent_id "
+                f"WHERE s.user_id = %s{extra} ORDER BY s.updated_at DESC",
                 (user_id,),
             )
             rows = await cur.fetchall()
@@ -394,6 +427,28 @@ async def archive_session(pool: AsyncConnectionPool, session_id: uuid.UUID) -> O
             )
             row = await cur.fetchone()
     return row
+
+
+async def delete_session(pool: AsyncConnectionPool, session_id: uuid.UUID) -> bool:
+    """Physically delete a session + its LangGraph checkpoint state. Irreversible."""
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT thread_id FROM session WHERE id = %s", (session_id,)
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    return False
+                thread_id = row[0]
+                await cur.execute("DELETE FROM session WHERE id = %s", (session_id,))
+                if thread_id:
+                    for tbl in _CHECKPOINT_TABLES:
+                        await cur.execute(
+                            f"DELETE FROM {tbl} WHERE thread_id = %s", (thread_id,)
+                        )
+    logger.info("session %s hard-deleted", session_id)
+    return True
 
 
 async def touch_session(pool: AsyncConnectionPool, session_id: uuid.UUID) -> None:

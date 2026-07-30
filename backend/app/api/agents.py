@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from app.deps import get_appstate
@@ -82,8 +82,8 @@ async def update_agent(agent_id: uuid.UUID, body: AgentUpdate, request: Request)
 
 
 @router.get("", response_model=list[AgentOut])
-async def list_agents(request: Request):
-    return await _service(request).list_agents()
+async def list_agents(request: Request, include_archived: bool = Query(False)):
+    return await _service(request).list_agents(include_archived=include_archived)
 
 
 @router.get("/{agent_id}", response_model=AgentDetail)
@@ -143,6 +143,22 @@ async def archive_agent(agent_id: uuid.UUID, request: Request):
         raise HTTPException(status_code=404, detail="agent not found")
     st.agent_registry.invalidate(agent["id"])
     return agent
+
+
+@router.post("/{agent_id}/purge", status_code=204)
+async def purge_agent(agent_id: uuid.UUID, request: Request):
+    """Hard delete an agent (physical) + cascade sessions/checkpoints/history.
+
+    Irreversible. Two-step delete: archive first (recoverable), purge to remove
+    for good. Registry cache is invalidated.
+    """
+    st = get_appstate(request)
+    svc = _service(request)
+    deleted = await svc.delete(agent_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="agent not found")
+    st.agent_registry.invalidate(agent_id)
+    return None
 
 
 @router.get("/{agent_id}/export.yaml", response_class=PlainTextResponse)

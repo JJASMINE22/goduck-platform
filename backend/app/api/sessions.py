@@ -30,8 +30,10 @@ async def create_session(body: SessionCreate, request: Request):
 
 
 @router.get("", response_model=list[SessionOut])
-async def list_sessions(user_id: str = Query(...), request: Request = None):
-    return await _service(request).list_by_user(user_id)
+async def list_sessions(
+    user_id: str = Query(...), include_archived: bool = Query(False), request: Request = None
+):
+    return await _service(request).list_by_user(user_id, include_archived=include_archived)
 
 
 @router.get("/{session_id}", response_model=SessionOut)
@@ -48,6 +50,15 @@ async def archive_session(session_id: uuid.UUID, request: Request):
     if s is None:
         raise HTTPException(status_code=404, detail="session not found")
     return s
+
+
+@router.post("/{session_id}/purge", status_code=204)
+async def purge_session(session_id: uuid.UUID, request: Request):
+    """Hard delete a session (physical) + checkpoint cleanup. Irreversible."""
+    deleted = await _service(request).delete(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="session not found")
+    return None
 
 
 @router.get("/{session_id}/history", response_model=list[MessageOut])

@@ -54,6 +54,7 @@ export function toConfigTree(nodes: AgentGraphNode[]): AgentConfig {
       interrupt_on: node.interrupt_on,
       is_main: node.is_main,
       is_dicted: node.is_dicted,
+      dynamic_dispatch: node.dynamic_dispatch,
       rubric: node.rubric,
       allow_attachments: node.allow_attachments,
     }

@@ -2,7 +2,7 @@
    按 selectedNodeId 从 store 取节点，updateFields(id, patch) 就地合并。
    字段集与旧 NodeEditor 一致：主代理独有 memory/workspace；子代理独有 name/description/is_dicted。
    最终合法性以后端 /validate 为准（准则 F6）。 */
-import { Button, Flex, Input, Select, Switch, Tag, Typography } from 'antd'
+import { Button, Flex, Input, Select, Switch, Tag, TreeSelect, Typography } from 'antd'
 import { useState, type ReactNode } from 'react'
 import { MousePointerClick, Trash2 } from 'lucide-react'
 import { useAgentEditorStore } from '@/store/agentEditorStore'
@@ -42,8 +42,29 @@ export function NodeDetailPanel(): ReactNode {
   }
 
   const isMain = !!node.is_main
+  const hasChildren = nodes?.some((n) => n.parentId === node.id) ?? false
   const color = isMain ? 'var(--color-role-agent-main)' : 'var(--color-role-agent-sub)'
   const toolOptions = (tools.data ?? []).map((t) => ({ value: t.name, label: t.name }))
+  // 按 server 分组的工具树：{server}__{tool} → server 节点(可全选) + tool 叶子
+  const toolTreeData = (() => {
+    const byServer = new Map<string, string[]>()
+    for (const t of tools.data ?? []) {
+      const idx = t.name.indexOf('__')
+      const server = idx > 0 ? t.name.slice(0, idx) : '其他'
+      const arr = byServer.get(server) ?? []
+      arr.push(t.name)
+      byServer.set(server, arr)
+    }
+    return Array.from(byServer.entries()).map(([server, names]) => ({
+      title: `${server}（${names.length}）`,
+      value: `__group__${server}`,
+      selectable: false,
+      children: names.map((fullName) => {
+        const idx = fullName.indexOf('__')
+        return { title: idx > 0 ? fullName.slice(idx + 2) : fullName, value: fullName }
+      }),
+    }))
+  })()
   const skillOptions = (skills.data ?? []).map((s) => ({ value: `/skills/${s.name}/`, label: s.name }))
   const interruptKeys = Object.entries(node.interrupt_on ?? {})
     .filter(([, v]) => v)
@@ -58,6 +79,7 @@ export function NodeDetailPanel(): ReactNode {
           <span className="node-detail__dot" style={{ background: color }} />
           <Typography.Text strong>{isMain ? '主代理' : '子代理'}</Typography.Text>
           {node.is_dicted ? <Tag color="purple">dicted</Tag> : null}
+          {node.dynamic_dispatch ? <Tag color="gold">dynamic</Tag> : null}
         </Flex>
         {!isMain ? (
           <Button size="small" danger icon={<Trash2 size={13} />} onClick={() => removeNode(node.id)}>
@@ -82,14 +104,18 @@ export function NodeDetailPanel(): ReactNode {
           <Input.TextArea rows={6} value={node.system_prompt} onChange={(e) => patch({ system_prompt: e.target.value })} placeholder="代理的系统提示词" />
         </Field>
 
-        <Field label="工具（tool_names，多选 MCP 工具）">
-          <Select
-            mode="multiple"
+        <Field label="工具（tool_names，按 server 分组）">
+          <TreeSelect
+            treeCheckable
+            showCheckedStrategy={TreeSelect.SHOW_CHILD}
             style={{ width: '100%' }}
-            placeholder="选择命名空间工具（{server}__{tool}）"
+            placeholder="按 server 分组选择工具"
             value={node.tool_names ?? []}
-            onChange={(v) => patch({ tool_names: v })}
-            options={toolOptions}
+            onChange={(v) => patch({ tool_names: (v as string[]) ?? [] })}
+            treeData={toolTreeData}
+            showSearch
+            treeNodeFilterProp="label"
+            allowClear
           />
         </Field>
 
@@ -152,6 +178,23 @@ export function NodeDetailPanel(): ReactNode {
             </Flex>
           </Field>
         )}
+
+        {!node.is_dicted ? (
+          <Field label="动态分发（dynamic_dispatch）">
+            <Flex align="center" gap={8}>
+              <Switch
+                checked={!!node.dynamic_dispatch}
+                disabled={!hasChildren}
+                onChange={(v) => patch({ dynamic_dispatch: v })}
+              />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {hasChildren
+                  ? '启用后用 JS 解释器 task() 动态编排下挂子代理（须为 dicted 叶子）'
+                  : '需先下挂子代理才能启用'}
+              </Typography.Text>
+            </Flex>
+          </Field>
+        ) : null}
 
         <Field label="附件能力（allow_attachments）">
           <Switch checked={!!node.allow_attachments} onChange={(v) => patch({ allow_attachments: v })} />

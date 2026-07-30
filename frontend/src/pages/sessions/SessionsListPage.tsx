@@ -1,11 +1,11 @@
 /* 会话列表页 —— 按 user_id 列出会话（个人工具；user_id 由顶栏统一切换，默认 admin）。
    新建会话需选智能体；点行进入聊天。 */
-import { App as AntApp, Button, Flex, Form, Input, Modal, Select, Table, Tag, Tooltip } from 'antd'
+import { App as AntApp, Button, Flex, Form, Input, Modal, Popconfirm, Segmented, Select, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { MessageSquare, Plus, Trash2 } from 'lucide-react'
-import { useSessions, useCreateSession, useArchiveSession } from '@/hooks/useSessions'
+import { useSessions, useCreateSession, useArchiveSession, usePurgeSession } from '@/hooks/useSessions'
 import { useAgents } from '@/hooks/useAgents'
 import { useCurrentUser } from '@/store/userStore'
 import { PageContainer } from '@/components/layout/PageContainer'
@@ -16,10 +16,12 @@ import type { SessionOut } from '@/types'
 export function SessionsListPage(): ReactNode {
   const navigate = useNavigate()
   const userId = useCurrentUser((s) => s.userId)
-  const sessions = useSessions(userId)
+  const [showArchived, setShowArchived] = useState(false)
+  const sessions = useSessions(userId, showArchived)
   const agents = useAgents()
   const createSession = useCreateSession()
   const archiveSession = useArchiveSession()
+  const purgeSession = usePurgeSession()
   const { modal } = AntApp.useApp()
 
   const [open, setOpen] = useState(false)
@@ -48,6 +50,17 @@ export function SessionsListPage(): ReactNode {
     })
   }
 
+  const handlePurge = (record: SessionOut) => {
+    modal.confirm({
+      title: '彻底删除该会话？',
+      content: '将永久删除会话及其全部对话与 checkpoint，不可恢复。',
+      okType: 'danger',
+      okText: '彻底删除',
+      cancelText: '取消',
+      onOk: () => purgeSession.mutateAsync(record.id),
+    })
+  }
+
   const columns: ColumnsType<SessionOut> = [
     {
       title: '标题',
@@ -69,13 +82,21 @@ export function SessionsListPage(): ReactNode {
       key: 'actions',
       width: 130,
       render: (_, r) => (
-        <Flex gap={4}>
-          <Button type="link" size="small" icon={<MessageSquare size={14} />} onClick={() => navigate(`/sessions/${r.id}`)}>
-            打开
-          </Button>
-          <Tooltip title="归档">
-            <Button type="link" size="small" danger icon={<Trash2 size={14} />} onClick={() => handleArchive(r)} />
-          </Tooltip>
+        <Flex gap={4} onClick={(e) => e.stopPropagation()}>
+          {r.status === 'active' ? (
+            <Button type="link" size="small" icon={<MessageSquare size={14} />} onClick={() => navigate(`/sessions/${r.id}`)}>
+              打开
+            </Button>
+          ) : null}
+          {r.status === 'archived' ? (
+            <Popconfirm title="彻底删除？此操作不可恢复" onConfirm={() => handlePurge(r)} okText="彻底删除" cancelText="取消" okButtonProps={{ danger: true }}>
+              <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
+            </Popconfirm>
+          ) : (
+            <Tooltip title="归档">
+              <Button type="link" size="small" danger icon={<Trash2 size={14} />} onClick={() => handleArchive(r)} />
+            </Tooltip>
+          )}
         </Flex>
       ),
     },
@@ -93,6 +114,15 @@ export function SessionsListPage(): ReactNode {
         </Button>
       }
     >
+      <Segmented
+        value={showArchived ? 'archived' : 'active'}
+        onChange={(v) => setShowArchived(v === 'archived')}
+        options={[
+          { label: '活跃', value: 'active' },
+          { label: '已归档', value: 'archived' },
+        ]}
+        style={{ marginBottom: 12 }}
+      />
       {sessions.isLoading ? (
         <PageLoading />
       ) : sessions.isError ? (
@@ -109,7 +139,12 @@ export function SessionsListPage(): ReactNode {
           dataSource={sessions.data}
           pagination={{ pageSize: 15 }}
           size="middle"
-          onRow={(r) => ({ onClick: () => navigate(`/sessions/${r.id}`), style: { cursor: 'pointer' } })}
+          onRow={(r) => ({
+            onClick: () => {
+              if (r.status === 'active') navigate(`/sessions/${r.id}`)
+            },
+            style: { cursor: r.status === 'active' ? 'pointer' : 'default' },
+          })}
         />
       )}
 

@@ -7,12 +7,16 @@ export const sessionsApi = {
   create: (body: SessionCreate) => post<SessionOut>('/sessions', body),
 
   /** 列出用户会话（含 agent_name） */
-  listByUser: (userId: string) => get<SessionOut[]>('/sessions', { user_id: userId }),
+  listByUser: (userId: string, includeArchived = false) =>
+    get<SessionOut[]>('/sessions', { user_id: userId, include_archived: includeArchived }),
 
   get: (id: UUID) => get<SessionOut>(`/sessions/${id}`),
 
   /** 归档会话 */
   archive: (id: UUID) => del<SessionOut>(`/sessions/${id}`),
+
+  /** 彻底删除（物理删 + 清 checkpoint，不可恢复）→ 204 */
+  purge: (id: UUID) => post<void>(`/sessions/${id}/purge`),
 
   /** checkpointer 历史消息（空数组非错误，plan §11.1） */
   history: (id: UUID) => get<MessageOut[]>(`/sessions/${id}/history`),

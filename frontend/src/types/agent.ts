@@ -27,6 +27,7 @@ export interface AgentConfig {
   interrupt_on?: Record<string, boolean> | null
   is_main?: boolean
   is_dicted?: boolean
+  dynamic_dispatch?: boolean // 启用 CodeInterpreterMiddleware, 用 task() 动态编排下挂子代理
   subagents?: AgentConfig[] | null // ★ 递归
   rubric?: RubricConfig | null
   allow_attachments?: boolean

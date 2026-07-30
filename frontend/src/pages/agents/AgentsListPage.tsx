@@ -1,12 +1,12 @@
 /* 智能体列表页 —— 列出所有智能体（draft/active/archived）。
    新建/编辑跳转编辑器；归档；导出 YAML 下载。 */
-import { App as AntApp, Button, Flex, Popconfirm, Table, Tag, Tooltip } from 'antd'
+import { App as AntApp, Button, Flex, Popconfirm, Segmented, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Download, Pencil, Plus, Trash2 } from 'lucide-react'
 import { agentsApi } from '@/api/agents'
-import { useAgents, useArchiveAgent } from '@/hooks/useAgents'
+import { useAgents, useArchiveAgent, usePurgeAgent } from '@/hooks/useAgents'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
 import { formatRelative, shortId } from '@/lib/format'
@@ -21,8 +21,10 @@ const STATUS_TAG: Record<string, { color: string; text: string }> = {
 
 export function AgentsListPage(): ReactNode {
   const navigate = useNavigate()
-  const { data, isLoading, isError, refetch } = useAgents()
+  const [showArchived, setShowArchived] = useState(false)
+  const { data, isLoading, isError, refetch } = useAgents(showArchived)
   const archiveAgent = useArchiveAgent()
+  const purgeAgent = usePurgeAgent()
   const { modal } = AntApp.useApp()
 
   const handleExport = async (record: AgentOut) => {
@@ -49,6 +51,17 @@ export function AgentsListPage(): ReactNode {
       okText: '归档',
       cancelText: '取消',
       onOk: () => archiveAgent.mutateAsync(record.id),
+    })
+  }
+
+  const handlePurge = (record: AgentOut) => {
+    modal.confirm({
+      title: `彻底删除智能体「${record.name}」？`,
+      content: '将永久删除配置、历史、全部会话与 checkpoint，不可恢复。',
+      okType: 'danger',
+      okText: '彻底删除',
+      cancelText: '取消',
+      onOk: () => purgeAgent.mutateAsync(record.id),
     })
   }
 
@@ -98,11 +111,15 @@ export function AgentsListPage(): ReactNode {
           <Tooltip title="导出 YAML">
             <Button type="link" size="small" icon={<Download size={14} />} onClick={() => handleExport(r)} />
           </Tooltip>
-          {r.status !== 'archived' ? (
+          {r.status === 'archived' ? (
+            <Popconfirm title="彻底删除？此操作不可恢复" onConfirm={() => handlePurge(r)} okText="彻底删除" cancelText="取消" okButtonProps={{ danger: true }}>
+              <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
+            </Popconfirm>
+          ) : (
             <Popconfirm title="归档该智能体？" onConfirm={() => handleArchive(r)} okText="归档" cancelText="取消">
               <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
             </Popconfirm>
-          ) : null}
+          )}
         </Flex>
       ),
     },
@@ -118,6 +135,15 @@ export function AgentsListPage(): ReactNode {
         </Button>
       }
     >
+      <Segmented
+        value={showArchived ? 'archived' : 'active'}
+        onChange={(v) => setShowArchived(v === 'archived')}
+        options={[
+          { label: '活跃', value: 'active' },
+          { label: '已归档', value: 'archived' },
+        ]}
+        style={{ marginBottom: 12 }}
+      />
       {isLoading ? (
         <PageLoading />
       ) : isError ? (

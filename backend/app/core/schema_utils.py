@@ -65,6 +65,13 @@ class AgentConfig(BaseModel):
     is_main: bool = False
     is_dicted: bool = False
     subagents: Optional[List[AgentConfig]] = None
+    dynamic_dispatch: bool = Field(
+        default=False,
+        description="该节点启用 CodeInterpreterMiddleware, 通过 JS 解释器的 task() 动态编排"
+        "其直接子代理 (循环/分支/并行), 而非静态逐个 task 委派。"
+        "约束: 必须下挂子代理; 下挂子代理必须统一为 dicted 叶子 (无 subagents, "
+        "锁死两层拓扑); dicted 叶子支持 responseSchema 结构化输出。",
+    )
     rubric: Optional[RubricConfig] = None
     allow_attachments: bool = Field(
         default=False,
@@ -127,6 +134,26 @@ class AgentConfig(BaseModel):
             raise ValueError(
                 f"子代理 '{self.name}' 为 dicted 模式, 不允许嵌套 subagents"
             )
+
+        if self.is_dicted and self.dynamic_dispatch:
+            raise ValueError(
+                f"子代理 '{self.name}' 为 dicted (叶子) 模式, 不能启用 dynamic_dispatch"
+            )
+
+        if self.dynamic_dispatch:
+            label = "主代理" if self.is_main else f"子代理 '{self.name}'"
+            if not self.subagents:
+                raise ValueError(
+                    f"{label} 启用了 dynamic_dispatch, 但未下挂任何 subagents"
+                    " (动态编排必须有可调度的下游)"
+                )
+            for sa in self.subagents:
+                if not sa.is_dicted:
+                    raise ValueError(
+                        f"{label} 启用了 dynamic_dispatch, 下挂子代理 '{sa.name}' 必须为 "
+                        "dicted (叶子) 模式, 但当前为 compiled"
+                        " (动态子代理下游统一 dicted 叶子: 锁死两层拓扑 + 支持 responseSchema)"
+                    )
 
         return self
 

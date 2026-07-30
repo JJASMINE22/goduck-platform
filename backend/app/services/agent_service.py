@@ -90,14 +90,18 @@ class AgentService:
         """
         return await dbmod.get_history_snapshot(self.pool, agent_id, history_id)
 
-    async def list_agents(self) -> list[dict]:
-        return await dbmod.list_agents(self.pool)
+    async def list_agents(self, include_archived: bool = False) -> list[dict]:
+        return await dbmod.list_agents(self.pool, include_archived=include_archived)
 
     async def get(self, agent_id: uuid.UUID) -> Optional[dict]:
         return await dbmod.get_agent(self.pool, agent_id)
 
     async def archive(self, agent_id: uuid.UUID) -> Optional[dict]:
         return await dbmod.archive_agent(self.pool, agent_id)
+
+    async def delete(self, agent_id: uuid.UUID) -> bool:
+        """Hard delete (physical) + cascade sessions/checkpoints/history. Irreversible."""
+        return await dbmod.delete_agent(self.pool, agent_id)
 
     async def list_history(self, agent_id: uuid.UUID) -> list[dict]:
         return await dbmod.list_history(self.pool, agent_id)

@@ -23,7 +23,7 @@ export const agentsApi = {
   /** 更新（级联删会话+清 checkpoint）→ invalidate+rebuild registry */
   update: (id: UUID, body: AgentUpdate) => put<AgentDetail>(`/agents/${id}`, body),
 
-  list: () => get<AgentOut[]>('/agents'),
+  list: (includeArchived = false) => get<AgentOut[]>('/agents', { include_archived: includeArchived }),
 
   /** 详情 + 当前 active mermaid（悬浮预览） */
   get: (id: UUID) => get<AgentDetail>(`/agents/${id}`),
@@ -42,4 +42,7 @@ export const agentsApi = {
 
   /** 归档（status=archived） */
   archive: (id: UUID) => del<AgentOut>(`/agents/${id}`),
+
+  /** 彻底删除（物理删 + 级联 session/checkpoint/history，不可恢复）→ 204 */
+  purge: (id: UUID) => post<void>(`/agents/${id}/purge`),
 }
