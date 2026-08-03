@@ -167,6 +167,9 @@ export function NodeDetailPanel(): ReactNode {
                 placeholder="相对 LOCAL_ROOT 的单一目录名（如 workspace）"
               />
             </Field>
+            <Field label="附件能力（allow_attachments）">
+              <Switch checked={!!node.allow_attachments} onChange={(v) => patch({ allow_attachments: v })} />
+            </Field>
           </>
         ) : (
           <Field label="dicted 模式（仅子代理）">
@@ -195,10 +198,6 @@ export function NodeDetailPanel(): ReactNode {
             </Flex>
           </Field>
         ) : null}
-
-        <Field label="附件能力（allow_attachments）">
-          <Switch checked={!!node.allow_attachments} onChange={(v) => patch({ allow_attachments: v })} />
-        </Field>
 
         <RubricEditor value={node.rubric} onChange={(v) => patch({ rubric: v })} />
       </Flex>

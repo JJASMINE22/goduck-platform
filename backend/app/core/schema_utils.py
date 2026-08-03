@@ -126,6 +126,8 @@ class AgentConfig(BaseModel):
                 raise ValueError("子代理不能设置 workspace 工作区")
             if self.memory:
                 raise ValueError("子代理不能设置 memory 偏好文件")
+            if self.allow_attachments:
+                raise ValueError("子代理不能设置 allow_attachments 附件能力")
 
         if self.is_main and self.is_dicted:
             raise ValueError("主代理(is_main=True)不能为 dicted 模式")
@@ -167,6 +169,8 @@ class AgentConfig(BaseModel):
                     raise ValueError("子代理不能设置 memory 偏好文件")
                 if sa.workspace:
                     raise ValueError("子代理不能设置 workspace 工作区")
+                if sa.allow_attachments:
+                    raise ValueError("子代理不能设置 allow_attachments 附件能力")
 
         return self
 

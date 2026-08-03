@@ -181,7 +181,7 @@ export function AgentEditorPage(): ReactNode {
   }))
 
   return (
-    <Flex vertical gap={12} style={{ height: '100%', padding: '16px 20px' }}>
+    <Flex vertical gap={12} style={{ height: '100%', padding: '16px 20px', overflow: 'auto' }}>
       <Flex justify="space-between" align="center">
         <Space>
           <Button icon={<ArrowLeft size={14} />} onClick={() => navigate('/agents')}>
@@ -257,7 +257,7 @@ export function AgentEditorPage(): ReactNode {
       )}
 
       {/* 三栏：模块面板 | 画布 | 详情（详情宽度可拖拽） */}
-      <Flex gap={12} style={{ flex: 1, minHeight: 0 }}>
+      <Flex gap={12} style={{ flex: 1, minHeight: 320 }}>
         <NodePalette />
         <AgentCanvas />
         <div className="panel-resizer" onMouseDown={onResizerMouseDown} />

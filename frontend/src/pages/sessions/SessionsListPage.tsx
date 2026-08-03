@@ -18,6 +18,9 @@ export function SessionsListPage(): ReactNode {
   const userId = useCurrentUser((s) => s.userId)
   const [showArchived, setShowArchived] = useState(false)
   const sessions = useSessions(userId, showArchived)
+  const rows = showArchived
+    ? (sessions.data ?? []).filter((s) => s.status === 'archived')
+    : (sessions.data ?? [])
   const agents = useAgents()
   const createSession = useCreateSession()
   const archiveSession = useArchiveSession()
@@ -127,7 +130,7 @@ export function SessionsListPage(): ReactNode {
         <PageLoading />
       ) : sessions.isError ? (
         <ErrorState onRetry={() => sessions.refetch()} />
-      ) : !sessions.data?.length ? (
+      ) : !rows.length ? (
         <EmptyState
           title={`用户「${userId}」暂无会话`}
           description={activeAgents.length ? '点击「新建会话」开始对话' : '请先在「智能体」中创建一个 active 智能体'}
@@ -136,7 +139,7 @@ export function SessionsListPage(): ReactNode {
         <Table<SessionOut>
           rowKey="id"
           columns={columns}
-          dataSource={sessions.data}
+          dataSource={rows}
           pagination={{ pageSize: 15 }}
           size="middle"
           onRow={(r) => ({

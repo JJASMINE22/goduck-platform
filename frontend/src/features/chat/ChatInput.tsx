@@ -4,7 +4,7 @@
     附件图标独立成入口，便于后续扩展"知识库"筛选（popover 化）。 */
 import { Button, Flex, Input, Tooltip, Typography, Upload } from 'antd'
 import { type ReactNode, useState } from 'react'
-import { ChevronDown, ChevronUp, FileText, Plus, Send, Square, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, FileText, Paperclip, Send, Square, X } from 'lucide-react'
 import { useAttachmentCapability, useUploadFile } from '@/hooks/useUploads'
 import { uploadsApi } from '@/api/uploads'
 import { useChatStore } from '@/store/chatStore'
@@ -155,7 +155,7 @@ export function ChatInput({
                   type="text"
                   shape="circle"
                   size="large"
-                  icon={<Plus size={18} />}
+                  icon={<Paperclip size={18} />}
                   loading={upload.isPending}
                   disabled={!idle}
                 />
