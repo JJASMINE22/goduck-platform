@@ -44,3 +44,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    from openai import Client
+    client = Client()
+    print(client.list_models())
+    print(client.list_thinking())
+    print(client.list_thinking_types())

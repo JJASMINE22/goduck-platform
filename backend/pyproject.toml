@@ -27,6 +27,7 @@ dependencies = [
     "minio>=7.2",
     "filetype>=1.2",
     "python-docx>=1.1",
+    "pymupdf>=1.24",
 ]
 
 [project.optional-dependencies]

@@ -26,10 +26,8 @@ system_prompt: |-
   - 调用 MCP 工具读写文件: 将挂载路径转换为宿主机真实路径
 tool_names:
 - UnifiedGateway__get_system_status
-memory:
-- /memories/preferences.md
-- /memories/style.md
-workspace: workspace
+memory: true
+workspace: true
 is_main: true
 subagents:
 - name: researcher

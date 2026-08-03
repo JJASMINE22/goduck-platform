@@ -512,18 +512,28 @@ async def insert_upload(
     size: int,
     page_count: Optional[int],
     preview: Optional[str],
+    upload_id: Optional[uuid.UUID] = None,
 ) -> dict:
-    """Insert an upload metadata row. kind/mime resolved server-side at upload."""
+    """Insert an upload metadata row. kind/mime resolved server-side at upload.
+
+    upload_id: optional explicit PK. The upload layer sets it equal to the MinIO
+    bucket_key so the DB-less wrapper can fetch the object by upload_id alone.
+    """
+    cols = "session_id, user_id, bucket_key, filename, mime, kind, size, page_count, preview"
+    placeholders = "%s, %s, %s, %s, %s, %s, %s, %s, %s"
+    params: list = [session_id, user_id, bucket_key, filename, mime, kind, size, page_count, preview]
+    if upload_id is not None:
+        cols = "id, " + cols
+        placeholders = "%s, " + placeholders
+        params = [upload_id, *params]
+    sql = (
+        f"INSERT INTO upload ({cols}) VALUES ({placeholders}) "
+        "RETURNING id, session_id, user_id, bucket_key, filename, mime, kind, size, "
+        "page_count, preview, created_at"
+    )
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                "INSERT INTO upload (session_id, user_id, bucket_key, filename, mime, kind, "
-                "size, page_count, preview) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                "RETURNING id, session_id, user_id, bucket_key, filename, mime, kind, size, "
-                "page_count, preview, created_at",
-                (session_id, user_id, bucket_key, filename, mime, kind, size, page_count, preview),
-            )
+            await cur.execute(sql, params)
             row = await cur.fetchone()
     return row
 

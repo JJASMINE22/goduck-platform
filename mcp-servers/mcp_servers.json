@@ -1,0 +1,14 @@
+{
+  "_comment": "第三方 MCP 初始加载配置。env 字段中的 ${VAR} 占位符会从 .env 注入。",
+  "servers": {
+    "zai-mcp-server": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@z_ai/mcp-server"],
+      "env": {
+        "Z_AI_API_KEY": "${Z_AI_API_KEY}",
+        "Z_AI_MODE": "${Z_AI_MODE}"
+      }
+    }
+  }
+}

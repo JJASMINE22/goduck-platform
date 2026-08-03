@@ -96,8 +96,8 @@ def _node_lines(node: AgentConfig, is_main: bool, max_items: int = 4) -> List[st
             facts.append("hitl: " + _cap_join(hitl, max_items))
 
     if is_main:
-        mem = "memory ✓" if node.memory else "memory (default)"
-        ws = f"workspace: {node.workspace}" if node.workspace else "workspace (default)"
+        mem = "memory ✓" if node.memory else "memory (off)"
+        ws = "workspace ✓" if node.workspace else "workspace (off)"
         facts.append(f"{mem}  ·  {ws}")
 
     lines.extend(_BULLET + f for f in facts)

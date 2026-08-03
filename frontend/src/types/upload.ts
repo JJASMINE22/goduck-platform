@@ -10,14 +10,14 @@ export interface UploadOut {
   filename: string
   mime: string // 服务端魔数判定结果
   size: number
-  page_count?: number | null // 文档段数（eager 提取），图片为 null
-  preview?: string | null // 文档首段预览，图片为 null
+  page_count?: number | null // 文档段数/页数（eager 提取），图片为 null
+  preview?: string | null // 文档首段/首页预览，图片为 null
 }
 
 /** GET /sessions/{id}/attachment-capability —— 驱动上传组件可见性（准则 F2） */
 export interface AttachmentCapability {
   allow_attachments: boolean
   allow_image: boolean // 取决于 model.supports_vision 或 wrapper 已挂载
-  allow_file: string[] // 当前仅 ["docx"]
+  allow_file: string[] // 当前 ["docx", "pdf"]
   max_size_mb: number
 }

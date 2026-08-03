@@ -137,6 +137,8 @@ def create_agent_recursive(
 
         agentic_middleware = [*agentic_middleware, CodeInterpreterMiddleware()]
 
+    memory_sources = ["/memories/preferences.md"] if memory else None
+
     create_kwargs = dict(
         model=ctx.model,
         tools=agent_tools,
@@ -144,7 +146,7 @@ def create_agent_recursive(
         middleware=agentic_middleware,
         subagents=subagents,
         skills=agent_skills,
-        memory=memory,
+        memory=memory_sources,
         interrupt_on=interrupt_on,
         backend=backend,
         checkpointer=_cp if is_main_agent else True,
@@ -239,6 +241,8 @@ def create_agent_dictionary(
         else tool_middleware
     )
 
+    memory_sources = ["/memories/preferences.md"] if memory else None
+
     create_kwargs = dict(
         model=ctx.model,
         tools=main_agent_tools,
@@ -246,7 +250,7 @@ def create_agent_dictionary(
         middleware=main_middleware,
         subagents=subagents_config,
         skills=main_agent_skills,
-        memory=memory,
+        memory=memory_sources,
         interrupt_on=main_agent_interrupt_on,
         backend=backend,
         checkpointer=_cp,

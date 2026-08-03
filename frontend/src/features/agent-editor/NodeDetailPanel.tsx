@@ -3,7 +3,7 @@
    字段集与旧 NodeEditor 一致：主代理独有 memory/workspace；子代理独有 name/description/is_dicted。
    最终合法性以后端 /validate 为准（准则 F6）。 */
 import { Button, Flex, Input, Select, Switch, Tag, TreeSelect, Typography } from 'antd'
-import { useState, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 import { MousePointerClick, Trash2 } from 'lucide-react'
 import { useAgentEditorStore } from '@/store/agentEditorStore'
 import { useMcpTools } from '@/hooks/useMcp'
@@ -21,14 +21,6 @@ export function NodeDetailPanel(): ReactNode {
 
   const node = nodes?.find((n) => n.id === selectedId) ?? null
 
-  // memory textarea 用本地 draft 保留原始换行（避免过滤空行抹掉刚敲的回车）
-  const [memDraft, setMemDraft] = useState('')
-  const [memPrevId, setMemPrevId] = useState('')
-  if (node && node.id !== memPrevId) {
-    setMemPrevId(node.id)
-    setMemDraft((node.memory ?? []).join('\n'))
-  }
-
   if (!node) {
     return (
       <div className="node-detail node-detail--empty">
@@ -44,7 +36,6 @@ export function NodeDetailPanel(): ReactNode {
   const isMain = !!node.is_main
   const hasChildren = nodes?.some((n) => n.parentId === node.id) ?? false
   const color = isMain ? 'var(--color-role-agent-main)' : 'var(--color-role-agent-sub)'
-  const toolOptions = (tools.data ?? []).map((t) => ({ value: t.name, label: t.name }))
   // 按 server 分组的工具树：{server}__{tool} → server 节点(可全选) + tool 叶子
   const toolTreeData = (() => {
     const byServer = new Map<string, string[]>()
@@ -66,9 +57,15 @@ export function NodeDetailPanel(): ReactNode {
     }))
   })()
   const skillOptions = (skills.data ?? []).map((s) => ({ value: `/skills/${s.name}/`, label: s.name }))
+  // 审批选项收敛到本代理已选工具（只能对挂载的工具设审批），按 server 分组折叠
+  const selectedTools = node.tool_names ?? []
+  const interruptTreeData = toolTreeData
+    .map((g) => ({ ...g, children: (g.children ?? []).filter((c) => selectedTools.includes(c.value)) }))
+    .filter((g) => (g.children ?? []).length > 0)
   const interruptKeys = Object.entries(node.interrupt_on ?? {})
     .filter(([, v]) => v)
     .map(([k]) => k)
+    .filter((k) => selectedTools.includes(k))
 
   const patch = (p: Partial<NodeFields>) => updateFields(node.id, p)
 
@@ -130,42 +127,42 @@ export function NodeDetailPanel(): ReactNode {
           />
         </Field>
 
-        <Field label="工具调用审批（interrupt_on）">
-          <Select
-            mode="multiple"
+        <Field label="工具调用审批（interrupt_on，仅已选工具）">
+          <TreeSelect
+            treeCheckable
+            showCheckedStrategy={TreeSelect.SHOW_CHILD}
             style={{ width: '100%' }}
-            placeholder="选择需要人工审批的工具（声明式 HITL）"
+            placeholder={interruptTreeData.length ? '勾选需要人工审批的工具（按 server 折叠）' : '请先在上方选择工具'}
             value={interruptKeys}
-            onChange={(v) =>
-              patch({ interrupt_on: v.length ? Object.fromEntries(v.map((k) => [k, true])) : null })
-            }
-            options={toolOptions}
+            onChange={(v) => {
+              const arr = (v as string[]) ?? []
+              patch({ interrupt_on: arr.length ? Object.fromEntries(arr.map((k) => [k, true])) : null })
+            }}
+            treeData={interruptTreeData}
+            showSearch
+            treeNodeFilterProp="label"
+            allowClear
+            disabled={!interruptTreeData.length}
           />
         </Field>
 
         {isMain ? (
           <>
-            <Field label="偏好记忆（memory，仅主代理；每行一个，Enter 换行）">
-              <Input.TextArea
-                autoSize={{ minRows: 2, maxRows: 6 }}
-                placeholder={'每行一个，须为 /memories/<名称>.md 形式：\n/memories/preferences.md\n/memories/style.md'}
-                value={memDraft}
-                onChange={(e) => {
-                  setMemDraft(e.target.value)
-                  const arr = e.target.value
-                    .split('\n')
-                    .map((s) => s.trim())
-                    .filter(Boolean)
-                  patch({ memory: arr.length ? arr : null })
-                }}
-              />
+            <Field label="偏好记忆（memory，仅主代理）">
+              <Flex align="center" gap={8}>
+                <Switch checked={!!node.memory} onChange={(v) => patch({ memory: v })} />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  开启后挂载 /memories/（偏好文件由后端固定：preferences.md / style.md）
+                </Typography.Text>
+              </Flex>
             </Field>
-            <Field label="工作区目录（workspace，仅主代理）">
-              <Input
-                value={node.workspace ?? ''}
-                onChange={(e) => patch({ workspace: e.target.value || null })}
-                placeholder="相对 LOCAL_ROOT 的单一目录名（如 workspace）"
-              />
+            <Field label="工作区（workspace，仅主代理）">
+              <Flex align="center" gap={8}>
+                <Switch checked={!!node.workspace} onChange={(v) => patch({ workspace: v })} />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  开启后挂载 /workspace/（路径后端固定为 LOCAL_ROOT/workspace）
+                </Typography.Text>
+              </Flex>
             </Field>
             <Field label="附件能力（allow_attachments）">
               <Switch checked={!!node.allow_attachments} onChange={(v) => patch({ allow_attachments: v })} />

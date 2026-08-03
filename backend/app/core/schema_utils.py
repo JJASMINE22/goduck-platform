@@ -4,7 +4,6 @@ The AgentConfig tree is the single source of truth frozen into agent.config_json
 """
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -48,18 +47,17 @@ class AgentConfig(BaseModel):
     system_prompt: str = Field(..., min_length=1)
     tool_names: List[str] = Field(default_factory=list)
     skills: Optional[List[str]] = Field(default=None)
-    memory: Optional[List[str]] = Field(
-        default=None,
-        description="memory 文件路径列表 (如 ['/memories/preferences.md'])。仅主代理生效; "
-        "非空时挂载 /memories/ 后端路由并启用 MemoryMiddleware; "
-        "为空或 None 时该层不启用 memory (主代理未声明则回落到默认偏好文件)。",
+    memory: bool = Field(
+        default=False,
+        description="是否启用偏好记忆（仅主代理）。True 时挂载 /memories/ 路由并启用 "
+        "MemoryMiddleware；具体偏好文件由系统提示约定（如 /memories/preferences.md）。"
+        "旧配置的非空 list 自动迁移为 True。",
     )
-    workspace: Optional[str] = Field(
-        default=None,
-        description="工作区目录名 (相对 LOCAL_ROOT, 如 'workspace'); 仅主代理生效。"
-        "非空时挂载 /workspace/ 文件系统后端路由; "
-        "为 None 或空字符串时不挂载该路由 (routes 不更新)。"
-        "与 sandbox 解耦, 无沙箱亦可使用。",
+    workspace: bool = Field(
+        default=False,
+        description="是否启用工作区（仅主代理）。True 时挂载 /workspace/ 路由到 "
+        "LOCAL_ROOT/workspace（目录路径由后端固定，前端只开关）。"
+        "旧配置的非空 str 自动迁移为 True。",
     )
     interrupt_on: Optional[Dict[str, bool]] = Field(default=None)
     is_main: bool = False
@@ -88,27 +86,23 @@ class AgentConfig(BaseModel):
                 raise ValueError(f"技能路径格式错误: '{s}', 期望格式 '/skills/<name>/'")
         return v
 
-    @field_validator("memory")
+    @field_validator("memory", "workspace", mode="before")
     @classmethod
-    def validate_memory(cls, v: Optional[List[str]]) -> Optional[List[str]]:
-        if v is None:
-            return v
-        for s in v:
-            if not s.startswith("/memories/") or not s.endswith(".md"):
-                raise ValueError(f"memory 路径格式错误: '{s}', 期望格式 '/memories/<name>.md'")
-        return v
+    def _coerce_legacy_bool(cls, v):
+        """平滑迁移旧配置到 bool：非空 str/list → True，None/空 → False。
 
-    @field_validator("workspace")
-    @classmethod
-    def validate_workspace(cls, v: Optional[str]) -> Optional[str]:
+        DB 中旧 agent 配置可能仍存 memory=['/memories/...'] / workspace='workspace'，
+        此处一律归一为开关语义，无需 DB 迁移；下次保存即落库为 bool。
+        """
         if v is None:
+            return False
+        if isinstance(v, bool):
             return v
-        v = v.strip()
-        if not v:
-            return v
-        if os.sep in v or "/" in v or "\\" in v:
-            raise ValueError(f"workspace 应为相对 LOCAL_ROOT 的单一目录名 (不含路径分隔符), 实际: '{v}'")
-        return v
+        if isinstance(v, str):
+            return v.strip() != ""
+        if isinstance(v, list):
+            return len(v) > 0
+        return bool(v)
 
     @model_validator(mode="after")
     def validate_topology(self) -> AgentConfig:

@@ -80,6 +80,15 @@ COPY app/ ./app/
 COPY agent_confs/ ./agent_confs/
 RUN chown -R app:app /app
 
+# ---- 2b) 数据卷挂载点 /data（workspace/memories/skills 持久化）----------------
+# LOCAL_ROOT=/data（见 docker-compose.yml），三目录均派生自 local_dir。
+# 技能种子在此烘焙：命名卷首次挂载时，Docker 会把镜像内 /data 的内容（含属主）
+# 拷入卷 —— 无需 entrypoint 脚本。之后卷即真相源，用户上传的技能随卷持久，
+# 跨重打镜像不丢失（agent 配置的技能引用始终有效）。
+# 源在 backend/data/skills/（与本地 dev 同一布局，统一镜像与本地目录）。
+COPY data/skills/ /data/skills/
+RUN mkdir -p /data/workspace /data/memories && chown -R app:app /data
+
 # ---- 3) 预热 MCP 包缓存（uvx + npx）-------------------------------------------
 # 关键：只"下载入缓存"，绝不执行 MCP server 本体——stdio server 会阻塞在
 # stdin 等待握手，直接运行会导致构建挂死。故用：

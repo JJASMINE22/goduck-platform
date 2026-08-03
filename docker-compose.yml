@@ -51,6 +51,9 @@ services:
     environment:
       APP_HOST: 0.0.0.0
       APP_PORT: 8000
+      # 本地文件根：workspace/memories/skills 三目录均派生自它（见 app/config.py）。
+      # 挂载命名卷到 /data，使三者持久化、跨重打镜像不丢。
+      LOCAL_ROOT: ${LOCAL_ROOT:-/data}
       # nginx 剥 /api，让 docs/openapi.json 链接正确（本地直连留空）
       ROOT_PATH: ${ROOT_PATH:-/api}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -65,6 +68,8 @@ services:
       MCP_ALLOW_LOOPBACK: "true"
       MAX_INVOKE_RETRIES: ${MAX_INVOKE_RETRIES:-2}
     expose: ["8000"]                       # 仅内部网络可见，不对宿主发布
+    volumes:
+      - goduck_backend_data:/data          # workspace/memories/skills 持久化
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,3 +101,4 @@ services:
 volumes:
   goduck_pgdata:
   goduck_miniodata:
+  goduck_backend_data:

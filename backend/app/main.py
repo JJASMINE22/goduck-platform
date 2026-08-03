@@ -21,6 +21,15 @@ logger = logging.getLogger("goduck")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    # 可观测性：打印本地文件根与挂载点，便于排查 agent write_file 实际落盘位置
+    # （/workspace/ 路由 root_dir = local_dir/<agent.workspace>，见 core_utils._build_backend）
+    logger.info(
+        "local_dir=%s | /workspace/ root=%s | /memories/=%s | /skills/=%s",
+        settings.local_dir,
+        settings.workspace_dir,
+        settings.memories_dir,
+        settings.skills_dir,
+    )
     st = AppState(settings)
     # 1. infra: pool + checkpointer + store + business tables
     await st.startup()

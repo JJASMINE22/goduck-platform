@@ -27,6 +27,12 @@ ENV/
 .coverage
 .coverage.*
 htmlcov/
+mcp-servers/
+
+# ===================== 后端运行时数据（LOCAL_ROOT=data）=====================
+# workspace/memories 运行时生成，不入库；skills 为种子内容，按需 git add。
+/backend/data/workspace/
+/backend/data/memories/
 
 # ===================== Node / 前端 =====================
 node_modules/

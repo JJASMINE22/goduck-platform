@@ -22,8 +22,8 @@ export interface AgentConfig {
   system_prompt: string // 必填
   tool_names?: string[] // MCP 命名空间工具，源 GET /mcp/tools
   skills?: string[] | null // 形如 "/skills/<name>/"
-  memory?: string[] | null // "/memories/<name>.md"，仅主代理
-  workspace?: string | null // 单一目录名，仅主代理
+  memory?: boolean // 偏好记忆开关，仅主代理（路径后端固定）
+  workspace?: boolean // 工作区开关，仅主代理（路径后端固定）
   interrupt_on?: Record<string, boolean> | null
   is_main?: boolean
   is_dicted?: boolean

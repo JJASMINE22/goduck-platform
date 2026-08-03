@@ -86,11 +86,14 @@ export function SessionsListPage(): ReactNode {
       width: 130,
       render: (_, r) => (
         <Flex gap={4} onClick={(e) => e.stopPropagation()}>
-          {r.status === 'active' ? (
-            <Button type="link" size="small" icon={<MessageSquare size={14} />} onClick={() => navigate(`/sessions/${r.id}`)}>
-              打开
-            </Button>
-          ) : null}
+          <Button
+            type="link"
+            size="small"
+            icon={<MessageSquare size={14} />}
+            onClick={() => navigate(`/sessions/${r.id}`)}
+          >
+            {r.status === 'active' ? '打开' : '查看'}
+          </Button>
           {r.status === 'archived' ? (
             <Popconfirm title="彻底删除？此操作不可恢复" onConfirm={() => handlePurge(r)} okText="彻底删除" cancelText="取消" okButtonProps={{ danger: true }}>
               <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
@@ -143,10 +146,8 @@ export function SessionsListPage(): ReactNode {
           pagination={{ pageSize: 15 }}
           size="middle"
           onRow={(r) => ({
-            onClick: () => {
-              if (r.status === 'active') navigate(`/sessions/${r.id}`)
-            },
-            style: { cursor: r.status === 'active' ? 'pointer' : 'default' },
+            onClick: () => navigate(`/sessions/${r.id}`),
+            style: { cursor: 'pointer' },
           })}
         />
       )}

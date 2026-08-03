@@ -19,7 +19,6 @@ from app.deps import SimpleUser, get_appstate
 from app.models import db as dbmod
 from app.models.schemas import ResumeRequest, SendMessageRequest
 from app.services.hitl_resolver import HITLResolver
-from app.services.mime_utils import is_docx
 
 router = APIRouter(prefix="/sessions", tags=["流式对话"])
 
@@ -75,14 +74,14 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
         if not agent_cfg.allow_attachments:
             raise HTTPException(422, "该智能体未启用附件能力")
 
-        # 第 2/3 层：upload_id 有效性 + 归属 + 文件类型
+        # 第 2/3 层：upload_id 有效性 + 归属
+        # 子类型放行由上传层 _ALLOWED_MIME 白名单单一可信源保证（kind=='file' ∈ {docx, pdf}），
+        # 此处不再重复编码子类型规则；解析期类型兜底由 MCP parse_document 处理。
         upload_ids = []
         for a in body.attachments:
             upload = await dbmod.get_upload(st.pool, uuid.UUID(a.upload_id))
             if upload is None or upload["session_id"] != session["id"]:
                 raise HTTPException(403, f"无效附件: {a.upload_id}")
-            if upload["kind"] == "file" and not is_docx(upload["mime"]):
-                raise HTTPException(422, "暂仅支持 docx 文档")
             upload_ids.append(a.upload_id)
 
         # supports_vision 由该智能体绑定的注册模型决定（model 表字段）

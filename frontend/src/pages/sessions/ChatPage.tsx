@@ -95,6 +95,7 @@ export function ChatPage(): ReactNode {
   }
 
   const session = sessionQ.data
+  const archived = session.status === 'archived'
 
   const handleArchive = () => {
     modal.confirm({
@@ -119,10 +120,13 @@ export function ChatPage(): ReactNode {
           {session.agent_name ? <Tag color="purple">{session.agent_name}</Tag> : null}
           {stream.status === 'streaming' ? <Tag color="processing">生成中</Tag> : null}
           {stream.status === 'interrupted' ? <Tag color="orange">待审批</Tag> : null}
+          {archived ? <Tag color="default">已归档（只读）</Tag> : null}
         </Space>
-        <Button danger icon={<Trash2 size={14} />} onClick={handleArchive}>
-          归档
-        </Button>
+        {archived ? null : (
+          <Button danger icon={<Trash2 size={14} />} onClick={handleArchive}>
+            归档
+          </Button>
+        )}
       </Flex>
 
       {/* 错误提示 */}
@@ -143,17 +147,25 @@ export function ChatPage(): ReactNode {
         style={{ flex: 1, minHeight: 0, overflow: 'auto', paddingInline: 4 }}
       >
         <MessageList />
-        <HitlCard resume={stream.resume} />
+        {!archived ? <HitlCard resume={stream.resume} /> : null}
       </div>
 
-      {/* 输入 */}
-      <ChatInput
-        sessionId={session.id}
-        userId={session.user_id}
-        status={stream.status}
-        send={stream.send}
-        cancel={stream.cancel}
-      />
+      {/* 输入：归档会话只读，不可继续对话 */}
+      {archived ? (
+        <Alert
+          type="info"
+          message="该会话已归档，仅支持查看历史记录，不可继续对话。"
+          style={{ marginTop: 8 }}
+        />
+      ) : (
+        <ChatInput
+          sessionId={session.id}
+          userId={session.user_id}
+          status={stream.status}
+          send={stream.send}
+          cancel={stream.cancel}
+        />
+      )}
     </Flex>
   )
 }

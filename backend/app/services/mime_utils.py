@@ -1,7 +1,7 @@
 """MIME 类型判定（plan §5.1 三重优先级）。
 
 服务端唯一可信源：魔数 > 扩展名 > 客户端声明。
-kind 推断：image/* → image；docx → file；其余 → file（受白名单限制）。
+kind 推断：image/* → image；docx/pdf → file；其余 → file（受白名单限制）。
 """
 from __future__ import annotations
 
@@ -21,9 +21,12 @@ _ALLOWED_MIME = {
     "image/bmp",
     # docx: zip 容器，魔数识别为 zip，靠扩展名二次确认
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    # pdf: 魔数 %PDF- 可直接识别，无需 docx 那套 zip 兜底
+    "application/pdf",
 }
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_PDF_MIME = "application/pdf"
 
 
 def detect_mime(raw: bytes, filename: Optional[str], client_mime: Optional[str]) -> str:
@@ -70,7 +73,7 @@ def detect_kind(real_mime: str) -> str:
 
 
 def is_allowed_mime(real_mime: str) -> bool:
-    """白名单校验：仅放行 image/* + docx。"""
+    """白名单校验：仅放行 image/* + docx + pdf。"""
     if real_mime.startswith(_IMAGE_PREFIX):
         return True
     return real_mime in _ALLOWED_MIME
@@ -78,6 +81,10 @@ def is_allowed_mime(real_mime: str) -> bool:
 
 def is_docx(mime: str) -> bool:
     return mime == _DOCX_MIME
+
+
+def is_pdf(mime: str) -> bool:
+    return mime == _PDF_MIME
 
 
 def extract_docx_meta(raw: bytes) -> tuple[Optional[int], Optional[str]]:
@@ -97,3 +104,37 @@ def extract_docx_meta(raw: bytes) -> tuple[Optional[int], Optional[str]]:
         return count, preview
     except Exception:
         return None, None
+
+
+def extract_pdf_meta(raw: bytes) -> tuple[Optional[int], Optional[str]]:
+    """eager 轻量提取 pdf 页数 + 首页文本预览（前 200 字）。
+
+    依赖 pymupdf (fitz)；未安装或解析失败均返回 (None, None)，不影响上传。
+    """
+    try:
+        import fitz  # pymupdf
+    except ImportError:
+        return None, None
+    try:
+        with fitz.open(stream=raw, filetype="pdf") as pdf:
+            page_count = pdf.page_count
+            first = pdf[0].get_text("text").strip() if page_count else ""
+        return page_count, (first[:200] or None)
+    except Exception:
+        return None, None
+
+
+def extract_document_meta(
+    raw: bytes, mime: str
+) -> tuple[Optional[int], Optional[str]]:
+    """按 mime 分派文档轻量元数据提取（docx 段落数 / pdf 页数 + 预览）。
+
+    把"按类型怎么处理"集中在本模块：上传层只需一次调用，无需关心 docx/pdf 分支。
+    门禁（允不允许）由 is_allowed_mime 单独负责，与此路由职责分离。
+    非文档类型或解析失败均返回 (None, None)。
+    """
+    if is_docx(mime):
+        return extract_docx_meta(raw)
+    if is_pdf(mime):
+        return extract_pdf_meta(raw)
+    return None, None

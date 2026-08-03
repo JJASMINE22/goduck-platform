@@ -44,7 +44,9 @@ class Settings(BaseSettings):
     max_invoke_retries: int = 2
 
     # ---- Local filesystem roots (absolute, config-injected) ----
-    local_root: str = "."
+    # 相对路径锚定到后端包根（见 local_dir），故默认 "data" → backend/data/；
+    # 容器内 compose 设 LOCAL_ROOT=/data（绝对）即覆盖。统一镜像与本地为 "data" 语义。
+    local_root: str = "data"
 
     # ---- MCP gateway (loopback allow flag) ----
     mcp_allow_loopback: bool = Field(
@@ -70,7 +72,13 @@ class Settings(BaseSettings):
     # ---- Derived path properties (resolved relative to local_root) ----
     @property
     def local_dir(self) -> Path:
-        p = Path(self.local_root).resolve()
+        root = Path(self.local_root)
+        if not root.is_absolute():
+            # 相对路径锚定到后端包根（config.py 的 parents[1] == backend/），与启动 CWD 解耦。
+            # 避免 LOCAL_ROOT="." 时 local_dir 随 uvicorn 启动目录漂移，导致 workspace/
+            # memories/ skills/ 落到意外位置（文件出现在与预期 workspace 平级的目录）。
+            root = Path(__file__).resolve().parents[1] / root
+        p = root.resolve()
         p.mkdir(parents=True, exist_ok=True)
         return p
 

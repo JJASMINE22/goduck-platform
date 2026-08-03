@@ -166,8 +166,8 @@ def _build_backend(ctx, *, memory, workspace, has_skills):
     Args:
         ctx: BuildContext (provides sandbox / store / memories_dir / local_dir /
             skills_dir for path resolution).
-        memory: list of memory file paths (truthy -> mount /memories/).
-        workspace: workspace dir name relative to local_root (truthy -> mount /workspace/).
+        memory: bool (True -> mount /memories/).
+        workspace: bool (True -> mount /workspace/ at LOCAL_ROOT/workspace).
         has_skills: bool (True -> mount /skills/).
     """
     sandbox = ctx.sandbox
@@ -185,7 +185,7 @@ def _build_backend(ctx, *, memory, workspace, has_skills):
             )
     if workspace:
         routes["/workspace/"] = FilesystemBackend(
-            root_dir=os.path.abspath(os.path.join(ctx.local_dir, workspace)).replace("\\", "/"),
+            root_dir=os.path.abspath(os.path.join(ctx.local_dir, "workspace")).replace("\\", "/"),
             virtual_mode=True,
         )
     if has_skills:

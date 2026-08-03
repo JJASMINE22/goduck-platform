@@ -13,6 +13,7 @@ from typing import Any
 from psycopg_pool import AsyncConnectionPool
 
 from app.models import db as dbmod
+from app.services.mime_utils import is_pdf
 from app.services.storage import MinioStorage
 
 logger = logging.getLogger(__name__)
@@ -107,12 +108,16 @@ class ContentComposer:
                 rows.append(
                     f"| 图片 | {a['filename']} | {uid} | ({a['mime']}, {a['size']}B) |"
                 )
-            else:  # docx
+            else:  # 文档：按 mime 分派标注（docx 段数 / pdf 页数）
                 preview = (a.get("preview") or "")[:200]
-                page_count = a.get("page_count")
-                rows.append(
-                    f"| 文档 | {a['filename']} | {uid} | (Word, {page_count}段, 首段: '{preview}') |"
-                )
+                count = a.get("page_count")
+                if is_pdf(a.get("mime", "")):
+                    label, unit, head = "PDF", "页", "首页"
+                else:  # docx（及其它已放行文件，统一按文档呈现）
+                    label, unit, head = "Word", "段", "首段"
+                meta = f"{count}{unit}" if count else f"{unit}数未知"
+                note = f"{label}, {meta}" + (f", {head}: '{preview}'" if preview else "")
+                rows.append(f"| 文档 | {a['filename']} | {uid} | ({note}) |")
 
         table = "\n".join(rows)
         return f"""## 用户上传的附件

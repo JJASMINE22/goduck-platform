@@ -18,9 +18,8 @@ from app.models.schemas import AttachmentCapability, UploadOut
 from app.services.mime_utils import (
     detect_kind,
     detect_mime,
-    extract_docx_meta,
+    extract_document_meta,
     is_allowed_mime,
-    is_docx,
 )
 from app.services.session_service import SessionService
 
@@ -65,18 +64,16 @@ async def upload_file(
     if not is_allowed_mime(real_mime):
         raise HTTPException(
             status_code=415,
-            detail=f"不支持的文件类型: {real_mime}，仅支持 image/* 与 docx",
+            detail=f"不支持的文件类型: {real_mime}，仅支持 image/*、docx 与 pdf",
         )
 
-    # ④ 判定 kind + docx 轻量元数据
+    # ④ 判定 kind + 文档轻量元数据（按 mime 分派：docx 段落数 / pdf 页数）
     kind = detect_kind(real_mime)
-    page_count = None
-    preview = None
-    if is_docx(real_mime):
-        page_count, preview = extract_docx_meta(raw)
+    page_count, preview = extract_document_meta(raw, real_mime)
 
-    # ⑤ 存 MinIO（uuid bucket_key，防目录穿越）
-    bucket_key = str(uuid.uuid4())
+    # ⑤ 存 MinIO（bucket_key == upload id：无 DB 的 wrapper 可凭 upload_id 直取对象）
+    new_id = uuid.uuid4()
+    bucket_key = str(new_id)
     try:
         st.minio_storage.put_object(bucket_key, raw, content_type=real_mime)
     except Exception as e:
@@ -95,6 +92,7 @@ async def upload_file(
         size=len(raw),
         page_count=page_count,
         preview=preview,
+        upload_id=new_id,
     )
 
     return UploadOut(
@@ -110,7 +108,7 @@ async def upload_file(
 
 @router.get("/{session_id}/uploads/{upload_id}/preview")
 async def preview_upload(session_id: uuid.UUID, upload_id: uuid.UUID, request: Request):
-    """返回附件字节供前端缩略图渲染（仅 image；docx 无二进制预览 → 404，前端回退图标）。"""
+    """返回附件字节供前端缩略图渲染（仅 image；docx/pdf 无二进制预览 → 404，前端回退图标）。"""
     st = _appstate(request)
     upload = await dbmod.get_upload(st.pool, upload_id)
     if upload is None or upload["session_id"] != session_id:
@@ -137,9 +135,13 @@ async def get_attachment_capability(session_id: uuid.UUID, request: Request):
     agent_cfg = AgentConfig.model_validate(agent_row["config_json"])
     supports_vision = st.model_store.supports_vision(agent_row["model_id"])
 
+    tools = await st.mcp_lifecycle.get_tools()
+    has_image_parse_tool = any(t.name.endswith("__image_understand") for t in tools)
+    allow_image = supports_vision or has_image_parse_tool
+
     return AttachmentCapability(
         allow_attachments=agent_cfg.allow_attachments,
-        allow_image=supports_vision,
-        allow_file=["docx"],
+        allow_image=allow_image,
+        allow_file=["docx", "pdf"],
         max_size_mb=st.settings.attachment_max_size_mb,
     )
