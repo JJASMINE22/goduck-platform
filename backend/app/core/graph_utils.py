@@ -108,6 +108,11 @@ def create_agent_recursive(
 
     is_main_agent = agent_config.get("is_main", False)
     memory = cfg_memory if is_main_agent else None
+    # 主代理始终构建后端；子代理显式声明 workspace 时也为其构建独立后端。其 /workspace/
+    # 路由与主代理指向同一磁盘目录 (LOCAL_ROOT/workspace)，故子代理写入即落盘、主代理及
+    # 其余带 workspace 的子代理皆可读取。memory 仍由上面的 is_main_agent 守住，子代理
+    # 不会挂载 /memories/ 路由（偏好记忆仍为主代理独占）。
+    needs_backend = is_main_agent or cfg_workspace
     backend = (
         _build_backend(
             ctx,
@@ -115,7 +120,7 @@ def create_agent_recursive(
             workspace=cfg_workspace,
             has_skills=cfg_has_skills,
         )
-        if is_main_agent
+        if needs_backend
         else None
     )
 

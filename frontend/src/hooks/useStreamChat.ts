@@ -108,11 +108,12 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       // 仅 idle 可发（interrupted 走 resume）
       if (store.status !== 'idle') return
 
-      store.pushUser(content)
+      // 先快照待发附件：既要挂到 user 消息上（会话窗内展示），又要写进请求体
+      const attachs = store.attachments
+      store.pushUser(content, attachs)
       store.setStreamError(null)
       store.setStatus('streaming')
 
-      const attachs = store.attachments
       const body = {
         content,
         rubric: opts?.rubric,

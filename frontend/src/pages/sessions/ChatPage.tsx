@@ -59,6 +59,8 @@ export function ChatPage(): ReactNode {
         role: (m.role === 'human' ? 'user' : 'agent') as 'user' | 'agent',
         agentPath: 'root',
         content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+        // human 消息的附件缩略（后端从消息 additional_kwargs 查库回填）
+        attachments: m.attachments?.length ? m.attachments : undefined,
         createdAt: i,
       }))
       // 跳过纯工具调用的空 AI 消息：实时流仅在 msg.content 非空时才产出气泡，
@@ -146,7 +148,7 @@ export function ChatPage(): ReactNode {
         onScroll={handleScroll}
         style={{ flex: 1, minHeight: 0, overflow: 'auto', paddingInline: 4 }}
       >
-        <MessageList />
+        <MessageList sessionId={session.id} />
         {!archived ? <HitlCard resume={stream.resume} /> : null}
       </div>
 

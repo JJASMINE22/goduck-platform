@@ -17,6 +17,8 @@ export interface ChatMessage {
   reasoning?: string // 思考过程（仅 agent 思考消息，可折叠展示）
   /** true=仍在 token 流式接收中（按纯文本渲染，避免逐 token 重解析 Markdown） */
   streaming?: boolean
+  /** 用户消息附带的附件（发送时快照；刷新后历史不回显——后端无 message↔upload 关联） */
+  attachments?: UploadOut[]
   createdAt: number
 }
 
@@ -46,7 +48,7 @@ export interface ChatState {
   streamError: string | null
 
   // —— 动作 ——
-  pushUser: (content: string) => void
+  pushUser: (content: string, attachments?: UploadOut[]) => void
   pushAgent: (agentPath: string, content: string) => void
   pushReasoning: (agentPath: string, reasoning: string) => void
   /** 追加一个 token 增量：按 (tokenId, reasoning) 聚合到既有流式消息或新建一条 */
@@ -81,11 +83,11 @@ const genId = () => `m${Date.now()}-${idSeq++}`
 export const useChatStore = create<ChatState>((set) => ({
   ...initialState,
 
-  pushUser: (content) =>
+  pushUser: (content, attachments) =>
     set((s) => ({
       messages: [
         ...s.messages,
-        { id: genId(), role: 'user', agentPath: 'user', content, createdAt: Date.now() },
+        { id: genId(), role: 'user', agentPath: 'user', content, attachments, createdAt: Date.now() },
       ],
     })),
 

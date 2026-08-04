@@ -13,6 +13,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 
 from app.models import db as dbmod
+from app.models.schemas import UploadOut
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class SessionService:
         self,
         checkpointer: AsyncPostgresSaver,
         thread_id: str,
+        session_id: uuid.UUID,
     ) -> list[dict]:
         """Read full conversation history from checkpointer (thread_id keyed).
 
@@ -76,7 +78,58 @@ class SessionService:
         except Exception:
             logger.exception("get_history failed for thread %s", thread_id)
             return []
-        return [_serialize_message(msg) for msg in messages]
+
+        # 附件缩略回显：upload_ids 记录在 human 消息 additional_kwargs（发送时写入），
+        # 这里收集后一次批量查库注入，避免逐消息 N+1。与 content 完全解耦。
+        attachments_by_idx = await self._resolve_attachments(messages, session_id)
+        return [
+            _serialize_message(msg, attachments_by_idx.get(i))
+            for i, msg in enumerate(messages)
+        ]
+
+    async def _resolve_attachments(
+        self,
+        messages: list,
+        session_id: uuid.UUID,
+    ) -> dict[int, list[UploadOut]]:
+        """Map each human message's upload_ids → resolved UploadOut list.
+
+        upload_ids live on HumanMessage.additional_kwargs (written at send time,
+        never parsed out of content). Invalid / non-UUID ids are skipped; a
+        session_id scope guard is enforced inside get_uploads_by_ids so a stale
+        id from another session can never leak.
+        """
+        per_msg: dict[int, list[str]] = {}
+        all_ids: list[uuid.UUID] = []
+        for i, m in enumerate(messages):
+            if getattr(m, "type", None) != "human":
+                continue
+            ak = getattr(m, "additional_kwargs", None) or {}
+            raw = ak.get("upload_ids")
+            if not isinstance(raw, list) or not raw:
+                continue
+            clean: list[str] = []
+            for uid in raw:
+                if not isinstance(uid, str):
+                    continue
+                try:
+                    parsed = uuid.UUID(uid)
+                except (ValueError, AttributeError, TypeError):
+                    continue
+                clean.append(uid)
+                all_ids.append(parsed)
+            if clean:
+                per_msg[i] = clean
+
+        if not all_ids:
+            return {}
+        rows = await dbmod.get_uploads_by_ids(self.pool, all_ids, session_id)
+        out: dict[int, list[UploadOut]] = {}
+        for i, ids in per_msg.items():
+            seq = [_upload_row_to_out(rows[uid]) for uid in ids if uid in rows]
+            if seq:
+                out[i] = seq
+        return out
 
     @staticmethod
     async def _load_messages(checkpointer: AsyncPostgresSaver, config: dict) -> list:
@@ -113,14 +166,32 @@ class SessionService:
         return []
 
 
-def _serialize_message(msg) -> dict:
+def _upload_row_to_out(row: dict) -> UploadOut:
+    """DB upload row → UploadOut (for history attachment rendering)."""
+    return UploadOut(
+        upload_id=row["id"],
+        kind=row["kind"],
+        filename=row["filename"],
+        mime=row["mime"],
+        size=row["size"],
+        page_count=row.get("page_count"),
+        preview=row.get("preview"),
+    )
+
+
+def _serialize_message(msg, attachments: list[UploadOut] | None = None) -> dict:
     """Best-effort message -> dict for /sessions/{id}/history."""
     role = getattr(msg, "type", type(msg).__name__)
     content = getattr(msg, "content", "")
+    # 展示优先用用户原始输入：附件消息的 content 被 ContentComposer 注入了
+    # 给模型看的 anchor 表格，raw_content 保留了用户真正发送的文本。
+    ak = getattr(msg, "additional_kwargs", None) or {}
+    raw = ak.get("raw_content")
+    display = raw if isinstance(raw, str) and raw else content
     out = {
         "role": role,
         "name": getattr(msg, "name", None),
-        "content": content if isinstance(content, str) else str(content),
+        "content": display if isinstance(display, str) else str(display),
     }
     tool_calls = getattr(msg, "tool_calls", None)
     if tool_calls:
@@ -131,4 +202,6 @@ def _serialize_message(msg) -> dict:
     tool_call_id = getattr(msg, "tool_call_id", None)
     if tool_call_id:
         out["tool_call_id"] = tool_call_id
+    if attachments:
+        out["attachments"] = attachments
     return out

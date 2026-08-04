@@ -7,6 +7,8 @@ import { Bot, Brain, Check, User, Wrench } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage, ToolCallEntry } from '@/store/chatStore'
 import { Markdown } from '@/components/markdown/Markdown'
+import { MessageAttachments } from './MessageAttachments'
+import type { UUID } from '@/types'
 
 type TimelineItem =
   | { kind: 'msg'; ts: number; data: ChatMessage }
@@ -26,7 +28,7 @@ function Avatar({ role, color }: { role: 'user' | 'agent'; color: string }): Rea
   )
 }
 
-export function MessageList(): ReactNode {
+export function MessageList({ sessionId }: { sessionId: UUID }): ReactNode {
   const messages = useChatStore((s) => s.messages)
   const toolCalls = useChatStore((s) => s.toolCalls)
   const status = useChatStore((s) => s.status)
@@ -49,16 +51,17 @@ export function MessageList(): ReactNode {
       {timeline.map((item) => {
         if (item.kind === 'tool') return <ToolCallCard key={`t-${item.data.id}`} entry={item.data} />
         if (item.data.reasoning) return <ThinkingBlock key={item.data.id} msg={item.data} />
-        return <MessageBubble key={item.data.id} msg={item.data} />
+        return <MessageBubble key={item.data.id} msg={item.data} sessionId={sessionId} />
       })}
       {streaming ? <TypingIndicator /> : null}
     </Flex>
   )
 }
 
-function MessageBubble({ msg }: { msg: ChatMessage }): ReactNode {
+function MessageBubble({ msg, sessionId }: { msg: ChatMessage; sessionId: UUID }): ReactNode {
   const isUser = msg.role === 'user'
   const { label, color } = agentMeta(msg.agentPath)
+  const hasAttachments = isUser && !!msg.attachments?.length
   return (
     <Flex justify={isUser ? 'flex-end' : 'flex-start'} align="flex-start" gap={10} className="msg-in">
       {!isUser ? <Avatar role="agent" color={color} /> : null}
@@ -79,14 +82,16 @@ function MessageBubble({ msg }: { msg: ChatMessage }): ReactNode {
             <Tag style={{ color, borderColor: color, background: 'transparent' }}>{label}</Tag>
           </div>
         ) : null}
-        {isUser ? (
-          <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-        ) : msg.streaming ? (
-          // 流式接收中：纯文本渲染，避免逐 token 重解析 Markdown（性能 + 防半截语法抖动）
+        {msg.streaming ? (
+          // 流式接收中：纯文本渲染，避免逐 token 重解析 Markdown（性能 + 防半截语法抖动）。
+          // 用户消息无 streaming 标志，恒走 Markdown（支持用户输入的标题/列表/代码等格式）。
           <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
         ) : (
           <Markdown>{msg.content}</Markdown>
         )}
+        {hasAttachments ? (
+          <MessageAttachments sessionId={sessionId} attachments={msg.attachments!} />
+        ) : null}
       </div>
       {isUser ? <Avatar role="user" color={color} /> : null}
     </Flex>

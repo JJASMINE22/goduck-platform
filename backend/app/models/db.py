@@ -563,6 +563,31 @@ async def list_uploads_by_session(pool: AsyncConnectionPool, session_id: uuid.UU
     return rows
 
 
+async def get_uploads_by_ids(
+    pool: AsyncConnectionPool,
+    upload_ids: list[uuid.UUID],
+    session_id: uuid.UUID,
+) -> dict[str, dict]:
+    """Batch-fetch upload metadata by id, hard-scoped to a session.
+
+    Used by history rendering: upload_ids come from HumanMessage
+    additional_kwargs (written at send time), never parsed from content.
+    Returns ``{str(id): row}`` for O(1) lookup by the caller. Scoping by
+    session_id guarantees a stale id from another session never leaks.
+    """
+    if not upload_ids:
+        return {}
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, filename, mime, kind, size, page_count, preview "
+                "FROM upload WHERE id = ANY(%s) AND session_id = %s",
+                (upload_ids, session_id),
+            )
+            rows = await cur.fetchall()
+    return {str(r["id"]): r for r in rows}
+
+
 # ============================ Model ops ==================================
 
 _MODEL_COLUMNS = (

@@ -55,9 +55,10 @@ class AgentConfig(BaseModel):
     )
     workspace: bool = Field(
         default=False,
-        description="是否启用工作区（仅主代理）。True 时挂载 /workspace/ 路由到 "
+        description="是否启用工作区。True 时挂载 /workspace/ 路由到 "
         "LOCAL_ROOT/workspace（目录路径由后端固定，前端只开关）。"
-        "旧配置的非空 str 自动迁移为 True。",
+        "主代理与子代理均可开启：开启后该节点获得独立磁盘后端，与主代理共用同一磁盘"
+        "目录，写入即落盘、跨代理可见。旧配置的非空 str 自动迁移为 True。",
     )
     interrupt_on: Optional[Dict[str, bool]] = Field(default=None)
     is_main: bool = False
@@ -116,8 +117,6 @@ class AgentConfig(BaseModel):
                 raise ValueError("子代理必须设置 name")
             if not self.description:
                 raise ValueError("子代理必须设置 description")
-            if self.workspace:
-                raise ValueError("子代理不能设置 workspace 工作区")
             if self.memory:
                 raise ValueError("子代理不能设置 memory 偏好文件")
             if self.allow_attachments:
@@ -161,8 +160,6 @@ class AgentConfig(BaseModel):
                     raise ValueError("子代理不能设置 is_main=True")
                 if sa.memory:
                     raise ValueError("子代理不能设置 memory 偏好文件")
-                if sa.workspace:
-                    raise ValueError("子代理不能设置 workspace 工作区")
                 if sa.allow_attachments:
                     raise ValueError("子代理不能设置 allow_attachments 附件能力")
 

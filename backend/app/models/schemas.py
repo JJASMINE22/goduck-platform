@@ -110,6 +110,9 @@ class MessageOut(BaseModel):
     content: str
     tool_calls: Optional[list[dict]] = None
     tool_call_id: Optional[str] = None
+    # 附件元数据（仅 human 消息）：upload_ids 记录在消息 additional_kwargs（发送时写入），
+    # 历史接口据此批量查 upload 表回填。前端据此渲染缩略，与 content 解耦。
+    attachments: list["UploadOut"] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -271,3 +274,10 @@ class ModelTestRequest(BaseModel):
     model_type: str = Field(min_length=1)
     api_key: str = Field(min_length=1)
     base_url: Optional[str] = None
+
+
+# MessageOut references UploadOut (defined later in this module). Pydantic v2
+# rebuilds incomplete models automatically, but we resolve the forward ref
+# explicitly at import end so the schema is guaranteed complete regardless of
+# definition order / future refactors. Idempotent.
+MessageOut.model_rebuild()

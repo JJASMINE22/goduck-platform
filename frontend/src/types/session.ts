@@ -1,6 +1,7 @@
 /* 会话类型 —— 对应后端 models/schemas.py (SessionCreate/SessionOut/MessageOut) +
    api/sessions.py。thread_id 是 LangGraph checkpointer 的键。 */
 import type { ISODateTime, UUID } from './common'
+import type { UploadOut } from './upload'
 
 export interface SessionCreate {
   user_id: string
@@ -31,4 +32,6 @@ export interface MessageOut {
   content: string
   tool_calls?: Array<Record<string, unknown>> | null
   tool_call_id?: string | null
+  // 仅 human 消息：来自消息 additional_kwargs（发送时写入）→ 历史接口批量查 upload 表回填
+  attachments?: UploadOut[]
 }

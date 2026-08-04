@@ -13,8 +13,8 @@ export interface RubricConfig {
 
 /**
  * 后端 AgentConfig（schema_utils.py）—— 配置树，递归 subagents。
- * 主代理: is_main=true, name/description 为 null, 可设 memory/workspace
- * 子代理: is_main 省略/false, 必须设 name/description, 禁 memory/workspace
+ * 主代理: is_main=true, name/description 为 null, 可设 memory/allow_attachments
+ * 子代理: is_main 省略/false, 必须设 name/description, 禁 memory/allow_attachments (workspace 主子均可)
  */
 export interface AgentConfig {
   name?: string | null
@@ -23,7 +23,7 @@ export interface AgentConfig {
   tool_names?: string[] // MCP 命名空间工具，源 GET /mcp/tools
   skills?: string[] | null // 形如 "/skills/<name>/"
   memory?: boolean // 偏好记忆开关，仅主代理（路径后端固定）
-  workspace?: boolean // 工作区开关，仅主代理（路径后端固定）
+  workspace?: boolean // 工作区开关，主代理与子代理均可设（路径后端固定，写入即落盘）
   interrupt_on?: Record<string, boolean> | null
   is_main?: boolean
   is_dicted?: boolean

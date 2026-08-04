@@ -66,6 +66,7 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
     agent = await _build_agent_or_409(st, session["agent_id"])
 
     # 附件校验 + content 组装（plan §6.5）
+    upload_ids: list[str] = []
     if body.attachments:
         agent_row = await dbmod.get_agent(st.pool, session["agent_id"])
         agent_cfg = AgentConfig.model_validate(agent_row["config_json"])
@@ -77,7 +78,6 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
         # 第 2/3 层：upload_id 有效性 + 归属
         # 子类型放行由上传层 _ALLOWED_MIME 白名单单一可信源保证（kind=='file' ∈ {docx, pdf}），
         # 此处不再重复编码子类型规则；解析期类型兜底由 MCP parse_document 处理。
-        upload_ids = []
         for a in body.attachments:
             upload = await dbmod.get_upload(st.pool, uuid.UUID(a.upload_id))
             if upload is None or upload["session_id"] != session["id"]:
@@ -98,7 +98,14 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
 
     async def event_gen():
         try:
-            async for ev in adapter.stream_message(agent, content, config, body.rubric):
+            async for ev in adapter.stream_message(
+                agent,
+                content,
+                config,
+                body.rubric,
+                upload_ids=upload_ids,
+                raw_content=body.content,
+            ):
                 yield ev.to_sse()
         finally:
             await svc.touch(session["id"])

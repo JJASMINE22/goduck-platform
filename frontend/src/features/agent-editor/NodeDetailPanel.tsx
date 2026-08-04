@@ -1,6 +1,6 @@
 /* 节点详情面板（右侧）—— 编辑画布上选中的节点字段。
    按 selectedNodeId 从 store 取节点，updateFields(id, patch) 就地合并。
-   字段集与旧 NodeEditor 一致：主代理独有 memory/workspace；子代理独有 name/description/is_dicted。
+   主代理独有 memory/allow_attachments；子代理独有 name/description/is_dicted；workspace 主子代理均可。
    最终合法性以后端 /validate 为准（准则 F6）。 */
 import { Button, Flex, Input, Select, Switch, Tag, TreeSelect, Typography } from 'antd'
 import { type ReactNode } from 'react'
@@ -9,6 +9,7 @@ import { useAgentEditorStore } from '@/store/agentEditorStore'
 import { useMcpTools } from '@/hooks/useMcp'
 import { useSkills } from '@/hooks/useSkills'
 import { RubricEditor } from './RubricEditor'
+import { CheckedToolGroups } from './CheckedToolGroups'
 import type { NodeFields } from './graphModel'
 
 export function NodeDetailPanel(): ReactNode {
@@ -69,6 +70,18 @@ export function NodeDetailPanel(): ReactNode {
 
   const patch = (p: Partial<NodeFields>) => updateFields(node.id, p)
 
+  // 移除某工具：同步清理其 interrupt_on 审批项，避免残留无效审批配置
+  const removeTool = (fullName: string) => {
+    const nextTools = (node.tool_names ?? []).filter((n) => n !== fullName)
+    const p: Partial<NodeFields> = { tool_names: nextTools }
+    if (node.interrupt_on?.[fullName]) {
+      const rest = { ...node.interrupt_on }
+      delete rest[fullName]
+      p.interrupt_on = Object.keys(rest).length ? rest : null
+    }
+    patch(p)
+  }
+
   return (
     <div className="node-detail">
       <Flex align="center" justify="space-between" style={{ marginBottom: 12 }}>
@@ -105,6 +118,7 @@ export function NodeDetailPanel(): ReactNode {
           <TreeSelect
             treeCheckable
             showCheckedStrategy={TreeSelect.SHOW_CHILD}
+            maxTagCount={2}
             style={{ width: '100%' }}
             placeholder="按 server 分组选择工具"
             value={node.tool_names ?? []}
@@ -113,6 +127,11 @@ export function NodeDetailPanel(): ReactNode {
             showSearch
             treeNodeFilterProp="label"
             allowClear
+          />
+          <CheckedToolGroups
+            selected={node.tool_names ?? []}
+            tools={tools.data ?? []}
+            onRemove={removeTool}
           />
         </Field>
 
@@ -131,6 +150,7 @@ export function NodeDetailPanel(): ReactNode {
           <TreeSelect
             treeCheckable
             showCheckedStrategy={TreeSelect.SHOW_CHILD}
+            maxTagCount={2}
             style={{ width: '100%' }}
             placeholder={interruptTreeData.length ? '勾选需要人工审批的工具（按 server 折叠）' : '请先在上方选择工具'}
             value={interruptKeys}
@@ -156,15 +176,7 @@ export function NodeDetailPanel(): ReactNode {
                 </Typography.Text>
               </Flex>
             </Field>
-            <Field label="工作区（workspace，仅主代理）">
-              <Flex align="center" gap={8}>
-                <Switch checked={!!node.workspace} onChange={(v) => patch({ workspace: v })} />
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  开启后挂载 /workspace/（路径后端固定为 LOCAL_ROOT/workspace）
-                </Typography.Text>
-              </Flex>
-            </Field>
-            <Field label="附件能力（allow_attachments）">
+            <Field label="附件能力（allow_attachments，仅主代理）">
               <Switch checked={!!node.allow_attachments} onChange={(v) => patch({ allow_attachments: v })} />
             </Field>
           </>
@@ -178,6 +190,15 @@ export function NodeDetailPanel(): ReactNode {
             </Flex>
           </Field>
         )}
+
+        <Field label="工作区（workspace）">
+          <Flex align="center" gap={8}>
+            <Switch checked={!!node.workspace} onChange={(v) => patch({ workspace: v })} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              开启后挂载 /workspace/（路径后端固定为 LOCAL_ROOT/workspace，写入即落盘、跨代理可见）
+            </Typography.Text>
+          </Flex>
+        </Field>
 
         {!node.is_dicted ? (
           <Field label="动态分发（dynamic_dispatch）">

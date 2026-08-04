@@ -191,6 +191,78 @@ pre,
   color: #fff;
 }
 
+/* ===== 会话窗内用户附件展示（发送后即时回显）===== */
+.msg-attachments {
+  margin-top: 8px;
+}
+.msg-attachments__img.ant-image {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-sm);
+}
+.msg-attachments__img.ant-image img {
+  object-fit: cover;
+  transition: transform 0.15s ease;
+  cursor: zoom-in;
+}
+.msg-attachments__img.ant-image:hover img {
+  transform: scale(1.04);
+}
+
+/* 文档卡片（docx / pdf） */
+.msg-file-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 260px;
+  padding: 8px 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.msg-file-card:hover {
+  border-color: var(--color-primary);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+.msg-file-card__badge {
+  flex-shrink: 0;
+  min-width: 46px;
+  height: 40px;
+  padding: 0 6px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.msg-file-card__body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.msg-file-card__name {
+  font-size: 13px;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+.msg-file-card__meta {
+  font-size: 11px;
+  line-height: 1.5;
+}
+.msg-file-card__icon {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
 /* ===== 思考过程（可折叠，默认收起）===== */
 .chat-thinking__body {
   white-space: pre-wrap;
@@ -545,6 +617,50 @@ pre,
 }
 .node-detail__hint small {
   font-size: 12px;
+}
+
+/* 已选工具分组折叠展示（替代 TreeSelect 框内 tag 堆叠） */
+.checked-tool-groups {
+  margin-top: 8px;
+}
+.checked-tool {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  min-width: 0;
+}
+.checked-tool__name {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+.checked-tool__desc {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.checked-tool__remove {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.checked-tool__remove:hover {
+  background: var(--color-danger);
+  color: #fff;
 }
 
 /* 空会话欢迎占位 */

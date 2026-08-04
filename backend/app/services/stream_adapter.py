@@ -197,13 +197,31 @@ class StreamAdapter:
         content: str | list,
         config: dict,
         rubric: Optional[str] = None,
+        upload_ids: Optional[list[str]] = None,
+        raw_content: Optional[str] = None,
     ) -> AsyncIterator[SSEEvent]:
         """Stream a fresh user message. Yields until done / interrupt / error.
 
         content may be a plain str (text) or a multimodal list (text + image_url
         blocks) assembled by ContentComposer.
+
+        upload_ids / raw_content are stashed on the message's additional_kwargs
+        so the checkpointer persists them alongside content (they never enter
+        the model payload — the model only sees ``content``):
+        - upload_ids: recovered on /history to render attachment thumbnails
+          (read directly, never parsed out of content).
+        - raw_content: the user's original input. Only attachment messages have
+          their content rewritten by ContentComposer (anchor table injected);
+          for those we keep the original text so history shows the user's real
+          message instead of the internal prompt scaffold. Plain messages have
+          content == raw_content, so we skip the redundant copy.
         """
-        msg = HumanMessage(content=content)
+        additional_kwargs: dict[str, Any] = {}
+        if upload_ids:
+            additional_kwargs["upload_ids"] = upload_ids
+            if isinstance(raw_content, str) and raw_content:
+                additional_kwargs["raw_content"] = raw_content
+        msg = HumanMessage(content=content, additional_kwargs=additional_kwargs)
         payload: dict = {"messages": [msg]}
         if rubric:
             payload["rubric"] = rubric

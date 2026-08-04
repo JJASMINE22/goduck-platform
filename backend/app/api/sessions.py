@@ -69,4 +69,4 @@ async def get_history(session_id: uuid.UUID, request: Request):
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     # empty list (not error) when no messages yet (plan §11.1)
-    return await svc.get_history(st.checkpointer, session["thread_id"])
+    return await svc.get_history(st.checkpointer, session["thread_id"], session["id"])
