@@ -70,13 +70,79 @@ pre,
 }
 .msg-in { animation: msg-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
-/* 气泡悬浮微浮 + 阴影过渡 */
+/* 气泡（参考智能体节点 .agent-node 的发光边框：分层辉光 + 左侧 3px 强调条 + 可变发光）
+   --bubble-color 由内联 style 注入（用户=primary，代理=角色色），四边完整、左侧强调条始终可见。
+   呼吸动画 bubble-glow 让辉光柔和起伏（可变发光）；悬停时暂停动画并增强。 */
 .chat-bubble {
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
+  --bubble-color: var(--color-primary);
+  max-width: 100%;
+  border-radius: 12px;
+  padding: 7px 12px;
+  border: 1px solid color-mix(in srgb, var(--bubble-color) 38%, var(--color-border));
+  border-left: 3px solid var(--bubble-color);
+  background: var(--color-bg-elevated);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+  animation: bubble-glow 3.6s ease-in-out infinite;
+}
+.chat-bubble--user {
+  --bubble-color: var(--color-primary);
+  background: var(--color-primary-bg);
+}
+.chat-bubble--agent {
+  background: var(--color-bg-elevated);
 }
 .chat-bubble:hover {
   transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+  border-color: var(--bubble-color);
+  box-shadow:
+    0 0 0 1px var(--bubble-color),
+    0 0 18px 3px color-mix(in srgb, var(--bubble-color) 42%, transparent),
+    var(--shadow-md);
+  animation-play-state: paused;
+}
+@keyframes bubble-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--bubble-color) 12%, transparent),
+      0 0 10px 1px color-mix(in srgb, var(--bubble-color) 16%, transparent),
+      var(--shadow-sm);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--bubble-color) 22%, transparent),
+      0 0 18px 3px color-mix(in srgb, var(--bubble-color) 34%, transparent),
+      var(--shadow-sm);
+  }
+}
+
+/* 消息回合容器：气泡 + 悬浮才出现的下方操作条（回撤等），不污染气泡内部 */
+.msg-turn {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 88%;
+}
+.msg-turn--user { align-items: flex-end; }
+.msg-turn--agent { align-items: flex-start; }
+/* 操作条默认隐藏，hover 整个回合才浮现；pointer-events 防止误点不可见按钮 */
+.msg-turn__action {
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+.msg-turn:hover .msg-turn__action,
+.msg-turn__action--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* 回撤按钮：字号小于正文，弱化色，紧凑高度 */
+.msg-turn__action .ant-btn {
+  font-size: 12px;
+  line-height: 1;
+  height: 22px;
+  padding: 0 6px;
+  color: var(--color-text-tertiary);
 }
 
 /* 头像圆底 */
@@ -115,6 +181,10 @@ pre,
 
 /* ===== 聊天输入 composer（AI Studio 风：单一圆角容器，附件图标内嵌左下）===== */
 .chat-composer {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -128,11 +198,104 @@ pre,
   padding: 6px 10px 0;
 }
 .chat-composer__input.ant-input {
-  padding: 8px 12px;
+  padding: 4px 12px;
   resize: none;
 }
 .chat-composer__bar {
-  padding: 2px 6px 6px 8px;
+  margin-top: auto;
+  padding: 2px 8px;
+}
+
+/* ===== Markdown 代码块 / mermaid 块 / 图像（复制 · 下载）===== */
+.md-codeblock {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+.md-codeblock__bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 8px;
+  background: var(--color-border-soft);
+  font-size: 11px;
+}
+.md-codeblock__lang {
+  font-family: var(--font-mono);
+  color: var(--color-text-tertiary);
+}
+.md-codeblock__btn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.md-codeblock__btn:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.md-codeblock__pre {
+  margin: 0;
+  background: var(--color-border-soft);
+  padding: 10px 12px;
+  overflow: auto;
+  font-size: 12.5px;
+}
+.md-mermaid {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 8px 0;
+  background: #fff;
+}
+.md-mermaid__bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 8px;
+  background: var(--color-border-soft);
+  font-size: 11px;
+}
+.md-mermaid__bar span {
+  margin-right: auto;
+  font-family: var(--font-mono);
+  color: var(--color-text-tertiary);
+}
+.md-mermaid__body {
+  padding: 10px;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+}
+.md-img {
+  position: relative;
+  display: inline-block;
+}
+.md-img img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+.md-img__dl {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.md-img:hover .md-img__dl {
+  opacity: 1;
 }
 
 /* 已选附件 chip（缩略图/图标 + 文件名 + 移除） */
@@ -576,6 +739,30 @@ pre,
   transition: background 0.15s ease;
 }
 .panel-resizer:hover::before {
+  background: var(--color-primary);
+}
+
+/* 行拖拽分隔条（消息流 | 输入框），按住向上拖加高输入区 */
+.row-resizer {
+  height: 8px;
+  flex-shrink: 0;
+  cursor: row-resize;
+  position: relative;
+  align-self: stretch;
+}
+.row-resizer::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 3px;
+  transform: translateY(-50%);
+  background: var(--color-border);
+  border-radius: 2px;
+  transition: background 0.15s ease;
+}
+.row-resizer:hover::before {
   background: var(--color-primary);
 }
 

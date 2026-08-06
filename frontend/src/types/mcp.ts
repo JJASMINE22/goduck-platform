@@ -3,7 +3,7 @@
    工具名命名空间 {server}__{tool}（防跨 server 冲突）。 */
 import type { ISODateTime, UUID } from './common'
 
-export type McpKind = 'stdio' | 'http'
+export type McpKind = 'stdio' | 'http' | 'streamable_http'
 
 export interface McpServerCreate {
   name: string

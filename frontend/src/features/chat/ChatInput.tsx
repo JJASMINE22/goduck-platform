@@ -25,7 +25,9 @@ export function ChatInput({
   send: (content: string, opts?: SendOptions) => Promise<void>
   cancel: () => void
 }): ReactNode {
-  const [value, setValue] = useState('')
+  // 发送框文本上提到 store（draft）：回撤需回填原文，故 composer 受控于 store 而非局部 state。
+  const draft = useChatStore((s) => s.draft)
+  const setDraft = useChatStore((s) => s.setDraft)
   const [rubric, setRubric] = useState('')
   const [showRubric, setShowRubric] = useState(false)
 
@@ -60,10 +62,10 @@ export function ChatInput({
   }
 
   const handleSend = () => {
-    const text = value.trim()
+    const text = draft.trim()
     if (!text || !idle) return
     void send(text, { rubric: rubric.trim() || undefined })
-    setValue('')
+    setDraft('')
     setRubric('')
     setShowRubric(false)
   }
@@ -130,8 +132,8 @@ export function ChatInput({
         className="chat-composer__input"
         variant="borderless"
         autoSize={{ minRows: 1, maxRows: 6 }}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder={
           idle ? '输入消息，Enter 发送，Shift+Enter 换行' : streaming ? '生成中…（可中止）' : '等待人工审批…'
@@ -154,8 +156,8 @@ export function ChatInput({
                 <Button
                   type="text"
                   shape="circle"
-                  size="large"
-                  icon={<Paperclip size={18} />}
+                  size="middle"
+                  icon={<Paperclip size={16} />}
                   loading={upload.isPending}
                   disabled={!idle}
                 />

@@ -54,6 +54,36 @@ class SimpleUser:
 
 
 # ---------------------------------------------------------------------------
+# Stream tracking (withdraw race guard)
+# ---------------------------------------------------------------------------
+class StreamTracker:
+    """Tracks threads that currently have an active SSE generation.
+
+    A ``thread_id`` is *active* from the moment a streaming request's event
+    generator starts until it finishes (in ``finally``). The withdraw endpoint
+    refuses (409) while a thread is active so it never rewrites checkpoint
+    state that an in-flight ``astream`` may still be appending to — closing the
+    cancel/withdraw race (plan risk R3).
+
+    The set is process-local (single-worker personal platform). FastAPI request
+    cancellation propagates to the event generator, so its ``finally`` always
+    runs and releases the thread even on client abort.
+    """
+
+    def __init__(self) -> None:
+        self._active: set[str] = set()
+
+    def acquire(self, thread_id: str) -> None:
+        self._active.add(thread_id)
+
+    def release(self, thread_id: str) -> None:
+        self._active.discard(thread_id)
+
+    def is_streaming(self, thread_id: str) -> bool:
+        return thread_id in self._active
+
+
+# ---------------------------------------------------------------------------
 # Core infra singletons — built once at startup, held on app.state
 # ---------------------------------------------------------------------------
 class AppState:
@@ -71,6 +101,7 @@ class AppState:
         self.minio_storage = None
         self.model_store = None
         self.content_composer = None
+        self.stream_tracker = StreamTracker()
 
     async def startup(self) -> None:
         s = self.settings

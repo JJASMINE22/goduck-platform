@@ -37,6 +37,16 @@ export function useAgentHistory(id: UUID | null | undefined) {
   })
 }
 
+/** 拓扑 mermaid 文本（PlainTextResponse）。enabled 控制按需拉取，避免列表 N+1。
+ *  staleTime 复用全局 30s，悬浮预览跨行复用缓存。 */
+export function useAgentTopology(id: UUID | null | undefined, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.agentTopology(id ?? ''),
+    queryFn: () => agentsApi.topologyMmd(id!),
+    enabled: !!id && enabled,
+  })
+}
+
 /** 校验 + mermaid 预览（不落库）。编辑器实时预览调用，由组件做防抖。 */
 export function useValidateAgent() {
   return useMutation({ mutationFn: (body: ValidateRequest) => agentsApi.validate(body) })

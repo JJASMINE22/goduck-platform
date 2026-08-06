@@ -147,6 +147,22 @@ class ResumeRequest(BaseModel):
     decisions: list[Decision]
 
 
+class WithdrawRequest(BaseModel):
+    message_id: str = Field(
+        ..., min_length=1, description="LangGraph 用户消息 id，定位被回撤的整段回合"
+    )
+
+
+class WithdrawResponse(BaseModel):
+    """回撤结果：被回撤用户消息的原文 + 附件（回填发送框）+ 实际移除的消息 id 列表。"""
+
+    raw_content: str
+    attachments: list["UploadOut"] = Field(default_factory=list)
+    removed_ids: list[str] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
 class ToolInfo(BaseModel):
     name: str
     description: str
@@ -157,7 +173,7 @@ class ToolInfo(BaseModel):
 # ---------------------------------------------------------------------------
 class McpServerCreate(BaseModel):
     name: str = Field(min_length=1)
-    kind: Literal["stdio", "http"]
+    kind: Literal["stdio", "http", "streamable_http"]
     config: dict[str, Any] = Field(..., description="{command,args,env} | {url,headers}")
     enabled: bool = True
 
@@ -281,3 +297,4 @@ class ModelTestRequest(BaseModel):
 # explicitly at import end so the schema is guaranteed complete regardless of
 # definition order / future refactors. Idempotent.
 MessageOut.model_rebuild()
+WithdrawResponse.model_rebuild()

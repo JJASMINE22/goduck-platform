@@ -5,8 +5,15 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from app.api.stream import _build_agent_or_409, _load_session_or_404
 from app.deps import get_appstate
-from app.models.schemas import MessageOut, SessionCreate, SessionOut
+from app.models.schemas import (
+    MessageOut,
+    SessionCreate,
+    SessionOut,
+    WithdrawRequest,
+    WithdrawResponse,
+)
 from app.services.session_service import SessionService
 
 router = APIRouter(prefix="/sessions", tags=["会话管理"])
@@ -70,3 +77,33 @@ async def get_history(session_id: uuid.UUID, request: Request):
         raise HTTPException(status_code=404, detail="session not found")
     # empty list (not error) when no messages yet (plan §11.1)
     return await svc.get_history(st.checkpointer, session["thread_id"], session["id"])
+
+
+@router.post("/{session_id}/withdraw", response_model=WithdrawResponse)
+async def withdraw_turn(body: WithdrawRequest, session_id: uuid.UUID, request: Request):
+    """Withdraw (soft-delete) a full conversation turn anchored on a user message.
+
+    Refuses while a stream is active (409) to avoid racing checkpoint writes;
+    the front-end cancels the stream first then retries. The withdrawn user
+    text + attachments are returned so the composer can be prefilled for
+    edit-and-resend.
+    """
+    st = _appstate(request)
+    session, svc = await _load_session_or_404(request, session_id)
+
+    if st.stream_tracker.is_streaming(session["thread_id"]):
+        raise HTTPException(status_code=409, detail="流式生成中，请先停止再回撤")
+
+    agent = await _build_agent_or_409(st, session["agent_id"])
+    try:
+        result = await svc.withdraw_turn(
+            st.checkpointer,
+            agent,
+            session["thread_id"],
+            session["id"],
+            body.message_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    await svc.touch(session["id"])
+    return result

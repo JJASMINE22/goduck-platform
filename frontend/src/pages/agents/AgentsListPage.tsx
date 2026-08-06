@@ -9,6 +9,7 @@ import { agentsApi } from '@/api/agents'
 import { useAgents, useArchiveAgent, usePurgeAgent } from '@/hooks/useAgents'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
+import { AgentTopologyHover } from '@/features/topology/AgentTopologyHover'
 import { formatRelative, shortId } from '@/lib/format'
 import { toastSuccess } from '@/lib/antdStatic'
 import type { AgentOut } from '@/types'
@@ -71,7 +72,9 @@ export function AgentsListPage(): ReactNode {
       dataIndex: 'name',
       key: 'name',
       render: (v: string, r) => (
-        <a onClick={() => navigate(`/agents/${r.id}`)}>{v}</a>
+        <AgentTopologyHover id={r.id}>
+          <a onClick={() => navigate(`/agents/${r.id}`)}>{v}</a>
+        </AgentTopologyHover>
       ),
     },
     {

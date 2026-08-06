@@ -9,7 +9,9 @@ import logging
 import uuid
 from typing import Optional
 
+from langchain_core.messages import RemoveMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.graph.state import CompiledStateGraph
 from psycopg_pool import AsyncConnectionPool
 
 from app.models import db as dbmod
@@ -131,6 +133,122 @@ class SessionService:
                 out[i] = seq
         return out
 
+    async def withdraw_turn(
+        self,
+        checkpointer: AsyncPostgresSaver,
+        agent: CompiledStateGraph,
+        thread_id: str,
+        session_id: uuid.UUID,
+        message_id: str,
+    ) -> dict:
+        """Withdraw a full conversation turn anchored on a user message.
+
+        A turn = the HumanMessage with ``id == message_id`` plus every message
+        after it up to (but not including) the next HumanMessage. Removing the
+        whole contiguous block keeps tool_call ↔ ToolMessage pairs intact so
+        the LLM context stays well-formed (no dangling tool_call).
+
+        Removal is a *soft delete* via the ``add_messages`` reducer: we append
+        ``RemoveMessage(id)`` deltas through ``agent.update_state``. The original
+        writes remain on disk (shadow) but replay (``_load_messages`` / graph
+        state) no longer returns them — both /history and the next LLM context
+        are correct automatically.
+
+        Returns the withdrawn user message's raw text + attachments so the
+        front-end can prefill the composer for edit-and-resend.
+        """
+        config = {"configurable": {"thread_id": thread_id}}
+        messages = await self._load_messages(checkpointer, config)
+
+        # 1) locate the anchor human message
+        start = -1
+        target = None
+        for i, m in enumerate(messages):
+            if getattr(m, "id", None) == message_id:
+                start = i
+                target = m
+                break
+        if target is None:
+            raise ValueError(f"消息 {message_id} 不存在")
+        if getattr(target, "type", None) != "human":
+            raise ValueError("只能回撤用户消息所在的回合")
+
+        # 2) contiguous block [start, next_human) — guarantees tool pair integrity
+        end = start + 1
+        while end < len(messages) and getattr(messages[end], "type", None) != "human":
+            end += 1
+        block = messages[start:end]
+
+        # 3) collect ids; messages without an id cannot be soft-deleted (logged)
+        ids_to_remove: list[str] = []
+        for m in block:
+            mid = getattr(m, "id", None)
+            if mid:
+                ids_to_remove.append(str(mid))
+            else:
+                logger.warning(
+                    "withdraw: 回合内消息缺 id，跳过软删 (type=%s)",
+                    getattr(m, "type", "?"),
+                )
+        if not ids_to_remove:
+            raise ValueError("该回合无可删除的消息（缺少消息 id）")
+
+        # 4) soft delete via the add_messages reducer (no raw checkpoint writes).
+        #    必须用 aupdate_state：checkpointer 是 AsyncPostgresSaver（仅异步方法），
+        #    调同步 update_state 会去用不存在的 put() → 500。
+        await agent.aupdate_state(
+            config,
+            {"messages": [RemoveMessage(id=i) for i in ids_to_remove]},
+        )
+
+        # 5) recover raw_content + attachments for composer prefill
+        ak = getattr(target, "additional_kwargs", None) or {}
+        raw = ak.get("raw_content")
+        if not (isinstance(raw, str) and raw):
+            c = getattr(target, "content", "")
+            raw = c if isinstance(c, str) else str(c)
+
+        attachments = await self._resolve_human_attachments(ak.get("upload_ids"), session_id)
+        return {
+            "raw_content": raw,
+            "attachments": attachments,
+            "removed_ids": ids_to_remove,
+        }
+
+    async def _resolve_human_attachments(
+        self,
+        upload_ids: object,
+        session_id: uuid.UUID,
+    ) -> list[UploadOut]:
+        """Resolve a human message's upload_ids → ordered UploadOut list.
+
+        Mirrors ``_resolve_attachments`` but for a single message's id list,
+        preserving order and de-duplicating. Stale / non-UUID ids are skipped;
+        ``get_uploads_by_ids`` hard-scopes to ``session_id`` so a foreign id
+        never leaks.
+        """
+        if not isinstance(upload_ids, list) or not upload_ids:
+            return []
+        parsed: list[uuid.UUID] = []
+        seen: set[str] = set()
+        for uid in upload_ids:
+            if not isinstance(uid, str) or uid in seen:
+                continue
+            try:
+                parsed.append(uuid.UUID(uid))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            seen.add(uid)
+        if not parsed:
+            return []
+        rows = await dbmod.get_uploads_by_ids(self.pool, parsed, session_id)
+        out: list[UploadOut] = []
+        for p in parsed:
+            row = rows.get(str(p))
+            if row:
+                out.append(_upload_row_to_out(row))
+        return out
+
     @staticmethod
     async def _load_messages(checkpointer: AsyncPostgresSaver, config: dict) -> list:
         """Resolve the ``messages`` channel for a thread (delta-aware)."""
@@ -189,6 +307,9 @@ def _serialize_message(msg, attachments: list[UploadOut] | None = None) -> dict:
     raw = ak.get("raw_content")
     display = raw if isinstance(raw, str) and raw else content
     out = {
+        # LangGraph 真实消息 id：撤回（withdraw）以此为 RemoveMessage 定位键。
+        # 历史接口必须回传，否则前端只能合成 id，无法精确撤回。
+        "id": getattr(msg, "id", None),
         "role": role,
         "name": getattr(msg, "name", None),
         "content": display if isinstance(display, str) else str(display),

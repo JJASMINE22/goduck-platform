@@ -97,6 +97,11 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
     adapter = st.stream_adapter
 
     async def event_gen():
+        thread_id = session["thread_id"]
+        # Withdraw race guard (plan R3): mark this thread active for the whole
+        # generator lifetime so /withdraw refuses with 409 until the stream
+        # truly finishes (finally runs even on client abort).
+        st.stream_tracker.acquire(thread_id)
         try:
             async for ev in adapter.stream_message(
                 agent,
@@ -108,6 +113,7 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
             ):
                 yield ev.to_sse()
         finally:
+            st.stream_tracker.release(thread_id)
             await svc.touch(session["id"])
 
     return EventSourceResponse(event_gen())
@@ -131,10 +137,13 @@ async def resume(session_id: uuid.UUID, body: ResumeRequest, request: Request):
     adapter = st.stream_adapter
 
     async def event_gen():
+        thread_id = session["thread_id"]
+        st.stream_tracker.acquire(thread_id)
         try:
             async for ev in adapter.stream_resume(agent, decisions, config):
                 yield ev.to_sse()
         finally:
+            st.stream_tracker.release(thread_id)
             await svc.touch(session["id"])
 
     return EventSourceResponse(event_gen())

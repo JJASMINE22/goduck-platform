@@ -85,10 +85,10 @@ class MCPLifecycle:
         kind = row["kind"]
         if kind == "stdio":
             return {name: {"transport": "stdio", **cfg}}
-        if kind == "http":
+        if kind in ("http", "streamable_http"):
             url = cfg.get("url", "")
             _validate_http_url(url, allow_loopback=self.settings.mcp_allow_loopback)
-            return {name: {"transport": "http", **cfg}}
+            return {name: {"transport": kind, **cfg}}
         raise ValueError(f"未知 MCP server kind: {kind}")
 
     async def refresh(self) -> None:

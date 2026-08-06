@@ -63,16 +63,23 @@ export interface ErrorPayload {
 }
 
 // —— interrupt payload（hitl_resolver._extract_interrupt）——
+// deepagents 的 action_requests 为扁平结构：每个待审批工具调用 = { name, args }
+// （与 HumanInTheLoopMiddleware 输出一致，非嵌套的 { action: {...} }）。
+// review_configs 与 action_requests 同序一一对应，键为 action_name / allowed_decisions。
 export interface ActionRequest {
-  action?: {
-    name: string
-    args: Record<string, unknown>
-  }
+  name: string
+  args: Record<string, unknown>
+}
+
+/** deepagents review_configs[i]：单条 action_request 的审核约束 */
+export interface ReviewConfig {
+  action_name?: string
+  allowed_decisions?: DecisionType[]
 }
 
 export interface InterruptPayload {
   action_requests: ActionRequest[]
-  review_configs: Array<Record<string, unknown>>
+  review_configs: ReviewConfig[]
   raw: Array<Record<string, unknown>>
 }
 

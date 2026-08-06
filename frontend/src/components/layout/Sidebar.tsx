@@ -50,8 +50,7 @@ export function Sidebar(): ReactNode {
           borderBottom: '1px solid var(--color-border-soft)',
         }}
       >
-        <span style={{ color: 'var(--color-primary)' }}>🦆</span>
-        goduck
+        <img src="/favicon.png" alt="goduck" style={{ height: 32, width: 'auto' }} />
       </div>
       <Menu
         mode="inline"

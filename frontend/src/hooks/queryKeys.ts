@@ -11,6 +11,7 @@ export const queryKeys = {
   agents: ['agents'] as const,
   agent: (id: string) => ['agents', id] as const,
   agentHistory: (id: string) => ['agents', id, 'history'] as const,
+  agentTopology: (id: string) => ['agents', id, 'topology'] as const,
   sessions: (userId: string) => ['sessions', { userId }] as const,
   session: (id: string) => ['sessions', id] as const,
   sessionHistory: (id: string) => ['sessions', id, 'history'] as const,

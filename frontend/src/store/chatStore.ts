@@ -46,6 +46,8 @@ export interface ChatState {
   pendingInterrupt: PendingInterrupt | null
   attachments: UploadOut[] // 待发附件，发消息后清空
   streamError: string | null
+  // 发送框草稿：上提到 store，使回撤可回填原文（受控于 store，非组件局部 state）
+  draft: string
 
   // —— 动作 ——
   pushUser: (content: string, attachments?: UploadOut[]) => void
@@ -64,6 +66,11 @@ export interface ChatState {
   addAttachment: (u: UploadOut) => void
   removeAttachment: (uploadId: string) => void
   clearAttachments: () => void
+  setAttachments: (list: UploadOut[]) => void
+  setDraft: (v: string) => void
+  /** 乐观移除一个完整回合（用户消息 + 其后到下一用户消息前的全部 AI/工具消息）
+      及同时间窗内的工具调用卡；真值以后端历史重拉兜底（准则 R9） */
+  removeTurn: (messageId: string) => void
   loadHistory: (msgs: ChatMessage[]) => void // 从后端 history 灌入后重置
   reset: () => void
 }
@@ -75,6 +82,7 @@ const initialState = {
   pendingInterrupt: null as PendingInterrupt | null,
   attachments: [] as UploadOut[],
   streamError: null as string | null,
+  draft: '' as string,
 }
 
 let idSeq = 0
@@ -169,6 +177,27 @@ export const useChatStore = create<ChatState>((set) => ({
     set((s) => ({ attachments: s.attachments.filter((a) => a.upload_id !== uploadId) })),
 
   clearAttachments: () => set({ attachments: [] }),
+
+  setAttachments: (list) => set({ attachments: list }),
+
+  setDraft: (v) => set({ draft: v }),
+
+  removeTurn: (messageId) =>
+    set((s) => {
+      const idx = s.messages.findIndex((m) => m.id === messageId)
+      if (idx < 0) return {}
+      // 连续块 [idx, 下一用户消息)：整段删除，保证 tool_call 配对完整
+      let end = idx + 1
+      while (end < s.messages.length && s.messages[end].role !== 'user') end++
+      const turnStart = s.messages[idx].createdAt
+      const turnEnd =
+        end < s.messages.length ? s.messages[end].createdAt : Number.MAX_SAFE_INTEGER
+      return {
+        messages: [...s.messages.slice(0, idx), ...s.messages.slice(end)],
+        // 同时间窗内的工具调用卡一并移除（timeline 合并视图两处需同步）
+        toolCalls: s.toolCalls.filter((t) => t.createdAt < turnStart || t.createdAt >= turnEnd),
+      }
+    }),
 
   loadHistory: (msgs) => set({ messages: msgs, toolCalls: [], status: 'idle', pendingInterrupt: null, streamError: null }),
 

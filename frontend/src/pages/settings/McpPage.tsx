@@ -44,6 +44,14 @@ interface FormValues {
 
 const templates: Record<McpKind, string> = {
   http: JSON.stringify({ url: 'http://127.0.0.1:8088/mcp' }, null, 2),
+  streamable_http: JSON.stringify(
+    {
+      url: 'https://connect.patsnap.com/mcp/patsnap-search?apikey=YOUR_PATSNAP_API_KEY',
+      headers: {},
+    },
+    null,
+    2,
+  ),
   stdio: JSON.stringify({ command: 'python', args: ['-m', 'some_mcp'], env: {} }, null, 2),
 }
 
@@ -124,7 +132,7 @@ export function McpPage(): ReactNode {
       dataIndex: 'kind',
       key: 'kind',
       width: 90,
-      render: (v: string) => <Tag color={v === 'http' ? 'blue' : 'purple'}>{v}</Tag>,
+      render: (v: string) => <Tag color={v === 'http' ? 'blue' : v === 'streamable_http' ? 'cyan' : 'purple'}>{v}</Tag>,
     },
     {
       title: '启用',
@@ -262,6 +270,7 @@ export function McpPage(): ReactNode {
             <Select
               options={[
                 { value: 'http', label: 'HTTP' },
+                { value: 'streamable_http', label: 'Streamable HTTP' },
                 { value: 'stdio', label: 'STDIO' },
               ]}
               onChange={(k: McpKind) => form.setFieldValue('configText', templates[k])}
@@ -271,7 +280,7 @@ export function McpPage(): ReactNode {
             name="configText"
             label="config（JSON）"
             rules={[{ required: true, message: '请填写 config' }]}
-            extra="http: {url, headers}  ·  stdio: {command, args, env}"
+            extra="http / streamable_http: {url, headers}  ·  stdio: {command, args, env}"
           >
             <Input.TextArea rows={8} style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }} />
           </Form.Item>

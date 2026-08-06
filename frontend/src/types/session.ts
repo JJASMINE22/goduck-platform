@@ -35,3 +35,14 @@ export interface MessageOut {
   // 仅 human 消息：来自消息 additional_kwargs（发送时写入）→ 历史接口批量查 upload 表回填
   attachments?: UploadOut[]
 }
+
+/** 回撤一个会话回合（schemas.py WithdrawRequest / WithdrawResponse） */
+export interface WithdrawRequest {
+  message_id: string // LangGraph 用户消息 id（定位被回撤的整段回合）
+}
+
+export interface WithdrawResponse {
+  raw_content: string // 被回撤用户消息原文（回填发送框）
+  attachments: UploadOut[] // 被回撤用户消息的附件（回填发送框 chip）
+  removed_ids: string[] // 实际软删的消息 id 列表
+}

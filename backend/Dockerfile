@@ -21,7 +21,7 @@ ARG NODE_MAJOR=20
 # 预热：空格分隔的 MCP 包名。构建期 uvx/npx 拉取到缓存。
 # 命中即加速、离线可用；填错或改名不会中断构建（|| true）。
 # 需要新增默认预热的 MCP，扩展这两个列表即可。
-ARG UVX_MCP_PACKAGES="mcp-server-fetch mcp-server-time"
+ARG UVX_MCP_PACKAGES="mcp-server-fetch mcp-server-time arxiv-mcp-server"
 ARG NPM_MCP_PACKAGES="@modelcontextprotocol/server-filesystem @modelcontextprotocol/server-memory"
 
 # ---- 环境变量 ----------------------------------------------------------------

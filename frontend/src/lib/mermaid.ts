@@ -1,5 +1,6 @@
 /* Mermaid 渲染封装（DESIGN 准则 F7：单一渲染入口，只渲染后端产出的文本）。
-   mermaid v11 + securityLevel:strict。零图像/网络依赖，纯前端渲染拓扑文本。 */
+    mermaid v11 + securityLevel:strict。零图像/网络依赖，纯前端渲染拓扑文本。
+    统一注入 neo 主题 + elk 布局抬头（app 为亮色主题，避免暗图配亮气泡的风格不一致）。 */
 import mermaid from 'mermaid'
 
 let initialized = false
@@ -9,11 +10,14 @@ function ensureInit() {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict', // 禁止 mermaid 里的交互脚本/html
-    theme: 'dark',
+    theme: 'default', // 亮色基底（app 为亮色主题）；流程图细节由抬头 theme: neo 覆盖
     flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
   })
   initialized = true
 }
+
+/** 统一的 neo 主题 + elk 布局抬头。仅当代码本身未带 frontmatter 时注入，避免冲突。 */
+const STYLE_FRONTMATTER = '---\nconfig:\n  theme: neo\n  layout: elk\n---\n'
 
 let seq = 0
 
@@ -22,10 +26,12 @@ export async function renderMermaid(code: string): Promise<string> {
   const trimmed = code?.trim()
   if (!trimmed) return ''
   ensureInit()
+  // 已带 frontmatter（以 --- 开头）则原样使用，避免重复抬头导致解析失败
+  const source = /^---\s*\n/.test(trimmed) ? trimmed : STYLE_FRONTMATTER + trimmed
   // 唯一 id 避免多次渲染冲突
   const id = `gd-mermaid-${Date.now()}-${seq++}`
   try {
-    const { svg } = await mermaid.render(id, trimmed)
+    const { svg } = await mermaid.render(id, source)
     return svg
   } catch {
     // 非法文本（理论不应发生，文本来自后端）→ 返回原文兜底
