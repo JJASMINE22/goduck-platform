@@ -46,11 +46,15 @@ export function Sidebar(): ReactNode {
           gap: 8,
           padding: '0 20px',
           fontWeight: 700,
-          fontSize: 16,
+          fontSize: 18,
           borderBottom: '1px solid var(--color-border-soft)',
         }}
       >
-        <img src="/favicon.png" alt="goduck" style={{ height: 32, width: 'auto' }} />
+        <img
+          src="/logo.png"
+          alt="goduck"
+          style={{ height: 40, width: 'auto', borderRadius: 10, boxShadow: 'var(--shadow-sm)' }}
+        />
       </div>
       <Menu
         mode="inline"

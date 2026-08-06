@@ -73,8 +73,6 @@ export function ChatPage(): ReactNode {
   const reset = useChatStore((s) => s.reset)
   const loadHistory = useChatStore((s) => s.loadHistory)
   const streamError = useChatStore((s) => s.streamError)
-  const msgCount = useChatStore((s) => s.messages.length)
-  const toolCount = useChatStore((s) => s.toolCalls.length)
   // 回撤所需 store 动作
   const removeTurn = useChatStore((s) => s.removeTurn)
   const setDraft = useChatStore((s) => s.setDraft)
@@ -124,9 +122,11 @@ export function ChatPage(): ReactNode {
     reset()
   }, [sessionId, reset])
 
-  // 历史灌入（首次加载）
+  // 历史灌入：仅在数据就绪（非 fetching）时灌入。配合 useSessionHistory 的
+  // staleTime:0，重开/切会话都会先 refetch 最新；refetch 进行中不灌入，避免用过时
+  // 快照（如新会话的空快照）覆盖刚被 reset() 清空的 store——这正是"重开后历史不可见"的根因。
   useEffect(() => {
-    if (!historyQ.data) return
+    if (!historyQ.data || historyQ.isFetching) return
     const mapped = historyQ.data
       .filter((m) => m.role === 'human' || m.role === 'ai')
       .map((m, i) => ({
@@ -142,13 +142,21 @@ export function ChatPage(): ReactNode {
       // 历史灌入需保持一致，避免出现空气泡。
       .filter((m) => m.role === 'user' || m.content.trim() !== '')
     loadHistory(mapped)
-  }, [historyQ.data, loadHistory])
+  }, [historyQ.data, historyQ.isFetching, loadHistory])
 
-  // 新消息 / 工具卡出现：用户发起动作 → 强制贴底滚到最新
+  // 用户发起新动作（发消息 / resume 进入 streaming）才强制贴底。
+  // 仅监听 status 边沿（idle/interrupted → streaming），而非消息/工具卡数量——
+  // 后者在子代理/多线程流式中持续增长，若用作依赖会把"用户上滑浏览历史"
+  // 强行拉回底部。流式过程中的贴底跟随由下方 store 订阅按 pinnedRef 处理。
+  const prevStatusRef = useRef(stream.status)
   useEffect(() => {
-    pinnedRef.current = true
-    scrollToBottom()
-  }, [msgCount, toolCount, scrollToBottom])
+    const prev = prevStatusRef.current
+    prevStatusRef.current = stream.status
+    if (prev !== 'streaming' && stream.status === 'streaming') {
+      pinnedRef.current = true
+      scrollToBottom()
+    }
+  }, [stream.status, scrollToBottom])
 
   // token 流式增长：仅在贴底时跟随（用户上滑翻历史则不打扰）。
   // 订阅 store 而非派生状态，避免逐 token 重渲染整页；rAF 等布局就绪再滚动。

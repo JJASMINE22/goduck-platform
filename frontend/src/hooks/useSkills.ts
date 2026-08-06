@@ -2,6 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { skillsApi } from '@/api/skills'
 import { toastSuccess } from '@/lib/antdStatic'
+import type { FlatFileEntry } from '@/lib/flattenFiles'
 import { queryKeys } from './queryKeys'
 
 export function useSkills() {
@@ -11,7 +12,7 @@ export function useSkills() {
 export function useUploadSkill() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ name, files }: { name: string; files: File[] }) =>
+    mutationFn: ({ name, files }: { name: string; files: FlatFileEntry[] }) =>
       skillsApi.upload(name, files),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: queryKeys.skills })

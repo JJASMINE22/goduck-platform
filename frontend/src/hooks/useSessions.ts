@@ -27,6 +27,10 @@ export function useSessionHistory(id: UUID | null | undefined) {
     queryKey: queryKeys.sessionHistory(id ?? ''),
     queryFn: () => sessionsApi.history(id!),
     enabled: !!id,
+    // 会话历史必须实时：chatStore 在聊天中由 SSE 流式更新，但不会回写本缓存。
+    // 默认 staleTime(30s) 会让"重新打开会话"复用进入时的过时快照（新会话即空快照），
+    // 配合 ChatPage 的 isFetching 守卫，确保每次进入都拉取 checkpointer 最新真值。
+    staleTime: 0,
   })
 }
 

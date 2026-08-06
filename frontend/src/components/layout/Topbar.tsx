@@ -67,7 +67,7 @@ export function Topbar(): ReactNode {
         justifyContent: 'space-between',
       }}
     >
-      <span style={{ color: 'var(--color-text-secondary)', fontSize: 14 }}>
+      <span style={{ color: 'var(--color-text-secondary)', fontSize: 16, fontWeight: 600 }}>
         个人智能体搭建 / 迭代 / 会话工作台
       </span>
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 20 }}>

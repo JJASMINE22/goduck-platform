@@ -15,7 +15,7 @@ export const antdTheme: ThemeConfig = {
     borderRadius: 10,
     colorBgBase: '#ffffff',
     fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif',
+      '"Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif',
   },
   components: {
     Layout: {
@@ -24,7 +24,8 @@ export const antdTheme: ThemeConfig = {
       bodyBg: '#f8f9fa',
     },
     Menu: {
-      itemHeight: 40,
+      itemHeight: 44,
+      fontSize: 15,
     },
     Card: {
       borderRadiusLG: 14,

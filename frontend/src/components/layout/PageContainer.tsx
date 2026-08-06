@@ -17,11 +17,11 @@ export function PageContainer({
     <Flex vertical gap={16} style={{ height: '100%', padding: '20px 24px' }}>
       <Flex justify="space-between" align="flex-end" wrap gap={12}>
         <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>
+          <Typography.Title level={4} style={{ margin: 0, fontSize: 24 }}>
             {title}
           </Typography.Title>
           {subtitle ? (
-            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 14 }}>
               {subtitle}
             </Typography.Text>
           ) : null}
