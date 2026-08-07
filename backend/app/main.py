@@ -69,9 +69,27 @@ async def lifespan(app: FastAPI):
 
     st.content_composer = ContentComposer(pool=st.pool, minio=st.minio_storage)
 
+    # 8. Knowledge base (RAG) — 仅 kb_enabled=true 时装配（入库/管理写路径）
+    if settings.kb_enabled:
+        from app.services.embedding import build_embeddings
+        from app.services.ingest_pool import IngestPool
+        from app.services.knowledge_service import KnowledgeService
+        from app.services.vector_store import VectorStoreFactory
+
+        st.embeddings = build_embeddings(settings)
+        st.vector_factory = VectorStoreFactory(settings, st.embeddings)
+        st.knowledge_service = KnowledgeService(
+            pool=st.pool, settings=settings,
+            minio=st.minio_storage, vector_factory=st.vector_factory,
+        )
+        st.ingest_pool = IngestPool(st.knowledge_service, settings.kb_ingestion_concurrency)
+        logger.info("knowledge base enabled (embeddings/vector_factory/ingest_pool ready)")
+    else:
+        logger.info("knowledge base disabled (kb_enabled=false)")
+
     app.state.appstate = st
 
-    # 8. warmup: preload active agents (fault-tolerant — one failure non-fatal)
+    # 9. warmup: preload active agents (fault-tolerant — one failure non-fatal)
     from app.models import db as dbmod
 
     for a in await dbmod.list_active_agents(st.pool):
@@ -83,6 +101,10 @@ async def lifespan(app: FastAPI):
     logger.info("goduck-platform started")
     yield
     # shutdown: reverse-order cleanup
+    if st.ingest_pool is not None:
+        await st.ingest_pool.shutdown()
+    if st.vector_factory is not None:
+        st.vector_factory.close()
     await st.mcp_lifecycle.shutdown()
     await st.model_store.shutdown()
     await st.shutdown()
@@ -107,6 +129,13 @@ def create_app() -> FastAPI:
     app.include_router(mcp.router)
     app.include_router(uploads.router)
     app.include_router(models.router)
+
+    # 知识库路由：仅 kb_enabled=true 时挂载（避免禁用时仍 import RAG 重依赖；
+    # 禁用时 KB 接口 404、会话 knowledge-capability 返回 allow_knowledge=false）。
+    if settings.kb_enabled:
+        from app.api import knowledge
+
+        app.include_router(knowledge.router)
 
     @app.get("/health", tags=["健康检查"])
     async def health():

@@ -130,6 +130,10 @@ class SendMessageRequest(BaseModel):
         default=None, description="Per-invoke rubric override (FixedRubric priority)"
     )
     attachments: list[Attachment] = Field(default_factory=list)
+    knowledge_base_ids: list[uuid.UUID] = Field(
+        default_factory=list,
+        description="本次消息启用的知识库 id；非空时后端注入 KB 锚点（强暗示 agent 调 kb_search）。",
+    )
 
 
 class DecisionEditAction(BaseModel):
@@ -236,6 +240,15 @@ class AttachmentCapability(BaseModel):
     max_size_mb: int
 
 
+class KnowledgeCapability(BaseModel):
+    """GET /sessions/{id}/knowledge-capability —— 驱动会话框 KB 选择器可见性。
+
+    allow_knowledge = 智能体配置允许 AND 全局 KB 能力已启用（kb_enabled）。
+    """
+
+    allow_knowledge: bool
+
+
 # ---------------------------------------------------------------------------
 # Registered model (provider binding)
 # ---------------------------------------------------------------------------
@@ -290,6 +303,57 @@ class ModelTestRequest(BaseModel):
     model_type: str = Field(min_length=1)
     api_key: str = Field(min_length=1)
     base_url: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Knowledge base (RAG)
+# ---------------------------------------------------------------------------
+class KnowledgeBaseCreate(BaseModel):
+    name: str = Field(min_length=1, description="唯一知识库名")
+    description: Optional[str] = None
+    creator: str = Field(min_length=1)
+
+
+class KnowledgeBaseUpdate(BaseModel):
+    name: str = Field(min_length=1)
+    description: Optional[str] = None
+
+
+class KnowledgeBaseOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: Optional[str] = None
+    es_index_name: str
+    dims: Optional[int] = None
+    status: str
+    doc_count: int = 0
+    chunk_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class KbDocumentOut(BaseModel):
+    id: uuid.UUID
+    kb_id: uuid.UUID
+    filename: str
+    mime: str
+    size: int
+    page_count: Optional[int] = None
+    status: str
+    chunk_count: Optional[int] = None
+    error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class KbSearchResult(BaseModel):
+    content: str
+    score: float
+    filename: str
+    doc_id: uuid.UUID
+    page: Optional[int] = None
+    chunk_index: Optional[int] = None
+    kb_id: Optional[uuid.UUID] = None
 
 
 # MessageOut references UploadOut (defined later in this module). Pydantic v2

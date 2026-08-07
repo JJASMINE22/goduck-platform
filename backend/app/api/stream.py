@@ -17,10 +17,24 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.schema_utils import AgentConfig
 from app.deps import SimpleUser, get_appstate
 from app.models import db as dbmod
-from app.models.schemas import ResumeRequest, SendMessageRequest
+from app.models.schemas import KnowledgeCapability, ResumeRequest, SendMessageRequest
 from app.services.hitl_resolver import HITLResolver
 
 router = APIRouter(prefix="/sessions", tags=["流式对话"])
+
+_KB_SEARCH_TOOL_SUFFIX = "__kb_search"
+
+
+async def _resolve_kb_search_tool(st) -> str | None:
+    """动态解析知识库检索 MCP 工具名（扫 *<注册名>__kb_search），解耦注册名。"""
+    try:
+        tools = await st.mcp_lifecycle.get_tools()
+    except Exception:  # noqa: BLE001
+        return None
+    for t in tools:
+        if t.name.endswith(_KB_SEARCH_TOOL_SUFFIX):
+            return t.name
+    return None
 
 
 def _config_for(session: dict) -> dict:
@@ -65,34 +79,48 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
     config = _config_for(session)
     agent = await _build_agent_or_409(st, session["agent_id"])
 
-    # 附件校验 + content 组装（plan §6.5）
+    # 附件校验 + KB 锚点注入 + content 组装（plan §6.5）
     upload_ids: list[str] = []
-    if body.attachments:
-        agent_row = await dbmod.get_agent(st.pool, session["agent_id"])
-        agent_cfg = AgentConfig.model_validate(agent_row["config_json"])
+    content: str | list = body.content
+    needs_agent_cfg = bool(body.attachments) or bool(body.knowledge_base_ids)
+    agent_row = await dbmod.get_agent(st.pool, session["agent_id"]) if needs_agent_cfg else None
+    agent_cfg = (
+        AgentConfig.model_validate(agent_row["config_json"]) if agent_row is not None else None
+    )
 
-        # 第 1 层：能力门控
+    # ① 附件：能力门控 + upload_id 有效性/归属 + 多模态组装
+    if body.attachments:
+        assert agent_cfg is not None
         if not agent_cfg.allow_attachments:
             raise HTTPException(422, "该智能体未启用附件能力")
-
-        # 第 2/3 层：upload_id 有效性 + 归属
-        # 子类型放行由上传层 _ALLOWED_MIME 白名单单一可信源保证（kind=='file' ∈ {docx, pdf}），
-        # 此处不再重复编码子类型规则；解析期类型兜底由 MCP parse_document 处理。
         for a in body.attachments:
             upload = await dbmod.get_upload(st.pool, uuid.UUID(a.upload_id))
             if upload is None or upload["session_id"] != session["id"]:
                 raise HTTPException(403, f"无效附件: {a.upload_id}")
             upload_ids.append(a.upload_id)
-
-        # supports_vision 由该智能体绑定的注册模型决定（model 表字段）
         supports_vision = st.model_store.supports_vision(agent_row["model_id"])
         content = await st.content_composer.build(
             user_query=body.content,
             upload_ids=upload_ids,
             supports_vision=supports_vision,
         )
-    else:
-        content = body.content
+
+    # ② 知识库锚点：能力门控 + 选中 KB 存在性 + 工具名解析 + 强暗示注入（不在此检索）
+    if body.knowledge_base_ids:
+        assert agent_cfg is not None
+        if st.knowledge_service is None:
+            raise HTTPException(503, "知识库能力未启用")
+        if not agent_cfg.allow_knowledge:
+            raise HTTPException(422, "该智能体未启用知识库能力")
+        kbs = await dbmod.get_kbs_by_ids(st.pool, body.knowledge_base_ids)
+        if len(kbs) != len(body.knowledge_base_ids):
+            raise HTTPException(404, "部分所选知识库不存在")
+        tool_name = await _resolve_kb_search_tool(st)
+        if tool_name is None:
+            raise HTTPException(
+                409, "知识库检索工具未注册（请启动 mcp-servers 并登记到 mcp_server 表）"
+            )
+        content = st.content_composer.with_kb_anchor(content, kbs, tool_name)
 
     adapter = st.stream_adapter
 
@@ -117,6 +145,28 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
             await svc.touch(session["id"])
 
     return EventSourceResponse(event_gen())
+
+
+@router.get("/{session_id}/knowledge-capability", response_model=KnowledgeCapability)
+async def get_knowledge_capability(session_id: uuid.UUID, request: Request):
+    """前端据此渲染会话框 KB 选择器（DESIGN 准则 F2 能力驱动 UI）。
+
+    allow_knowledge = 智能体配置允许 AND 全局 KB 能力已启用（kb_enabled）。
+    kb_enabled=false 时直接 false（不查 agent 配置）。
+    """
+    from app.services.session_service import SessionService
+
+    st = get_appstate(request)
+    session = await SessionService(st.pool).get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    allow = False
+    if st.knowledge_service is not None:  # kb_enabled
+        agent_row = await dbmod.get_agent(st.pool, session["agent_id"])
+        if agent_row is not None:
+            allow = AgentConfig.model_validate(agent_row["config_json"]).allow_knowledge
+    return KnowledgeCapability(allow_knowledge=allow)
 
 
 @router.post("/{session_id}/resume")

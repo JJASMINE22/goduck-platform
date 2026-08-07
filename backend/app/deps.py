@@ -6,7 +6,7 @@ lives on `app.state` and is exposed via FastAPI `Depends`.
 from __future__ import annotations
 
 import logging
-from typing import AsyncIterator, Optional
+from typing import Optional
 
 from fastapi import FastAPI, Request
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -102,6 +102,11 @@ class AppState:
         self.model_store = None
         self.content_composer = None
         self.stream_tracker = StreamTracker()
+        # knowledge base (RAG) — None when kb_enabled=false (lazy, 503-gated)
+        self.embeddings = None
+        self.vector_factory = None
+        self.knowledge_service = None
+        self.ingest_pool = None
 
     async def startup(self) -> None:
         s = self.settings
@@ -166,3 +171,8 @@ def get_store(request: Request) -> AsyncPostgresStore:
 
 def get_settings_dep(request: Request) -> Settings:
     return get_appstate(request).settings
+
+
+def get_knowledge_service(request: Request):
+    """知识库服务访问器（kb_enabled=false 时为 None；路由层自行 503）。"""
+    return get_appstate(request).knowledge_service

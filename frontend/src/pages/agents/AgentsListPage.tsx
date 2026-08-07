@@ -24,6 +24,9 @@ export function AgentsListPage(): ReactNode {
   const navigate = useNavigate()
   const [showArchived, setShowArchived] = useState(false)
   const { data, isLoading, isError, refetch } = useAgents(showArchived)
+  // 后端 include_archived 是「是否把归档项并入」，而非「仅看归档」；
+  // 故在客户端筛选为仅归档，与会话页语义保持一致。
+  const rows = showArchived ? (data ?? []).filter((a) => a.status === 'archived') : data ?? []
   const archiveAgent = useArchiveAgent()
   const purgeAgent = usePurgeAgent()
   const { modal } = AntApp.useApp()
@@ -151,18 +154,22 @@ export function AgentsListPage(): ReactNode {
         <PageLoading />
       ) : isError ? (
         <ErrorState onRetry={() => refetch()} />
-      ) : !data?.length ? (
-        <EmptyState
-          title="暂无智能体"
-          description="新建一个智能体，配置 system_prompt / 工具 / 子代理"
-          extra={
-            <Button type="primary" icon={<Plus size={16} />} onClick={() => navigate('/agents/new')}>
-              新建智能体
-            </Button>
-          }
-        />
+      ) : !rows.length ? (
+        showArchived ? (
+          <EmptyState title="暂无已归档智能体" description="归档后的智能体会显示在此处，可彻底删除或保留历史。" />
+        ) : (
+          <EmptyState
+            title="暂无智能体"
+            description="新建一个智能体，配置 system_prompt / 工具 / 子代理"
+            extra={
+              <Button type="primary" icon={<Plus size={16} />} onClick={() => navigate('/agents/new')}>
+                新建智能体
+              </Button>
+            }
+          />
+        )
       ) : (
-        <Table<AgentOut> rowKey="id" columns={columns} dataSource={data} pagination={false} size="middle" />
+        <Table<AgentOut> rowKey="id" columns={columns} dataSource={rows} pagination={false} size="middle" />
       )}
     </PageContainer>
   )

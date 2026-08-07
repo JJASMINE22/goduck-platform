@@ -43,6 +43,25 @@ services:
       - goduck_miniodata:/data
     restart: unless-stopped
 
+  elasticsearch:
+    # 知识库（RAG）向量/全文检索存储。single-node dev；生产请开启 xpack.security 并配 ES_USER/ES_PASSWORD。
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+    container_name: goduck-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"          # dev：关闭安全
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"        # NAS 资源约束；按机器调整
+    ports:
+      - "${ES_PORT:-9200}:9200"                 # 本机调试；生产建议删除
+    volumes:
+      - goduck_esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   # ============ 后端 ============
   backend:
     build: ./backend
@@ -67,6 +86,18 @@ services:
       MINIO_SECURE: "false"
       MCP_ALLOW_LOOPBACK: "true"
       MAX_INVOKE_RETRIES: ${MAX_INVOKE_RETRIES:-2}
+      # ---- 知识库（RAG）----
+      ES_URL: http://elasticsearch:9200
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://192.168.x.x:8082/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-dummy}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embeddings-inference}
+      EMBEDDING_CHECK_CTX_LENGTH: ${EMBEDDING_CHECK_CTX_LENGTH:-false}
+      EMBEDDING_DIMS: ${EMBEDDING_DIMS:-512}
+      KB_ENABLED: ${KB_ENABLED:-true}
+      KB_STORE_MINIO: ${KB_STORE_MINIO:-true}
+    # 跨机 TEI 可选：把 tei 服务名映射到 GPU 机 LAN IP，则 EMBEDDING_BASE_URL 可写 http://tei:8082/v1
+    # extra_hosts:
+    #   - "tei:192.168.x.x"
     expose: ["8000"]                       # 仅内部网络可见，不对宿主发布
     volumes:
       - goduck_backend_data:/data          # workspace/memories/skills 持久化
@@ -75,6 +106,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+      elasticsearch:
+        condition: service_healthy
     restart: unless-stopped
 
   # ============ 前端 ============
@@ -102,3 +135,4 @@ volumes:
   goduck_pgdata:
   goduck_miniodata:
   goduck_backend_data:
+  goduck_esdata:

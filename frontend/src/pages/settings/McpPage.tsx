@@ -1,9 +1,8 @@
-/* MCP 运维页（DESIGN §10）—— server CRUD（触发后端 refresh）+ 全量工具列表 + 健康状态 + 强制重连。
+/* MCP 运维页（DESIGN §10）—— server CRUD（触发后端 refresh）+ 工具按 server 行展开 + 健康状态 + 强制重连。
    config 是动态 JSON：stdio={command,args,env} | http={url,headers}。表单用 JSON 文本编辑。 */
 import {
   App as AntApp,
   Button,
-  Collapse,
   Drawer,
   Flex,
   Form,
@@ -18,8 +17,8 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useMemo, useState, type ReactNode } from 'react'
-import { Pencil, Plus, RefreshCw, Trash2, Wrench } from 'lucide-react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
 import {
   useCreateMcpServer,
   useDeleteMcpServer,
@@ -56,6 +55,20 @@ const templates: Record<McpKind, string> = {
 }
 
 const emptyForm: FormValues = { name: '', kind: 'http', configText: templates.http, enabled: true }
+
+/** 命名空间面板内的工具列：去掉 "{server}__" 前缀，只显示短名 + 描述 */
+const shortToolCols: ColumnsType<ToolInfo> = [
+  {
+    title: '工具',
+    dataIndex: 'name',
+    key: 'name',
+    render: (v: string) => {
+      const idx = v.indexOf('__')
+      return <code>{idx >= 0 ? v.slice(idx + 2) : v}</code>
+    },
+  },
+  { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
+]
 
 export function McpPage(): ReactNode {
   const servers = useMcpServers()
@@ -179,10 +192,43 @@ export function McpPage(): ReactNode {
     },
   ]
 
-  const toolCols: ColumnsType<ToolInfo> = [
-    { title: '工具名（命名空间）', dataIndex: 'name', key: 'name', render: (v: string) => <code>{v}</code> },
-    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
-  ]
+  // —— 工具随所属 server 行展开（server 列表与工具列表合并，消除重复） ——
+  const [toolSearch, setToolSearch] = useState('')
+  const [expandedKeys, setExpandedKeys] = useState<string[]>([])
+
+  // 工具按命名空间分组：{server}__{tool} → 以首个 "__" 前的 server 名为 key
+  const toolsByServer = useMemo(() => {
+    const map = new Map<string, ToolInfo[]>()
+    for (const t of tools.data ?? []) {
+      const idx = t.name.indexOf('__')
+      const ns = idx >= 0 ? t.name.slice(0, idx) : t.name
+      const arr = map.get(ns)
+      if (arr) arr.push(t)
+      else map.set(ns, [t])
+    }
+    return map
+  }, [tools.data])
+
+  // 取某 server 命中搜索词的工具；无搜索词时返回该 server 全部工具
+  const searchQ = toolSearch.trim().toLowerCase()
+  const toolsForServer = useCallback(
+    (serverName: string): ToolInfo[] => {
+      const all = toolsByServer.get(serverName) ?? []
+      if (!searchQ) return all
+      return all.filter((t) => {
+        const idx = t.name.indexOf('__')
+        const short = idx >= 0 ? t.name.slice(idx + 2) : t.name
+        return short.toLowerCase().includes(searchQ) || (t.description ?? '').toLowerCase().includes(searchQ)
+      })
+    },
+    [toolsByServer, searchQ],
+  )
+
+  // 搜索态自动展开命中工具的 server 行；否则沿用用户手动展开
+  const searching = searchQ.length > 0
+  const expandedRowKeys = searching
+    ? (servers.data ?? []).filter((s) => toolsForServer(s.name).length > 0).map((s) => s.id)
+    : expandedKeys
 
   const busy = createServer.isPending || updateServer.isPending
 
@@ -221,33 +267,45 @@ export function McpPage(): ReactNode {
       ) : !servers.data?.length ? (
         <EmptyState title="暂无 MCP server" extra={<Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>注册服务</Button>} />
       ) : (
-        <Table<McpServerOut> rowKey="id" columns={serverCols} dataSource={servers.data} pagination={false} size="middle" />
+        <>
+          {/* 工具搜索：命中工具的所属 server 行自动展开 */}
+          <Flex justify="flex-end" style={{ marginBottom: 12 }}>
+            <Input
+              allowClear
+              prefix={<Search size={14} />}
+              placeholder="搜索工具名 / 描述（自动展开命中服务）"
+              value={toolSearch}
+              onChange={(e) => setToolSearch(e.target.value)}
+              style={{ maxWidth: 360 }}
+            />
+          </Flex>
+          <Table<McpServerOut>
+            rowKey="id"
+            columns={serverCols}
+            dataSource={servers.data}
+            pagination={false}
+            size="middle"
+            expandable={{
+              expandedRowKeys,
+              onExpandedRowsChange: (keys) => setExpandedKeys(keys as string[]),
+              rowExpandable: () => true,
+              expandedRowRender: (r) => {
+                const list = toolsForServer(r.name)
+                return (
+                  <Table<ToolInfo>
+                    rowKey="name"
+                    columns={shortToolCols}
+                    dataSource={list}
+                    pagination={list.length > 8 ? { pageSize: 8, size: 'small' } : false}
+                    size="small"
+                    locale={{ emptyText: tools.isLoading ? '工具加载中…' : '该服务暂无工具' }}
+                  />
+                )
+              },
+            }}
+          />
+        </>
       )}
-
-      {/* 全量工具列表（agent 编辑器多选来源） */}
-      <Collapse
-        style={{ marginTop: 16 }}
-        items={[
-          {
-            key: 'tools',
-            label: (
-              <span>
-                <Wrench size={14} style={{ verticalAlign: '-2px', marginRight: 6 }} />
-                全量工具（{tools.data?.length ?? 0}）
-              </span>
-            ),
-            children: (
-              <Table<ToolInfo>
-                rowKey="name"
-                columns={toolCols}
-                dataSource={tools.data ?? []}
-                pagination={{ pageSize: 8, size: 'small' }}
-                size="small"
-              />
-            ),
-          },
-        ]}
-      />
 
       <Drawer
         title={editing ? `编辑服务：${editing.name}` : '注册 MCP 服务'}

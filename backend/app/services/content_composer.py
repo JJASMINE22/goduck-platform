@@ -63,6 +63,41 @@ class ContentComposer:
         parts.extend(direct_images)
         return parts
 
+    def with_kb_anchor(
+        self, content: str | list, kbs: list[dict], tool_name: str
+    ) -> str | list:
+        """注入「用户启用的知识库」锚点（仿附件锚点）：列出 kb_id + 调用指引。
+
+        强暗示 agent 先调 kb_search 检索再作答。兼容纯文本(str)与多模态(list)。
+        tool_name 由调用方动态解析（扫 `*__kb_search`），解耦 MCP 注册名。
+        """
+        rows = "\n".join(
+            f"| {i + 1} | {kb['name']} | {kb['id']} |" for i, kb in enumerate(kbs)
+        )
+        section = (
+            "## 用户选择的知识库（强暗示：请检索后作答）\n"
+            "用户已选择以下知识库来回答本次问题，回答前请先调用检索工具：\n\n"
+            "| 序号 | 知识库 | kb_id |\n|------|--------|-------|\n"
+            f"{rows}\n\n"
+            f"调用：`{tool_name}(query=\"<用户问题或其改写>\", kb_ids=[\"<上表 kb_id>\"])`\n\n"
+            "原则：\n"
+            "- 必须使用上表真实 kb_id 调用，禁止编造；与问题无关时可不检索\n"
+            "- 优先依据检索到的内容作答；未命中则如实说明，不得编造\n"
+            "- 回答中引用来源片段编号"
+        )
+        return self._prepend(section, content)
+
+    def _prepend(self, section: str, content: str | list) -> str | list:
+        """把锚点 section 前置到 content（兼容 str 与多模态 list）。"""
+        if isinstance(content, str):
+            return f"{section}\n\n---\n\n{content}"
+        parts = content if isinstance(content, list) else [{"type": "text", "text": str(content)}]
+        # 合并进首部 text 块；否则插入新的 text 块，保持 query 在锚点之后
+        if parts and isinstance(parts[0], dict) and parts[0].get("type") == "text":
+            head = {"type": "text", "text": f"{section}\n\n---\n\n{parts[0].get('text', '')}"}
+            return [head, *parts[1:]]
+        return [{"type": "text", "text": section}, *parts]
+
     async def _load_attachments(self, upload_ids: list[str]) -> list[dict]:
         """批量查附件元数据，按入参顺序返回。"""
         import uuid as _uuid

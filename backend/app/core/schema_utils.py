@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -76,6 +76,11 @@ class AgentConfig(BaseModel):
         default=False,
         description="是否启用附件/多模态能力开关。模型多模态能力由 model registry 元数据驱动。",
     )
+    allow_knowledge: bool = Field(
+        default=False,
+        description="是否启用会话内知识库（RAG）。True 时会话框出现 KB 选择器；仅主代理可开。"
+        "检索由 agent 经 MCP 工具 <注册名>__kb_search 自主完成（Agentic RAG）。",
+    )
 
     @field_validator("skills")
     @classmethod
@@ -121,6 +126,8 @@ class AgentConfig(BaseModel):
                 raise ValueError("子代理不能设置 memory 偏好文件")
             if self.allow_attachments:
                 raise ValueError("子代理不能设置 allow_attachments 附件能力")
+            if self.allow_knowledge:
+                raise ValueError("子代理不能设置 allow_knowledge 知识库能力")
 
         if self.is_main and self.is_dicted:
             raise ValueError("主代理(is_main=True)不能为 dicted 模式")
@@ -162,6 +169,8 @@ class AgentConfig(BaseModel):
                     raise ValueError("子代理不能设置 memory 偏好文件")
                 if sa.allow_attachments:
                     raise ValueError("子代理不能设置 allow_attachments 附件能力")
+                if sa.allow_knowledge:
+                    raise ValueError("子代理不能设置 allow_knowledge 知识库能力")
 
         return self
 
