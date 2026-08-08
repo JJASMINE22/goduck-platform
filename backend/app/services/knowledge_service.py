@@ -112,11 +112,18 @@ class KnowledgeService:
         KB 仅收 pdf/docx；返回状态卡行。原始字节留底与否取决于 KB_STORE_MINIO：
         - true：存 MinIO（bucket_key=kb/<kb_id>/<doc_id>），后续 ingest 从 MinIO 取。
         - false：bucket_key=None，调用方须把 raw 透传给 ingest（内存路径）。
+
+        同名拦截：同 (kb_id, filename) 已有文档则直接拒绝（FileExistsError -> 409），
+        不执行 MinIO 上传（避免无效字节落对象存储）。更新内容需用户先删除再上传。
+        并发竞态（check 与 insert 之间）由 DB 唯一索引兜住，仍归一为同名冲突。
         """
         if await dbmod.get_kb(self.pool, kb_id) is None:
             raise KeyError(f"kb {kb_id} not found")  # -> 404
         if not (is_pdf(mime) or is_docx(mime)):
             raise ValueError(f"知识库仅支持 pdf/docx，收到 {mime}")  # -> 400
+        # 同名预检：精确匹配 filename（区分大小写）；命中即拒绝，MinIO 不上传
+        if await dbmod.get_kb_document_by_name(self.pool, kb_id, filename) is not None:
+            raise FileExistsError(filename)  # -> 409
 
         from app.services.mime_utils import extract_document_meta
 

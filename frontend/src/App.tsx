@@ -15,6 +15,7 @@ import { ChatPage } from '@/pages/sessions/ChatPage'
 import { ModelsPage } from '@/pages/settings/ModelsPage'
 import { McpPage } from '@/pages/settings/McpPage'
 import { SkillsPage } from '@/pages/settings/SkillsPage'
+import { KnowledgePage } from '@/pages/settings/KnowledgePage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 
 /** 在 AntD App 内部取出 message/notification/modal 实例，注入静态桥接 */
@@ -34,6 +35,7 @@ function AppRoot(): ReactNode {
         <Route path="/settings/models" element={<ModelsPage />} />
         <Route path="/settings/mcp" element={<McpPage />} />
         <Route path="/settings/skills" element={<SkillsPage />} />
+        <Route path="/settings/knowledge" element={<KnowledgePage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

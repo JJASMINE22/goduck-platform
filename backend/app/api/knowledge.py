@@ -121,6 +121,11 @@ async def upload_document(
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="knowledge base not found")
+    except FileExistsError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该知识库下已存在同名文档「{file.filename or 'unnamed'}」，请先删除后再上传",
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:

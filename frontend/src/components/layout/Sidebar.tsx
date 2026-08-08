@@ -1,5 +1,5 @@
 /* 侧边导航 —— 对应 DESIGN §9 路由结构。AntD Menu + react-router 导航。 */
-import { Bot, BookOpen, Cpu, MessagesSquare, Network } from 'lucide-react'
+import { Bot, BookOpen, Cpu, Database, MessagesSquare, Network } from 'lucide-react'
 import { Menu } from 'antd'
 import type { MenuProps } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -19,6 +19,7 @@ const items: MenuItem[] = [
       { key: '/settings/models', icon: icon(<Cpu size={16} />), label: '模型' },
       { key: '/settings/mcp', icon: icon(<Network size={16} />), label: 'MCP 服务' },
       { key: '/settings/skills', icon: icon(<BookOpen size={16} />), label: '技能' },
+      { key: '/settings/knowledge', icon: icon(<Database size={16} />), label: '知识库' },
     ],
   },
 ]

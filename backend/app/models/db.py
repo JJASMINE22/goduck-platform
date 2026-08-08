@@ -21,6 +21,7 @@ import logging
 import uuid
 from typing import Optional
 
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
@@ -170,6 +171,24 @@ async def init_business_schema(pool: AsyncConnectionPool) -> None:
             for stmt in _MIGRATIONS:
                 await cur.execute(stmt)
     logger.info("business schema ready (model / agent / agent_config_history / session / mcp_server / upload / knowledge_base / kb_document)")
+
+    # kb_document 同名拦截的并发兜底：加 UNIQUE(kb_id, filename)。先清理历史重复行
+    # （保留最新），再加唯一索引；任一步失败仅告警，不阻断启动——应用层查询仍为主防线。
+    try:
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "DELETE FROM kb_document a USING kb_document b "
+                        "WHERE a.kb_id = b.kb_id AND a.filename = b.filename "
+                        "AND (a.created_at, a.id) < (b.created_at, b.id)"
+                    )
+                    await cur.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_kbdoc_kb_filename "
+                        "ON kb_document(kb_id, filename)"
+                    )
+    except Exception:  # noqa: BLE001
+        logger.exception("ensure kb_document(kb_id, filename) unique index failed (legacy dupes?)")
 
 
 # ============================ Agent ops ===================================
@@ -769,7 +788,25 @@ async def create_kb_document(
     )
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(sql, params)
+            try:
+                await cur.execute(sql, params)
+                return await cur.fetchone()
+            except UniqueViolation:
+                # 并发兜底：应用层 check 与 insert 之间的竞态由唯一索引兜住 → 同名冲突
+                raise FileExistsError(filename)
+
+
+async def get_kb_document_by_name(
+    pool: AsyncConnectionPool, kb_id: uuid.UUID, filename: str
+) -> Optional[dict]:
+    """按 (kb_id, filename) 查文档（精确匹配，区分大小写）。供上传去重预检。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_KBDOC_COLUMNS} FROM kb_document "
+                "WHERE kb_id = %s AND filename = %s",
+                (kb_id, filename),
+            )
             return await cur.fetchone()
 
 
