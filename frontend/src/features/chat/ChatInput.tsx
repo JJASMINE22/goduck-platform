@@ -1,15 +1,16 @@
-/* 聊天输入 composer（AI Studio 风）—— 单一圆角容器，把附件入口收敛为左下角图标按钮
-    （Tooltip + 点击打开文件选择器），已选附件以「缩略图+文件名」chip 嵌在容器内，不再游离于窗口外。
+/* 聊天输入 composer（AI Studio 风）—— 单一圆角容器，把附件/知识库入口收敛为左下角图标按钮
+    （Tooltip + 点击打开选择器），已选项以 chip 嵌在容器内。
     发送仅在 status==='idle' 启用；streaming/interrupted 时由消息流/HITL 卡处理。
-    附件图标独立成入口，便于后续扩展"知识库"筛选（popover 化）。 */
-import { Button, Flex, Input, Tooltip, Typography, Upload } from 'antd'
+    附件图标与知识库图标各自独立成入口（准则 F2 能力驱动 UI：未开启时图标不显示）。 */
+import { Button, Checkbox, Flex, Input, Popover, Tooltip, Typography, Upload } from 'antd'
 import { type ReactNode, useState } from 'react'
-import { ChevronDown, ChevronUp, FileText, Paperclip, Send, Square, X } from 'lucide-react'
+import { BookOpen, ChevronDown, ChevronUp, FileText, Paperclip, Send, Square, X } from 'lucide-react'
 import { useAttachmentCapability, useUploadFile } from '@/hooks/useUploads'
+import { useKnowledgeBases, useKnowledgeCapability } from '@/hooks/useKnowledge'
 import { uploadsApi } from '@/api/uploads'
 import { useChatStore } from '@/store/chatStore'
 import { toastError } from '@/lib/antdStatic'
-import type { ChatStreamStatus, UUID } from '@/types'
+import type { ChatStreamStatus, KnowledgeBaseOut, UUID } from '@/types'
 import type { SendOptions } from '@/hooks/useStreamChat'
 
 export function ChatInput({
@@ -30,16 +31,34 @@ export function ChatInput({
   const setDraft = useChatStore((s) => s.setDraft)
   const [rubric, setRubric] = useState('')
   const [showRubric, setShowRubric] = useState(false)
+  const [kbOpen, setKbOpen] = useState(false)
 
+  // —— 附件 ——
   const cap = useAttachmentCapability(sessionId)
   const upload = useUploadFile(sessionId)
   const attachments = useChatStore((s) => s.attachments)
   const addAttachment = useChatStore((s) => s.addAttachment)
   const removeAttachment = useChatStore((s) => s.removeAttachment)
 
+  // —— 知识库 ——
+  const kbCap = useKnowledgeCapability(sessionId)
+  const { data: kbs, isLoading: kbsLoading } = useKnowledgeBases()
+  const selectedKbs = useChatStore((s) => s.selectedKbs)
+  const addKb = useChatStore((s) => s.addKb)
+  const removeKb = useChatStore((s) => s.removeKb)
+
   const idle = status === 'idle'
   const streaming = status === 'streaming'
   const canAttach = !!cap.data?.allow_attachments
+  const canUseKb = !!kbCap.data?.allow_knowledge
+
+  const toggleKb = (kb: KnowledgeBaseOut) => {
+    if (selectedKbs.some((k) => k.id === kb.id)) {
+      removeKb(kb.id)
+    } else {
+      addKb(kb)
+    }
+  }
 
   const accept = canAttach
     ? [cap.data!.allow_image ? 'image/*' : null, ...cap.data!.allow_file.map((f) => `.${f}`)]
@@ -77,11 +96,54 @@ export function ChatInput({
     }
   }
 
+  const kbPopoverContent = (
+    <div style={{ minWidth: 240, maxWidth: 300 }}>
+      {kbsLoading ? (
+        <Typography.Text type="secondary">加载中…</Typography.Text>
+      ) : !kbs?.length ? (
+        <Typography.Text type="secondary">暂无知识库，请先在知识库页面创建</Typography.Text>
+      ) : (
+        <Flex vertical gap={2}>
+          {kbs.map((kb) => {
+            const checked = selectedKbs.some((k) => k.id === kb.id)
+            return (
+              <div key={kb.id} className="kb-option" onClick={() => toggleKb(kb)}>
+                <Checkbox checked={checked} style={{ pointerEvents: 'none' }} />
+                <span className="kb-option__name" title={kb.description ?? kb.name}>
+                  {kb.name}
+                </span>
+                {kb.chunk_count ? (
+                  <span className="kb-option__meta">{kb.chunk_count} 片段</span>
+                ) : null}
+              </div>
+            )
+          })}
+        </Flex>
+      )}
+    </div>
+  )
+
   return (
     <div className="chat-composer">
-      {/* 已选附件（缩略图+文件名 chip，嵌在 composer 内） */}
-      {attachments.length ? (
+      {/* 已选附件 + 知识库（chip 嵌在 composer 内） */}
+      {attachments.length || selectedKbs.length ? (
         <Flex gap={8} wrap className="chat-composer__chips">
+          {selectedKbs.map((kb) => (
+            <div key={kb.id} className="kb-chip">
+              <BookOpen size={14} />
+              <span className="kb-chip__name" title={kb.name}>
+                {kb.name}
+              </span>
+              <button
+                type="button"
+                className="kb-chip__close"
+                title="移除"
+                onClick={() => removeKb(kb.id)}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ))}
           {attachments.map((a) => (
             <div key={a.upload_id} className="attach-chip">
               {a.kind === 'image' ? (
@@ -140,7 +202,7 @@ export function ChatInput({
         }
       />
 
-      {/* 底部工具条：左=附件图标（AI Studio 风），右=rubric 开关 + 发送/中止 */}
+      {/* 底部工具条：左=附件/知识库图标，右=rubric 开关 + 发送/中止 */}
       <Flex justify="space-between" align="center" className="chat-composer__bar">
         <Flex gap={4} align="center">
           {canAttach ? (
@@ -163,6 +225,26 @@ export function ChatInput({
                 />
               </Tooltip>
             </Upload>
+          ) : null}
+          {canUseKb ? (
+            <Popover
+              trigger="click"
+              placement="topLeft"
+              open={kbOpen}
+              onOpenChange={setKbOpen}
+              content={kbPopoverContent}
+            >
+              <Tooltip title="选择知识库" placement="top">
+                <Button
+                  type="text"
+                  shape="circle"
+                  size="middle"
+                  icon={<BookOpen size={16} />}
+                  disabled={!idle}
+                  style={selectedKbs.length ? { color: 'var(--color-primary)' } : undefined}
+                />
+              </Tooltip>
+            </Popover>
           ) : null}
         </Flex>
         <Flex gap={8} align="center">

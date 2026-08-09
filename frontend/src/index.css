@@ -354,6 +354,71 @@ pre,
   color: #fff;
 }
 
+/* 已选知识库 chip（图标 + 库名 + 移除；主色 tint 区别于附件 chip） */
+.kb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  padding: 3px 4px 3px 8px;
+  background: var(--color-primary-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--color-primary);
+}
+.kb-chip__name {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.kb-chip__close {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-primary);
+  opacity: 0.55;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity 0.15s ease;
+}
+.kb-chip__close:hover {
+  opacity: 1;
+}
+
+/* Popover 知识库选择列表项 */
+.kb-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.kb-option:hover {
+  background: var(--color-border-soft);
+}
+.kb-option__name {
+  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kb-option__meta {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
 /* ===== 会话窗内用户附件展示（发送后即时回显）===== */
 .msg-attachments {
   margin-top: 8px;

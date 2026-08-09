@@ -3,6 +3,7 @@
 lifespan 在启动时建立:
   - MinIO client（附件字节持久层）
   - 第三方 MCP 工具池（通过 MultiServerMCPClient 加载 mcp_servers.json）
+  - 知识库检索：embeddings client + VectorStoreFactory（store 本身 JIT 按需构建）
 
 状态经 yield 注入每个工具调用的 ctx.request_context.lifespan_context，
 无需全局变量（对标 FastAPI 的 Depends / Request.state）。
@@ -17,8 +18,11 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 import routers.document as document_router
 import routers.image as image_router
+import routers.knowledge as knowledge_router
 from config import SERVER_HOST, SERVER_PORT, load_third_party_mcp_config
 from routers._common import build_minio_client, ensure_tmp_dir
+from services.embedding import build_embeddings
+from services.vector_store import VectorStoreFactory
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -34,6 +38,11 @@ async def lifespan(server: FastMCP):
     minio = build_minio_client()
     tmp_dir = ensure_tmp_dir()
 
+    # 知识库检索：embeddings + ES vector factory（静态配置，一次构建常驻；
+    # store 本身按 index JIT 创建+缓存，见 VectorStoreFactory.get_for_index）
+    embeddings = build_embeddings()
+    vector_factory = VectorStoreFactory(embeddings)
+
     # 第三方 MCP 工具池（连接复用，一次加载常驻）
     tools: dict = {}
     if third_party_config:
@@ -48,6 +57,7 @@ async def lifespan(server: FastMCP):
         "minio": minio,
         "tools": tools,
         "tmp_dir": tmp_dir,
+        "vector_factory": vector_factory,
     }
     logger.info("lifespan 结束，资源清理完成")
 
@@ -60,8 +70,9 @@ def create_app() -> FastMCP:
     # 注册各路由模块（每个模块导出 register(mcp)）
     image_router.register(mcp)
     document_router.register(mcp)
+    knowledge_router.register(mcp)
 
-    logger.info("已注册路由: image, document")
+    logger.info("已注册路由: image, document, knowledge")
     return mcp
 
 

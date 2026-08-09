@@ -93,6 +93,7 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embeddings-inference}
       EMBEDDING_CHECK_CTX_LENGTH: ${EMBEDDING_CHECK_CTX_LENGTH:-false}
       EMBEDDING_DIMS: ${EMBEDDING_DIMS:-512}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-24}
       KB_ENABLED: ${KB_ENABLED:-true}
       KB_STORE_MINIO: ${KB_STORE_MINIO:-true}
     # 跨机 TEI 可选：把 tei 服务名映射到 GPU 机 LAN IP，则 EMBEDDING_BASE_URL 可写 http://tei:8082/v1

@@ -179,6 +179,9 @@ export function NodeDetailPanel(): ReactNode {
             <Field label="附件能力（allow_attachments，仅主代理）">
               <Switch checked={!!node.allow_attachments} onChange={(v) => patch({ allow_attachments: v })} />
             </Field>
+            <Field label="知识库能力（allow_knowledge，仅主代理）">
+              <Switch checked={!!node.allow_knowledge} onChange={(v) => patch({ allow_knowledge: v })} />
+            </Field>
           </>
         ) : (
           <Field label="dicted 模式（仅子代理）">

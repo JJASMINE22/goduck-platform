@@ -106,10 +106,8 @@ export interface SendMessageRequest {
   content: string
   rubric?: string | null // 单次 rubric 覆盖（FixedRubric 优先）
   attachments?: Attachment[]
-  // —— KB 留口（kb-hybrid-access-plan，后端未上线前不传）——
-  kb_enabled?: boolean
-  kb_collections?: string[]
-  kb_versions?: Record<string, string>
+  /** 本次消息启用的知识库 id（非空时后端注入 KB 锚点，强暗示 agent 调 kb_search） */
+  knowledge_base_ids?: UUID[]
 }
 
 export interface ResumeRequest {

@@ -31,6 +31,7 @@ def build_embeddings(settings: Settings) -> Embeddings:
         base_url=settings.embedding_base_url,
         check_embedding_ctx_length=settings.embedding_check_ctx_length,
         request_timeout=settings.embedding_timeout,
+        chunk_size=settings.embedding_batch_size,  # 单请求文本数，须 ≤ TEI max-client-batch-size（默认32）
     )
     if settings.embedding_dims is not None:
         kwargs["dimensions"] = settings.embedding_dims

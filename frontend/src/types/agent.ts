@@ -13,8 +13,8 @@ export interface RubricConfig {
 
 /**
  * 后端 AgentConfig（schema_utils.py）—— 配置树，递归 subagents。
- * 主代理: is_main=true, name/description 为 null, 可设 memory/allow_attachments
- * 子代理: is_main 省略/false, 必须设 name/description, 禁 memory/allow_attachments (workspace 主子均可)
+ * 主代理: is_main=true, name/description 为 null, 可设 memory/allow_attachments/allow_knowledge
+ * 子代理: is_main 省略/false, 必须设 name/description, 禁 memory/allow_attachments/allow_knowledge (workspace 主子均可)
  */
 export interface AgentConfig {
   name?: string | null
@@ -31,6 +31,7 @@ export interface AgentConfig {
   subagents?: AgentConfig[] | null // ★ 递归
   rubric?: RubricConfig | null
   allow_attachments?: boolean
+  allow_knowledge?: boolean // 会话内知识库（RAG）开关，仅主代理
 }
 
 // —— 请求体（schemas.py）——

@@ -5,12 +5,24 @@
    - 检索调试为按需触发（不进缓存），供文档抽屉内的搜索面板使用。 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { knowledgeApi } from '@/api/knowledge'
+import { sessionsApi } from '@/api/sessions'
 import { toastSuccess } from '@/lib/antdStatic'
 import type { KnowledgeBaseCreate, KnowledgeBaseUpdate, UUID } from '@/types'
 import { queryKeys } from './queryKeys'
 
 export function useKnowledgeBases() {
   return useQuery({ queryKey: queryKeys.knowledgeBases, queryFn: knowledgeApi.list })
+}
+
+/** 会话级知识库能力：驱动会话框 KB 图标可见性（准则 F2 能力驱动 UI）。
+ *  503（KB 全局未启用 / agent 未开启知识库能力）时不重试。 */
+export function useKnowledgeCapability(sessionId: UUID | null | undefined) {
+  return useQuery({
+    queryKey: queryKeys.kbCapability(sessionId ?? ''),
+    queryFn: () => sessionsApi.knowledgeCapability(sessionId!),
+    enabled: !!sessionId,
+    retry: false,
+  })
 }
 
 /** 单库文档列表：存在 pending/indexing 文档时每 2s 轮询，全终态后自动停。

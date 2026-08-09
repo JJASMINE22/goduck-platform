@@ -58,5 +58,26 @@ MINIO_SECURE = get_env("MINIO_SECURE", "false").lower() == "true"
 
 WRAPPER_TMP_DIR = get_env("WRAPPER_TMP_DIR", "./tmp")
 
+# ---- Elasticsearch（知识库向量检索存储）----
+ES_URL = get_env("ES_URL", "http://localhost:9200")
+ES_API_KEY = get_env("ES_API_KEY", "")
+ES_USER = get_env("ES_USER", "")
+ES_PASSWORD = get_env("ES_PASSWORD", "")
+
+# ---- 向量化（TEI OpenAI 兼容端点）----
+# 与 backend 读同一份值：EMBEDDING_DIMS 两边必须严格一致（ingest/query 维度对称）。
+# 本地 TEI：model 任意（TEI 忽略）、check_embedding_ctx_length 必须 False（避免 tiktoken 报错）。
+EMBEDDING_BASE_URL = get_env("EMBEDDING_BASE_URL", "http://localhost:8082/v1")
+EMBEDDING_API_KEY = get_env("EMBEDDING_API_KEY", "-")
+EMBEDDING_MODEL = get_env("EMBEDDING_MODEL", "text-embeddings-inference")
+EMBEDDING_CHECK_CTX_LENGTH = get_env("EMBEDDING_CHECK_CTX_LENGTH", "false").lower() == "true"
+_dims_raw = get_env("EMBEDDING_DIMS", "").strip()
+EMBEDDING_DIMS = int(_dims_raw) if _dims_raw else None
+EMBEDDING_TIMEOUT = int(get_env("EMBEDDING_TIMEOUT", "30"))
+EMBEDDING_BATCH_SIZE = int(get_env("EMBEDDING_BATCH_SIZE", "24"))
+
+# ---- 知识库检索默认参数 ----
+KB_TOP_K = int(get_env("KB_TOP_K", "5"))
+
 SERVER_HOST = get_env("HOST", "0.0.0.0")
 SERVER_PORT = int(get_env("PORT", "8088"))

@@ -57,6 +57,7 @@ export function toConfigTree(nodes: AgentGraphNode[]): AgentConfig {
       dynamic_dispatch: node.dynamic_dispatch,
       rubric: node.rubric,
       allow_attachments: node.allow_attachments,
+      allow_knowledge: node.allow_knowledge,
     }
     cfg.subagents = kids.length ? kids.map(build) : []
     return cfg
@@ -77,6 +78,7 @@ export function newMainNode(): AgentGraphNode {
     tool_names: [],
     is_main: true,
     allow_attachments: false,
+    allow_knowledge: false,
   }
 }
 

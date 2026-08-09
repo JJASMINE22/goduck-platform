@@ -22,10 +22,6 @@ import type {
 
 export interface SendOptions {
   rubric?: string
-  // —— KB 留口（kb-hybrid-access-plan，后端未上线前不传）——
-  kbEnabled?: boolean
-  kbCollections?: string[]
-  kbVersions?: Record<string, string>
 }
 
 export interface UseStreamChat {
@@ -108,8 +104,9 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       // 仅 idle 可发（interrupted 走 resume）
       if (store.status !== 'idle') return
 
-      // 先快照待发附件：既要挂到 user 消息上（会话窗内展示），又要写进请求体
+      // 先快照待发附件 + 启用知识库：既要挂到 user 消息上（会话窗内展示），又要写进请求体
       const attachs = store.attachments
+      const kbIds = store.selectedKbs.map((kb) => kb.id)
       store.pushUser(content, attachs)
       store.setStreamError(null)
       store.setStatus('streaming')
@@ -118,13 +115,12 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
         content,
         rubric: opts?.rubric,
         attachments: attachs.map((a) => ({ upload_id: a.upload_id })),
-        kb_enabled: opts?.kbEnabled,
-        kb_collections: opts?.kbCollections,
-        kb_versions: opts?.kbVersions,
+        knowledge_base_ids: kbIds.length ? kbIds : undefined,
       }
-      // 已把附件 id 捕获进 body，立即清空 composer（与文本输入 setValue('') 同步，
-      // 不再等到 done 事件，避免"发送后附件还贴在输入框"的观感）
+      // 已把附件 id + kb id 捕获进 body，立即清空 composer（与文本输入 setValue('') 同步，
+      // 不再等到 done 事件，避免"发送后还贴在输入框"的观感）
       store.clearAttachments()
+      store.clearKbs()
 
       abortRef.current?.abort()
       const controller = new AbortController()

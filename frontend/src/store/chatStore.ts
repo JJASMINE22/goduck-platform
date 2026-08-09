@@ -5,6 +5,7 @@ import { create } from 'zustand'
 import type {
   ChatStreamStatus,
   InterruptPayload,
+  KnowledgeBaseOut,
   UploadOut,
 } from '@/types'
 
@@ -45,6 +46,7 @@ export interface ChatState {
   status: ChatStreamStatus
   pendingInterrupt: PendingInterrupt | null
   attachments: UploadOut[] // 待发附件，发消息后清空
+  selectedKbs: KnowledgeBaseOut[] // 本次启用的知识库，发消息后清空
   streamError: string | null
   // 发送框草稿：上提到 store，使回撤可回填原文（受控于 store，非组件局部 state）
   draft: string
@@ -67,6 +69,10 @@ export interface ChatState {
   removeAttachment: (uploadId: string) => void
   clearAttachments: () => void
   setAttachments: (list: UploadOut[]) => void
+  addKb: (kb: KnowledgeBaseOut) => void
+  removeKb: (kbId: string) => void
+  clearKbs: () => void
+  setKbs: (list: KnowledgeBaseOut[]) => void
   setDraft: (v: string) => void
   /** 乐观移除一个完整回合（用户消息 + 其后到下一用户消息前的全部 AI/工具消息）
       及同时间窗内的工具调用卡；真值以后端历史重拉兜底（准则 R9） */
@@ -81,6 +87,7 @@ const initialState = {
   status: 'idle' as ChatStreamStatus,
   pendingInterrupt: null as PendingInterrupt | null,
   attachments: [] as UploadOut[],
+  selectedKbs: [] as KnowledgeBaseOut[],
   streamError: null as string | null,
   draft: '' as string,
 }
@@ -179,6 +186,14 @@ export const useChatStore = create<ChatState>((set) => ({
   clearAttachments: () => set({ attachments: [] }),
 
   setAttachments: (list) => set({ attachments: list }),
+
+  addKb: (kb) => set((s) => (s.selectedKbs.some((k) => k.id === kb.id) ? {} : { selectedKbs: [...s.selectedKbs, kb] })),
+
+  removeKb: (kbId) => set((s) => ({ selectedKbs: s.selectedKbs.filter((k) => k.id !== kbId) })),
+
+  clearKbs: () => set({ selectedKbs: [] }),
+
+  setKbs: (list) => set({ selectedKbs: list }),
 
   setDraft: (v) => set({ draft: v }),
 

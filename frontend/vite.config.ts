@@ -16,6 +16,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // 允许局域网设备访问（监听所有网卡）。
+    // 可用 `npm run dev -- --host 0.0.0.0` 临时覆盖，或 `--host` 仅本机。
+    host: true,
     proxy: {
       '/api': {
         target: API_TARGET,

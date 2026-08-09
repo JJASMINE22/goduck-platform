@@ -643,6 +643,9 @@ async def get_uploads_by_ids(
 _KB_COLUMNS = (
     "id, name, description, es_index_name, dims, status, creator, created_at, updated_at"
 )
+# JOIN 场景需限定表别名：kb_document 同样含 id/created_at/updated_at，
+# 直接用 _KB_COLUMNS 会 AmbiguousColumn。结果列名仍为 id/name/...（dict 键不变）。
+_KB_COLUMNS_QUALIFIED = ", ".join(f"kb.{c}" for c in _KB_COLUMNS.split(", "))
 _KBDOC_COLUMNS = (
     "id, kb_id, bucket_key, filename, mime, size, page_count, "
     "status, chunk_count, error, created_at, updated_at"
@@ -725,7 +728,7 @@ async def list_kbs(
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                f"SELECT {_KB_COLUMNS}, "
+                f"SELECT {_KB_COLUMNS_QUALIFIED}, "
                 f"COUNT(d.id) AS doc_count, COALESCE(SUM(d.chunk_count), 0) AS chunk_count "
                 f"FROM knowledge_base kb LEFT JOIN kb_document d ON d.kb_id = kb.id "
                 f"{where} "

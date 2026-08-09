@@ -58,3 +58,8 @@ export interface KbSearchResult {
   chunk_index?: number | null
   kb_id?: UUID | null
 }
+
+/** GET /sessions/{id}/knowledge-capability —— 驱动会话框 KB 选择器可见性（准则 F2） */
+export interface KnowledgeCapability {
+  allow_knowledge: boolean
+}
