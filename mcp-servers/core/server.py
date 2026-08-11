@@ -53,11 +53,24 @@ async def lifespan(server: FastMCP):
     else:
         logger.warning("mcp_servers.json 未配置任何第三方 MCP")
 
+    # markitdown 文档转 Markdown 引擎（进程级单例：首次构造加载 magika ONNX 模型 ~0.8s，
+    # 此后所有 parse_document 调用复用此实例，摊薄为 0）。
+    # try/except 隔离失败：markitdown 初始化异常不影响 image/knowledge 工具，仅 document 不可用。
+    markitdown = None
+    try:
+        from markitdown import MarkItDown
+
+        markitdown = MarkItDown()
+        logger.info("markitdown 引擎就绪（docx/pdf → Markdown）")
+    except Exception:
+        logger.exception("markitdown 初始化失败；parse_document 将返回错误，其余工具不受影响")
+
     yield {
         "minio": minio,
         "tools": tools,
         "tmp_dir": tmp_dir,
         "vector_factory": vector_factory,
+        "markitdown": markitdown,
     }
     logger.info("lifespan 结束，资源清理完成")
 

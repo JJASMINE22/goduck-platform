@@ -22,9 +22,14 @@ python-multipart>=0.0.9
 pyyaml>=6.0
 requests>=2.32
 minio>=7.2
+# ---- 附件魔数判定 + 上传链轻量元数据（段落数/页数，直写 PG，保持不动）----
 filetype>=1.2
 python-docx>=1.1
 pymupdf>=1.24
+# ---- 工作区 office 文档预览：markitdown 转 Markdown（保留标题/列表/表格结构）。
+#      与 mcp-servers 同库，但本进程实例服务工作区文件（本机磁盘），不复用 mcp-servers（按 upload_id 从 MinIO 取）。
+#      [docx,pdf,xlsx,pptx] 拉 mammoth/pdfminer+pdfplumber/openpyxl/python-pptx 各 converter。----
+markitdown[docx,pdf,xlsx,pptx]
 # ---- 知识库（RAG）：向量检索 + 向量化 ----
 langchain-elasticsearch>=0.2
 elasticsearch>=8.13

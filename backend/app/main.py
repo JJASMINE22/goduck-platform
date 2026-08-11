@@ -120,7 +120,8 @@ def create_app() -> FastAPI:
         root_path=settings.root_path,
     )
 
-    from app.api import agents, mcp, models, sessions, skills, stream, uploads
+    from app.api import agents, mcp, models, sessions, skills, stream, uploads, workspace
+    from app.models.schemas import HealthResponse
 
     app.include_router(agents.router)
     app.include_router(sessions.router)
@@ -129,6 +130,7 @@ def create_app() -> FastAPI:
     app.include_router(mcp.router)
     app.include_router(uploads.router)
     app.include_router(models.router)
+    app.include_router(workspace.router)
 
     # 知识库路由：仅 kb_enabled=true 时挂载（避免禁用时仍 import RAG 重依赖；
     # 禁用时 KB 接口 404、会话 knowledge-capability 返回 allow_knowledge=false）。
@@ -137,9 +139,11 @@ def create_app() -> FastAPI:
 
         app.include_router(knowledge.router)
 
-    @app.get("/health", tags=["健康检查"])
+    @app.get("/health", tags=["健康检查"], response_model=HealthResponse)
     async def health():
-        return {"status": "ok"}
+        # capabilities 前端零配置感知全局能力开关（kb_enabled 等），
+        # 驱动菜单/路由/页面可见性（F2）。单一真相源 = settings。
+        return {"status": "ok", "capabilities": {"kb_enabled": settings.kb_enabled}}
 
     return app
 

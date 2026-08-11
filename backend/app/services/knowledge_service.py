@@ -38,6 +38,17 @@ class DimensionMismatchError(Exception):
     """维度漂移：目标 KB 记录的 dims != 全局 EMBEDDING_DIMS → 拦截检索。"""
 
 
+def _embed_progress(done: int, total: int) -> int:
+    """Map (done/total) embedded batches → 5..99（入库进度百分比）。
+
+    嵌入是耗时主体，解析/收尾快：把已嵌入比例映射到 [5,99]，留出首尾余量——
+    解析完成即将嵌入≈5%，全部嵌入完≈99%，最终 indexed 固定 100%。
+    """
+    if total <= 0:
+        return 5
+    return min(99, 5 + round(done / total * 94))
+
+
 class KnowledgeService:
     def __init__(
         self,
@@ -189,8 +200,12 @@ class KnowledgeService:
 
         raw_bytes：KB_STORE_MINIO=false 时由调用方透传内存字节；否则从 MinIO 取。
         嵌入维度 = 全局 EMBEDDING_DIMS（由嵌入客户端携带 dimensions）。
+        进度：按 embedding_batch_size 分批嵌入，每批后回写 progress（0..100），
+        前端经文档列表轮询渲染进度条。
         """
-        await dbmod.update_kb_document_status(self.pool, doc_id, status="indexing")
+        await dbmod.update_kb_document_status(
+            self.pool, doc_id, status="indexing", progress=0
+        )
         try:
             doc = await dbmod.get_kb_document(self.pool, doc_id)
             if doc is None:
@@ -209,14 +224,25 @@ class KnowledgeService:
             store = self.vector_factory.get(str(kb_id))
             # 幂等：先删该文档旧 chunk（应对重传/重试/重建；新块数少于旧块时清残留）
             self.vector_factory.delete_by_doc_id(str(kb_id), str(doc_id))
-            ids = [f"{doc_id}_{i}" for i in range(len(chunks))]
-            store.add_documents(chunks, ids=ids)
+
+            # 分批嵌入 + 入库：按 embedding_batch_size 切片，逐批 add_documents（各自嵌入+写ES），
+            # 每批后回写 progress。单批耗时随硬件而定（NAS CPU ~2s/文本）⇒ progress 粒度 = 单批。
+            total = len(chunks)
+            batch_size = max(1, self.settings.embedding_batch_size)
+            for start in range(0, total, batch_size):
+                batch = chunks[start:start + batch_size]
+                batch_ids = [f"{doc_id}_{i}" for i in range(start, start + len(batch))]
+                store.add_documents(batch, ids=batch_ids)
+                await dbmod.update_kb_document_status(
+                    self.pool, doc_id, status="indexing",
+                    progress=_embed_progress(start + len(batch), total),
+                )
 
             await dbmod.update_kb_document_status(
-                self.pool, doc_id, status="indexed", chunk_count=len(chunks),
-                page_count=doc.get("page_count"),
+                self.pool, doc_id, status="indexed", chunk_count=total,
+                page_count=doc.get("page_count"), progress=100,
             )
-            logger.info("ingested doc=%s chunks=%d kb=%s", doc_id, len(chunks), kb_id)
+            logger.info("ingested doc=%s chunks=%d kb=%s", doc_id, total, kb_id)
         except Exception as e:  # noqa: BLE001
             logger.exception("ingest failed doc=%s kb=%s", doc_id, kb_id)
             await dbmod.update_kb_document_status(

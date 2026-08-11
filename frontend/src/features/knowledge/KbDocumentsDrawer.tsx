@@ -17,7 +17,7 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useRef, useState, type ChangeEvent, type ReactNode } from 'react'
+import { useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from 'react'
 import { FileText, RotateCw, Search, Trash2, Upload as UploadIcon } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import {
@@ -27,6 +27,7 @@ import {
   useReindexDocument,
   useUploadDocument,
 } from '@/hooks/useKnowledge'
+import { useDragResize } from '@/hooks/useDragResize'
 import { formatBytes, formatDateTime } from '@/lib/format'
 import { toastError, toastSuccess } from '@/lib/antdStatic'
 import { KbDocStatusTag } from './KbDocStatusTag'
@@ -34,6 +35,27 @@ import type { KbDocumentOut, KbSearchResult, KnowledgeBaseOut } from '@/types'
 
 const ACCEPT = '.pdf,.docx'
 const ACCEPT_RE = /\.(pdf|docx)$/i
+
+/** 抽屉左边缘拖拽手柄（落在 body padding 区，不遮挡内容）。 */
+const RESIZE_HANDLE_STYLE: CSSProperties = {
+  position: 'absolute',
+  left: 0,
+  top: 0,
+  bottom: 0,
+  width: 8,
+  zIndex: 2,
+  cursor: 'col-resize',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+}
+const RESIZE_GRIP_STYLE: CSSProperties = {
+  width: 3,
+  height: 36,
+  borderRadius: 2,
+  background: 'var(--color-border)',
+  opacity: 0.55,
+}
 
 /** KB 仅收 pdf/docx —— 前端预筛减少无效上传（准则 F6：服务端魔数仍为最终判定） */
 function isAcceptable(file: File): boolean {
@@ -61,6 +83,14 @@ export function KbDocumentsDrawer({
   const reindexDoc = useReindexDocument(kbId)
   const search = useKbSearch(kbId)
   const { modal } = AntApp.useApp()
+
+  // 抽屉可拖拽调宽（左边缘手柄）；宽度持久化到 localStorage，跨刷新保留。
+  const { width, onResizeStart, reset } = useDragResize({
+    initial: 960,
+    min: 560,
+    max: Math.min(1800, window.innerWidth - 24),
+    storageKey: 'kb-doc-drawer-width',
+  })
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -168,7 +198,7 @@ export function KbDocumentsDrawer({
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 100,
+      width: 140,
       render: (v: string, r) =>
         v === 'failed' && r.error ? (
           <Tooltip title={r.error}>
@@ -177,7 +207,7 @@ export function KbDocumentsDrawer({
             </span>
           </Tooltip>
         ) : (
-          <KbDocStatusTag status={v} />
+          <KbDocStatusTag status={v} progress={r.progress} />
         ),
     },
     {
@@ -227,10 +257,19 @@ export function KbDocumentsDrawer({
       title={kb ? `文档管理：${kb.name}` : '文档管理'}
       open={open}
       onClose={onClose}
-      width={960}
+      width={width}
       destroyOnClose
-      styles={{ body: { padding: 16 } }}
+      styles={{ body: { padding: 16, position: 'relative' } }}
     >
+      {/* 左边缘拖拽调宽手柄：双击重置为默认宽度 */}
+      <div
+        onMouseDown={onResizeStart}
+        onDoubleClick={reset}
+        title="拖拽调整宽度（双击重置）"
+        style={RESIZE_HANDLE_STYLE}
+      >
+        <span style={RESIZE_GRIP_STYLE} />
+      </div>
       {kb ? (
         <Flex vertical gap={16}>
           <Typography.Text type="secondary">
@@ -282,6 +321,7 @@ export function KbDocumentsDrawer({
             columns={columns}
             dataSource={data}
             pagination={false}
+            scroll={{ x: 920 }}
             locale={{
               emptyText: isError ? '加载失败' : '暂无文档，上传第一个吧',
             }}

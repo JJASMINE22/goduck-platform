@@ -934,3 +934,74 @@ pre,
 .chat-welcome__hint {
   font-size: 12px;
 }
+
+/* ============ 会话页「工作区」侧面板（plan §3.2） ============ */
+.ws-panel {
+  flex-shrink: 0;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.ws-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: var(--color-bg-elevated);
+}
+.ws-panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 6px;
+}
+.ws-panel__body .ant-tree {
+  font-size: 13px;
+}
+.ws-panel__body .ant-tree .ant-tree-title {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 工作区文件预览（抽屉内） */
+.ws-preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.ws-preview__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: var(--color-bg-elevated);
+  flex-shrink: 0;
+}
+.ws-preview__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px;
+}
+.ws-preview__fallback {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.ws-preview__fallback-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--color-text-tertiary);
+  padding: 24px;
+}

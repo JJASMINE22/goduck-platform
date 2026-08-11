@@ -1,6 +1,6 @@
 /* 知识库 API —— 对应后端 api/knowledge.py（prefix /knowledge-bases）。
    - KB CRUD + 文档（注册/列表/删除/重建索引）+ 管理面检索调试。
-   - kb_enabled=false 时后端全部 503（前端展示禁用态）。
+   - kb_enabled=false 时后端路由未挂载，接口 404（前端按全局能力开关门控，见 useCapabilities）。
    - 文档上传仅收 pdf/docx，前端只传 file（mime 服务端魔数判定，准则 F6）。 */
 import { del, get, post, postForm, put } from './client'
 import type {

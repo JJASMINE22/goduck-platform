@@ -22,20 +22,6 @@ from app.services.hitl_resolver import HITLResolver
 
 router = APIRouter(prefix="/sessions", tags=["流式对话"])
 
-_KB_SEARCH_TOOL_SUFFIX = "__kb_search"
-
-
-async def _resolve_kb_search_tool(st) -> str | None:
-    """动态解析知识库检索 MCP 工具名（扫 *<注册名>__kb_search），解耦注册名。"""
-    try:
-        tools = await st.mcp_lifecycle.get_tools()
-    except Exception:  # noqa: BLE001
-        return None
-    for t in tools:
-        if t.name.endswith(_KB_SEARCH_TOOL_SUFFIX):
-            return t.name
-    return None
-
 
 def _config_for(session: dict) -> dict:
     return {
@@ -105,7 +91,8 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
             supports_vision=supports_vision,
         )
 
-    # ② 知识库锚点：能力门控 + 选中 KB 存在性 + 工具名解析 + 强暗示注入（不在此检索）
+    # ② 知识库锚点：能力门控 + 选中 KB 存在性 + 语义暗示注入（不在此检索）
+    # 工具发现交给 agent 原生 function-calling：无检索工具则按锚点原则自主降级。
     if body.knowledge_base_ids:
         assert agent_cfg is not None
         if st.knowledge_service is None:
@@ -115,12 +102,7 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
         kbs = await dbmod.get_kbs_by_ids(st.pool, body.knowledge_base_ids)
         if len(kbs) != len(body.knowledge_base_ids):
             raise HTTPException(404, "部分所选知识库不存在")
-        tool_name = await _resolve_kb_search_tool(st)
-        if tool_name is None:
-            raise HTTPException(
-                409, "知识库检索工具未注册（请启动 mcp-servers 并登记到 mcp_server 表）"
-            )
-        content = st.content_composer.with_kb_anchor(content, kbs, tool_name)
+        content = st.content_composer.with_kb_anchor(content, kbs)
 
     adapter = st.stream_adapter
 

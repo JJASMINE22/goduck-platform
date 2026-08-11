@@ -43,6 +43,7 @@ export interface KbDocumentOut {
   page_count?: number | null
   status: string
   chunk_count?: number | null
+  progress?: number | null
   error?: string | null
   created_at: ISODateTime
   updated_at: ISODateTime

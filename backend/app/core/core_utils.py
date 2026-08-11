@@ -20,6 +20,7 @@ from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphBubbleUp
 
+from app.core.user_scoped_backend import UserScopedFilesystemBackend
 from app.tools.rubric_tools import make_grader_tools
 
 logger = logging.getLogger(__name__)
@@ -184,8 +185,12 @@ def _build_backend(ctx, *, memory, workspace, has_skills):
                 virtual_mode=True,
             )
     if workspace:
-        routes["/workspace/"] = FilesystemBackend(
-            root_dir=os.path.abspath(os.path.join(ctx.local_dir, "workspace")).replace("\\", "/"),
+        # 按用户隔离：base_root 为全局 workspace 目录，per-user 子目录在每次文件
+        # 操作时由 cwd property 按 runtime 当前 user 惰性解析（plan §3.1-1/2）。
+        # 绝不能在构建期注入 per-user root——图按 agent_id 缓存（agent_registry.py），
+        # 首用户 root 会被烘焙并静默串给所有用户（plan 风险 R3）。
+        routes["/workspace/"] = UserScopedFilesystemBackend(
+            base_root=ctx.workspace_dir,
             virtual_mode=True,
         )
     if has_skills:

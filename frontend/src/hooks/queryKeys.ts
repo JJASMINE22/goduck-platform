@@ -25,6 +25,13 @@ export const queryKeys = {
   attachmentCapability: (sessionId: string) =>
     ['sessions', sessionId, 'attachment-capability'] as const,
   kbCapability: (sessionId: string) => ['sessions', sessionId, 'kb-capability'] as const,
+  workspaceCapability: (sessionId: string) =>
+    ['sessions', sessionId, 'workspace-capability'] as const,
+  workspaceTree: (sessionId: string) => ['sessions', sessionId, 'workspace-tree'] as const,
+  workspaceFile: (sessionId: string, path: string) =>
+    ['sessions', sessionId, 'workspace-file', path] as const,
+  workspacePreview: (sessionId: string, path: string) =>
+    ['sessions', sessionId, 'workspace-preview', path] as const,
 } as const
 
 export function createQueryClient(): QueryClient {

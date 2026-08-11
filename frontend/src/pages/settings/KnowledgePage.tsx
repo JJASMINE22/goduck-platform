@@ -1,13 +1,14 @@
 /* 知识库管理页（plan §5.8）—— KB CRUD + 文档入口。
    - 知识库 = 一组文档的检索集合（es_index_name 不可改）。
    - 创建需 creator（取顶栏当前用户）；改名时后端校验唯一（409）。
-   - 后端 kb_enabled=false 时所有接口 503，页面降级为禁用态提示。
+   - 能力驱动（F2）：后端 kb_enabled=false 时路由未挂载（接口 404），本页依据
+     全局能力开关（/health → capabilities）降级为禁用态提示，不依赖接口报错。
    - 文档管理（上传/检索/重建索引）在抽屉 KbDocumentsDrawer 内完成。 */
 import { App as AntApp, Button, Drawer, Flex, Form, Input, Popconfirm, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState, type ReactNode } from 'react'
 import { FolderOpen, Pencil, Plus, Trash2 } from 'lucide-react'
-import { ApiError } from '@/api/client'
+import { useCapabilities } from '@/hooks/useCapabilities'
 import { useCreateKb, useDeleteKb, useKnowledgeBases, useUpdateKb } from '@/hooks/useKnowledge'
 import { useCurrentUser } from '@/store/userStore'
 import { PageContainer } from '@/components/layout/PageContainer'
@@ -22,7 +23,8 @@ interface FormValues {
 }
 
 export function KnowledgePage(): ReactNode {
-  const { data, isLoading, isError, error, refetch } = useKnowledgeBases()
+  const { ready, kb_enabled } = useCapabilities()
+  const { data, isLoading, isError, refetch } = useKnowledgeBases()
   const createKb = useCreateKb()
   const updateKb = useUpdateKb()
   const deleteKb = useDeleteKb()
@@ -35,8 +37,8 @@ export function KnowledgePage(): ReactNode {
 
   const userId = useCurrentUser((s) => s.userId)
 
-  // 503 = 全局 KB 能力未启用（kb_enabled=false）→ 降级展示
-  const kbDisabled = error instanceof ApiError && error.status === 503
+  // 全局 KB 能力未启用（kb_enabled=false）→ 降级展示（不依赖接口 404/503）
+  const kbDisabled = ready && !kb_enabled
 
   const openCreate = () => {
     setEditing(null)

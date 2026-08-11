@@ -83,12 +83,15 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embeddings-inference"      # 任意字符串，TEI 忽略；云端用真实模型名
     embedding_check_ctx_length: bool = False                # TEI 必须 False（避免 tiktoken 报错）
     embedding_dims: Optional[int] = None                    # 全局维度（MRL 截断值，如 512）；ingest 与 query 共用
-    embedding_timeout: int = 30
+    # 单批嵌入请求超时（秒）：必须 > 单批实际处理耗时，否则每批必超时（OpenAI 客户端超时后还会重试 2 次放大延迟）。
+    embedding_timeout: int = 90
     # 单次 /v1/embeddings HTTP 请求携带的最大文本数（LangChain 客户端按此自动分批：>此值内部自动切片，
-    #   不抛异常；add_documents 无需外层手动循环）。
-    # 必须 ≤ TEI --max-client-batch-size（TEI 默认 32）：超则 TEI 入口校验返回 422（batch size exceeded）。
-    # 注意对齐对象是 max-client-batch-size（单请求输入数），不是 max-concurrent-requests（跨请求在途序列数）。
-    embedding_batch_size: int = 24
+    #   不抛异常；add_documents 无需外层手动循环）。受 TEI --max-client-batch-size（默认32）上限约束（超则 422）。
+    # 超时关键：须对齐 TEI --max-batch-size（默认4）。客户端 batch > 它时，单请求内 TEI 做多轮前向推理
+    #   （如 batch=24 / max-batch-size=4 → 6 轮），请求挂起时间随比值放大，并发下（ingestion_concurrency>1）
+    #   CPU 串行再×N → 易超时。对齐后每请求恰好 1 轮推理，延迟最低。
+    #   800字中文实测：batch=4→6.5s / batch=24→53s（空闲）；并发×2。
+    embedding_batch_size: int = 4
 
     # ---- 知识库 / RAG ----
     kb_enabled: bool = True

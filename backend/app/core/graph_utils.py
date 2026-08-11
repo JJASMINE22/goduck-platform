@@ -50,6 +50,35 @@ def _has_skills_anywhere(agent_config: AgentConfig) -> bool:
     return False
 
 
+def _main_delegation_guard(has_subagents: bool, workspace: bool) -> str | None:
+    """主代理委派纪律（构建期追加到 system_prompt，仅主代理 + 有子代理时生效）。
+
+    子代理不继承主代理上下文，只接收 task 的 description 与主代理落盘的文件。故主代理
+    解析出文档/图像/知识库内容后委派时，必须传递【完整解析结果】——精确任务（如专利审查）
+    依赖完整原文，仅凭摘要/摘录委派会失真。workspace=True 时落盘 /workspace/ 传路径（无损）；
+    否则退化为 description 直传（有损，且受长度限制）。
+    """
+    if not has_subagents:
+        return None
+    head = (
+        "\n\n---\n\n## 委派纪律（平台自动注入）\n"
+        "你下挂了子代理。子代理不继承你的上下文，只接收 task 的 description 与你落盘的文件。"
+        "当你已通过工具解析出文档/图像/知识库内容、并需要委派子代理处理时：\n"
+        "- 必须传递【完整解析结果】，禁止仅凭摘要或摘录委派——"
+        "精确任务（如专利审查）依赖完整原文，任何省略都会导致失真。\n"
+    )
+    if workspace:
+        return head + (
+            "- 把完整解析结果写入 /workspace/（如 /workspace/parsed_<id>.md），"
+            "再在 task 的 description 中传入该文件路径与任务说明。\n"
+        )
+    return head + (
+        "- 在 task 的 description 中尽量完整转述子代理所需内容。注意：当前未启用工作区，"
+        "大块内容（整篇文档/图像描述）受 description 长度限制难以无损传递，"
+        "建议启用工作区以 /workspace/ 文件中转。\n"
+    )
+
+
 def create_agent_recursive(
     agent_config: AgentConfig,
     tools: List = None,
@@ -143,6 +172,11 @@ def create_agent_recursive(
         agentic_middleware = [*agentic_middleware, CodeInterpreterMiddleware()]
 
     memory_sources = ["/memories/preferences.md"] if memory else None
+
+    if is_main_agent:
+        _guard = _main_delegation_guard(bool(subagents), cfg_workspace)
+        if _guard:
+            agent_config["system_prompt"] += _guard
 
     create_kwargs = dict(
         model=ctx.model,
@@ -247,6 +281,10 @@ def create_agent_dictionary(
     )
 
     memory_sources = ["/memories/preferences.md"] if memory else None
+
+    _guard = _main_delegation_guard(bool(subagents_config), cfg_workspace)
+    if _guard:
+        agent_config["system_prompt"] += _guard
 
     create_kwargs = dict(
         model=ctx.model,

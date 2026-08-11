@@ -4,13 +4,15 @@
 import { Alert, App as AntApp, Button, Flex, Space, Tag, Typography } from 'antd'
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Trash2 } from 'lucide-react'
+import { ArrowLeft, Folder, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
 import { useStreamChat } from '@/hooks/useStreamChat'
+import { useWorkspaceCapability } from '@/hooks/useWorkspace'
 import { useChatStore } from '@/store/chatStore'
 import { MessageList } from '@/features/chat/MessageList'
 import { HitlCard } from '@/features/chat/HitlCard'
 import { ChatInput } from '@/features/chat/ChatInput'
+import { WorkspacePanel } from '@/features/workspace/WorkspacePanel'
 import { PageLoading } from '@/components/feedback/states'
 import { sessionsApi } from '@/api/sessions'
 import { ApiError } from '@/api/client'
@@ -70,6 +72,9 @@ export function ChatPage(): ReactNode {
   const { modal } = AntApp.useApp()
 
   const stream = useStreamChat(sessionId || null)
+  const wsCapQ = useWorkspaceCapability(sessionId || null)
+  const allowWorkspace = wsCapQ.data?.allow_workspace === true
+  const [wsOpen, setWsOpen] = useState(false)
   const reset = useChatStore((s) => s.reset)
   const loadHistory = useChatStore((s) => s.loadHistory)
   const streamError = useChatStore((s) => s.streamError)
@@ -233,9 +238,20 @@ export function ChatPage(): ReactNode {
           {archived ? <Tag color="default">已归档（只读）</Tag> : null}
         </Space>
         {archived ? null : (
-          <Button danger icon={<Trash2 size={14} />} onClick={handleArchive}>
-            归档
-          </Button>
+          <Space>
+            {allowWorkspace ? (
+              <Button
+                icon={<Folder size={14} />}
+                type={wsOpen ? 'primary' : 'default'}
+                onClick={() => setWsOpen((o) => !o)}
+              >
+                工作区
+              </Button>
+            ) : null}
+            <Button danger icon={<Trash2 size={14} />} onClick={handleArchive}>
+              归档
+            </Button>
+          </Space>
         )}
       </Flex>
 
@@ -250,45 +266,51 @@ export function ChatPage(): ReactNode {
         />
       ) : null}
 
-      {/* 主体：消息流（居中阅读列）+ 行拖拽条 + 输入 composer */}
-      <Flex vertical gap={0} style={{ flex: 1, minHeight: 0 }}>
-        <div
-          ref={scrollRef}
-          onScroll={handleScroll}
-          /* overflowY/scrollbar-gutter:stable 预留滚动条空间，避免流式时纵向滚动条
-             瞬时弹出与横向布局位移（Windows 经典滚动条占宽）；overflowX:hidden 杜绝
-             流式半截内容触发的横向滚动条闪烁。 */
-          style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', scrollbarGutter: 'stable' }}
-        >
-          {/* 阅读列：放宽上限，避免过窄；气泡完整度已由发光边框保证 */}
-          <div style={{ maxWidth: 1180, margin: '0 auto', paddingInline: 4 }}>
-            <MessageList
-              sessionId={session.id}
-              onWithdraw={handleWithdraw}
-              withdrawingId={withdrawingId}
-              readOnly={archived}
-            />
-            {!archived ? <HitlCard resume={stream.resume} /> : null}
-          </div>
-        </div>
-
-        {/* 输入：归档会话只读，不可继续对话 */}
-        {archived ? (
-          <Alert type="info" message="该会话已归档，仅支持查看历史记录，不可继续对话。" style={{ marginTop: 8 }} />
-        ) : (
-          <>
-            <div className="row-resizer" onMouseDown={onInputResizeDown} title="拖拽调整输入区高度" />
-              <div style={{ flexShrink: 0, minHeight: inputHeight ?? undefined, display: 'flex', flexDirection: 'column' }}>
-              <ChatInput
+      {/* 主体：消息流（居中阅读列）+ 行拖拽条 + 输入 composer；右侧可折叠工作区面板 */}
+      <Flex gap={12} style={{ flex: 1, minHeight: 0 }}>
+        <Flex vertical gap={0} style={{ flex: 1, minWidth: 0 }}>
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            /* overflowY/scrollbar-gutter:stable 预留滚动条空间，避免流式时纵向滚动条
+               瞬时弹出与横向布局位移（Windows 经典滚动条占宽）；overflowX:hidden 杜绝
+               流式半截内容触发的横向滚动条闪烁。 */
+            style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', scrollbarGutter: 'stable' }}
+          >
+            {/* 阅读列：放宽上限，避免过窄；气泡完整度已由发光边框保证 */}
+            <div style={{ maxWidth: 1180, margin: '0 auto', paddingInline: 4 }}>
+              <MessageList
                 sessionId={session.id}
-                userId={session.user_id}
-                status={stream.status}
-                send={stream.send}
-                cancel={stream.cancel}
+                onWithdraw={handleWithdraw}
+                withdrawingId={withdrawingId}
+                readOnly={archived}
               />
+              {!archived ? <HitlCard resume={stream.resume} /> : null}
             </div>
-          </>
-        )}
+          </div>
+
+          {/* 输入：归档会话只读，不可继续对话 */}
+          {archived ? (
+            <Alert type="info" message="该会话已归档，仅支持查看历史记录，不可继续对话。" style={{ marginTop: 8 }} />
+          ) : (
+            <>
+              <div className="row-resizer" onMouseDown={onInputResizeDown} title="拖拽调整输入区高度" />
+                <div style={{ flexShrink: 0, minHeight: inputHeight ?? undefined, display: 'flex', flexDirection: 'column' }}>
+                <ChatInput
+                  sessionId={session.id}
+                  userId={session.user_id}
+                  status={stream.status}
+                  send={stream.send}
+                  cancel={stream.cancel}
+                />
+              </div>
+            </>
+          )}
+        </Flex>
+
+        {wsOpen && allowWorkspace ? (
+          <WorkspacePanel sessionId={session.id} onClose={() => setWsOpen(false)} />
+        ) : null}
       </Flex>
     </Flex>
   )

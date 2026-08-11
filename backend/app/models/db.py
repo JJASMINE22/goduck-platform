@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS kb_document (
     page_count   INT,
     status       VARCHAR NOT NULL DEFAULT 'pending',  -- pending|indexing|indexed|failed
     chunk_count  INT,
+    progress     INT,                                  -- 入库进度 0..100（indexing 期间随批推进；indexed=100）
     error        TEXT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -155,6 +156,7 @@ _MIGRATIONS = [
     "ALTER TABLE model ADD COLUMN IF NOT EXISTS temperature REAL",
     "ALTER TABLE model ADD COLUMN IF NOT EXISTS top_p REAL",
     "ALTER TABLE model ADD COLUMN IF NOT EXISTS enable_thinking BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS progress INT",
 ]
 
 
@@ -648,7 +650,7 @@ _KB_COLUMNS = (
 _KB_COLUMNS_QUALIFIED = ", ".join(f"kb.{c}" for c in _KB_COLUMNS.split(", "))
 _KBDOC_COLUMNS = (
     "id, kb_id, bucket_key, filename, mime, size, page_count, "
-    "status, chunk_count, error, created_at, updated_at"
+    "status, chunk_count, progress, error, created_at, updated_at"
 )
 
 
@@ -846,19 +848,22 @@ async def update_kb_document_status(
     chunk_count: Optional[int] = None,
     error: Optional[str] = None,
     page_count: Optional[int] = None,
+    progress: Optional[int] = None,
 ) -> Optional[dict]:
     """Transition a document's status (pending|indexing|indexed|failed).
 
-    chunk_count/page_count: COALESCE keeps existing when None. error is set
-    explicitly (pass None to clear a prior failure message)."""
+    chunk_count/page_count/progress: COALESCE keeps existing when None. error is set
+    explicitly (pass None to clear a prior failure message). progress 0..100：
+    indexing 期间随嵌入批次推进（调用方逐批传入）；indexed 时传 100。"""
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"UPDATE kb_document SET status = %s, "
                 f"chunk_count = COALESCE(%s, chunk_count), error = %s, "
-                f"page_count = COALESCE(%s, page_count), updated_at = now() "
+                f"page_count = COALESCE(%s, page_count), "
+                f"progress = COALESCE(%s, progress), updated_at = now() "
                 f"WHERE id = %s RETURNING {_KBDOC_COLUMNS}",
-                (status, chunk_count, error, page_count, doc_id),
+                (status, chunk_count, error, page_count, progress, doc_id),
             )
             return await cur.fetchone()
 

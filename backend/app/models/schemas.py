@@ -250,6 +250,66 @@ class KnowledgeCapability(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Workspace browsing (per-user isolation)
+# ---------------------------------------------------------------------------
+class WorkspaceCapability(BaseModel):
+    """GET /sessions/{id}/workspace-capability —— 驱动会话页工作区面板可见性（准则 F2）。
+
+    allow_workspace = 该会话智能体配置 workspace=true（前端据此决定是否挂载面板）。
+    """
+
+    allow_workspace: bool
+
+
+class WorkspaceNode(BaseModel):
+    """工作区文件树节点（递归）。path 为相对用户工作区根的正斜杠相对路径。"""
+
+    name: str
+    path: str
+    is_dir: bool
+    size: int
+    modified_at: Optional[str] = None
+    children: Optional[list["WorkspaceNode"]] = None
+
+
+class WorkspaceFileContent(BaseModel):
+    """GET /sessions/{id}/workspace/file —— 文本文件内容（二进制仅返回元信息）。
+
+    is_text=False 时 content 为 None：前端改走 download / preview（markitdown）。
+    truncated=True 表示超过返回上限被截断（请下载查看完整内容）。
+    """
+
+    path: str
+    name: str
+    size: int
+    is_text: bool
+    content: Optional[str] = None
+    truncated: bool = False
+    modified_at: Optional[str] = None
+
+
+class WorkspacePreview(BaseModel):
+    """GET /sessions/{id}/workspace/preview —— office 文档经 markitdown 转出的 Markdown。"""
+
+    path: str
+    markdown: str
+
+
+class Capabilities(BaseModel):
+    """全局能力开关（GET /health 返回）—— 前端据此驱动菜单/路由/页面可见性
+    （DESIGN 准则 F2 能力驱动 UI）。单一真相源在后端 settings，前端零配置。"""
+
+    kb_enabled: bool
+
+
+class HealthResponse(BaseModel):
+    """GET /health —— 后端存活 + 全局能力。"""
+
+    status: str
+    capabilities: Capabilities
+
+
+# ---------------------------------------------------------------------------
 # Registered model (provider binding)
 # ---------------------------------------------------------------------------
 class ModelCreate(BaseModel):
@@ -341,6 +401,7 @@ class KbDocumentOut(BaseModel):
     page_count: Optional[int] = None
     status: str
     chunk_count: Optional[int] = None
+    progress: Optional[int] = None
     error: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -362,3 +423,5 @@ class KbSearchResult(BaseModel):
 # definition order / future refactors. Idempotent.
 MessageOut.model_rebuild()
 WithdrawResponse.model_rebuild()
+# WorkspaceNode references itself recursively.
+WorkspaceNode.model_rebuild()
