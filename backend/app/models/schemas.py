@@ -25,6 +25,11 @@ class AgentCreate(BaseModel):
 class AgentUpdate(BaseModel):
     config: dict[str, Any]
     model_id: uuid.UUID = Field(..., description="引用已注册模型 id（可更换模型）")
+    name: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        description="可选改名；省略或为 null 表示保持原名（改名时后端排除自身做唯一性校验）",
+    )
     description: Optional[str] = None
     updater: str = Field(min_length=1)
 
@@ -177,7 +182,7 @@ class ToolInfo(BaseModel):
 # ---------------------------------------------------------------------------
 class McpServerCreate(BaseModel):
     name: str = Field(min_length=1)
-    kind: Literal["stdio", "http", "streamable_http"]
+    kind: Literal["stdio", "http", "sse", "streamable_http"]
     config: dict[str, Any] = Field(..., description="{command,args,env} | {url,headers}")
     enabled: bool = True
 
@@ -249,6 +254,17 @@ class KnowledgeCapability(BaseModel):
     allow_knowledge: bool
 
 
+class ShellCapability(BaseModel):
+    """GET /sessions/{id}/shell-capability —— 驱动会话页 shell 能力徽标（准则 F2）。
+
+    allow_shell = 该会话智能体（主代理或任一子代理）配置 allow_shell=true。
+    True 时该智能体获得 execute 工具（Route B 本地 shell，per-user cwd，
+    强制 execute HITL）。
+    """
+
+    allow_shell: bool
+
+
 # ---------------------------------------------------------------------------
 # Workspace browsing (per-user isolation)
 # ---------------------------------------------------------------------------
@@ -293,6 +309,14 @@ class WorkspacePreview(BaseModel):
 
     path: str
     markdown: str
+
+
+class WorkspaceDeleted(BaseModel):
+    """DELETE /sessions/{id}/workspace —— 删除结果（用户裁剪工作区拓扑）。"""
+
+    deleted: str
+    name: str
+    was_dir: bool
 
 
 class Capabilities(BaseModel):

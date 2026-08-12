@@ -1,9 +1,11 @@
 /* 工作区 API —— 对应后端 api/workspace.py（prefix /sessions，session 作用域）。
-   user_id 不由前端传（取自 session，路径同源 sanitize）。下载走浏览器原生导航（URL 直链）。 */
-import { ApiClient, get } from './client'
+   user_id 不由前端传（取自 session，路径同源 sanitize）。下载/删除走浏览器原生行为。 */
+import { ApiClient, del, get } from './client'
+import { downloadUrl } from '@/lib/download'
 import type {
   UUID,
   WorkspaceCapability,
+  WorkspaceDeleted,
   WorkspaceFileContent,
   WorkspaceNode,
   WorkspacePreview,
@@ -27,7 +29,15 @@ export const workspaceApi = {
   preview: (sessionId: UUID, path: string) =>
     get<WorkspacePreview>(`${wsBase(sessionId)}/preview`, { path }),
 
-  /** 下载直链（单文件 RFC5987 中文文件名；目录为 zip）—— 浏览器原生导航/另存为 */
+  /** 下载直链（单文件 RFC5987 中文文件名；目录为 zip）—— 用于 <img>/<iframe> 的 src */
   downloadUrl: (sessionId: UUID, path: string) =>
     `${ApiClient.BASE_URL}${wsBase(sessionId)}/download?path=${encodeURIComponent(path)}`,
+
+  /** 触发浏览器下载（单文件或目录 zip）—— 临时 <a> 点击，避免空白标签页 */
+  download: (sessionId: UUID, path: string) =>
+    downloadUrl(workspaceApi.downloadUrl(sessionId, path)),
+
+  /** 删除文件或目录（递归删目录）—— 用户裁剪历史产物，不影响智能体逻辑 */
+  delete: (sessionId: UUID, path: string) =>
+    del<WorkspaceDeleted>(wsBase(sessionId), { path }),
 }

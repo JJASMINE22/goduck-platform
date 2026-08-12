@@ -130,7 +130,13 @@ export function AgentEditorPage(): ReactNode {
     const doUpdate = () =>
       updateAgent.mutateAsync({
         id: id as UUID,
-        body: { config, model_id: modelId, description: description.trim() || null, updater: user },
+        body: {
+          config,
+          model_id: modelId,
+          name: name.trim(),
+          description: description.trim() || null,
+          updater: user,
+        },
       })
 
     if (isCreate) {

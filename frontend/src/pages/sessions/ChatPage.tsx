@@ -8,6 +8,7 @@ import { ArrowLeft, Folder, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
 import { useStreamChat } from '@/hooks/useStreamChat'
 import { useWorkspaceCapability } from '@/hooks/useWorkspace'
+import { useShellCapability } from '@/hooks/useShell'
 import { useChatStore } from '@/store/chatStore'
 import { MessageList } from '@/features/chat/MessageList'
 import { HitlCard } from '@/features/chat/HitlCard'
@@ -74,6 +75,8 @@ export function ChatPage(): ReactNode {
   const stream = useStreamChat(sessionId || null)
   const wsCapQ = useWorkspaceCapability(sessionId || null)
   const allowWorkspace = wsCapQ.data?.allow_workspace === true
+  const shellCapQ = useShellCapability(sessionId || null)
+  const allowShell = shellCapQ.data?.allow_shell === true
   const [wsOpen, setWsOpen] = useState(false)
   const reset = useChatStore((s) => s.reset)
   const loadHistory = useChatStore((s) => s.loadHistory)
@@ -111,6 +114,25 @@ export function ChatPage(): ReactNode {
     document.addEventListener('mouseup', onUp)
   }
 
+  // —— 工作区侧边栏宽度（纵向分隔条：向左拖加宽侧边栏）——
+  const [wsWidth, setWsWidth] = useState(300)
+
+  const onWsResizeDown = (e: ReactMouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = wsWidth
+    // 向左拖(clientX 减小) → 工作区侧边栏变宽
+    const onMove = (ev: MouseEvent) => setWsWidth(clamp(240, 560, startW + (startX - ev.clientX)))
+    const onUp = () => {
+      document.body.style.cursor = ''
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.body.style.cursor = 'col-resize'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
@@ -122,16 +144,24 @@ export function ChatPage(): ReactNode {
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96
   }, [])
 
-  // 会话切换：重置 store
+  // 记录本会话上次成功灌入的历史条数；用于拒绝"同一会话历史从非空突变为空"的异常快照
+  const lastHistoryLenRef = useRef(0)
+
+  // 会话切换：重置 store + 历史长度标记
   useEffect(() => {
+    lastHistoryLenRef.current = 0
     reset()
   }, [sessionId, reset])
 
   // 历史灌入：仅在数据就绪（非 fetching）时灌入。配合 useSessionHistory 的
   // staleTime:0，重开/切会话都会先 refetch 最新；refetch 进行中不灌入，避免用过时
-  // 快照（如新会话的空快照）覆盖刚被 reset() 清空的 store——这正是"重开后历史不可见"的根因。
+  // 快照覆盖刚被 reset() 清空的 store。
+  // 关键防护：同一会话历史"从非空突变为空"几乎只可能是后端异常快照（中断流收尾瞬间
+  // _load_messages 的 delta 重建偶发返回 []），拒绝用它抹白 store——这正是"中止后重进、
+  // 历史全空"的直接诱因。React Query 出错时保留上次 data，故此处仍能灌入兜底历史。
   useEffect(() => {
     if (!historyQ.data || historyQ.isFetching) return
+    if (historyQ.data.length === 0 && lastHistoryLenRef.current > 0) return
     const mapped = historyQ.data
       .filter((m) => m.role === 'human' || m.role === 'ai')
       .map((m, i) => ({
@@ -146,6 +176,7 @@ export function ChatPage(): ReactNode {
       // 跳过纯工具调用的空 AI 消息：实时流仅在 msg.content 非空时才产出气泡，
       // 历史灌入需保持一致，避免出现空气泡。
       .filter((m) => m.role === 'user' || m.content.trim() !== '')
+    lastHistoryLenRef.current = mapped.length
     loadHistory(mapped)
   }, [historyQ.data, historyQ.isFetching, loadHistory])
 
@@ -233,6 +264,7 @@ export function ChatPage(): ReactNode {
           </Button>
           <Typography.Text strong>{session.title || `会话 ${session.id.slice(0, 8)}`}</Typography.Text>
           {session.agent_name ? <Tag color="purple">{session.agent_name}</Tag> : null}
+          {allowShell ? <Tag color="magenta">Shell</Tag> : null}
           {stream.status === 'streaming' ? <Tag color="processing">生成中</Tag> : null}
           {stream.status === 'interrupted' ? <Tag color="orange">待审批</Tag> : null}
           {archived ? <Tag color="default">已归档（只读）</Tag> : null}
@@ -309,7 +341,10 @@ export function ChatPage(): ReactNode {
         </Flex>
 
         {wsOpen && allowWorkspace ? (
-          <WorkspacePanel sessionId={session.id} onClose={() => setWsOpen(false)} />
+          <>
+            <div className="panel-resizer" onMouseDown={onWsResizeDown} title="拖拽调整工作区宽度" />
+            <WorkspacePanel sessionId={session.id} width={wsWidth} onClose={() => setWsOpen(false)} />
+          </>
         ) : null}
       </Flex>
     </Flex>

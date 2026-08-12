@@ -85,10 +85,16 @@ class MCPLifecycle:
         kind = row["kind"]
         if kind == "stdio":
             return {name: {"transport": "stdio", **cfg}}
-        if kind in ("http", "streamable_http"):
+        if kind == "sse":
             url = cfg.get("url", "")
             _validate_http_url(url, allow_loopback=self.settings.mcp_allow_loopback)
-            return {name: {"transport": kind, **cfg}}
+            return {name: {"transport": "sse", **cfg}}
+        if kind in ("http", "streamable_http"):
+            # langchain-mcp-adapters SDK 仅识别 "streamable_http"（非 "http"）。
+            # 项目内 FastMCP 的 transport="http" 即 streamable HTTP，故两者都映射到它。
+            url = cfg.get("url", "")
+            _validate_http_url(url, allow_loopback=self.settings.mcp_allow_loopback)
+            return {name: {"transport": "streamable_http", **cfg}}
         raise ValueError(f"未知 MCP server kind: {kind}")
 
     async def refresh(self) -> None:

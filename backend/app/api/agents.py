@@ -70,9 +70,13 @@ async def update_agent(agent_id: uuid.UUID, body: AgentUpdate, request: Request)
     if not st.model_store.has(body.model_id):
         raise HTTPException(status_code=404, detail=f"model {body.model_id} 未注册或已禁用")
     try:
-        agent = await svc.update(agent_id, body.config, body.model_id, body.description, body.updater)
+        agent = await svc.update(
+            agent_id, body.config, body.model_id, body.description, body.updater, body.name
+        )
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail=f"agent name '{body.name}' already exists")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # update: must pre-exist in registry -> invalidate then rebuild

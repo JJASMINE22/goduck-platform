@@ -108,7 +108,7 @@ async function request<T>(
 export const get = <T>(path: string, query?: Query) => request<T>('GET', path, { query })
 export const post = <T>(path: string, body?: unknown) => request<T>('POST', path, { body })
 export const put = <T>(path: string, body?: unknown) => request<T>('PUT', path, { body })
-export const del = <T>(path: string) => request<T>('DELETE', path)
+export const del = <T>(path: string, query?: Query) => request<T>('DELETE', path, { query })
 
 /** 纯文本响应（/topology.mmd、/export.yaml 是 PlainTextResponse）—— 不按 JSON 解析 */
 export const fetchText = (path: string) => request<string>('GET', path)

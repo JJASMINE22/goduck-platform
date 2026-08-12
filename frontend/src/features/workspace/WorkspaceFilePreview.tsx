@@ -41,7 +41,7 @@ function DownloadBar({
       <Button
         size="small"
         icon={<Download size={13} />}
-        onClick={() => window.open(workspaceApi.downloadUrl(sessionId, path), '_blank')}
+        onClick={() => workspaceApi.download(sessionId, path)}
       >
         下载
       </Button>
@@ -73,7 +73,7 @@ function FallbackCard({
         <Button
           type="primary"
           icon={<Download size={14} />}
-          onClick={() => window.open(workspaceApi.downloadUrl(sessionId, path), '_blank')}
+          onClick={() => workspaceApi.download(sessionId, path)}
         >
           下载查看
         </Button>

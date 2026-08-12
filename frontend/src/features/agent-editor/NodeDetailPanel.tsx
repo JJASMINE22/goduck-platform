@@ -203,6 +203,22 @@ export function NodeDetailPanel(): ReactNode {
           </Flex>
         </Field>
 
+        <Field label="Shell 执行（allow_shell）">
+          <Flex vertical gap={4}>
+            <Flex align="center" gap={8}>
+              <Switch checked={!!node.allow_shell} onChange={(v) => patch({ allow_shell: v })} />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                开启后获得 execute 工具（per-user 工作目录，每条命令强制人工审批）。主代理与子代理均可设。
+              </Typography.Text>
+            </Flex>
+            {node.allow_shell ? (
+              <Typography.Text type="warning" style={{ fontSize: 12 }}>
+                ⚠ 本地 shell 非安全边界：命令可访问宿主机任意路径（含其他用户文件与系统密钥），仅适用于单信任域部署。
+              </Typography.Text>
+            ) : null}
+          </Flex>
+        </Field>
+
         {!node.is_dicted ? (
           <Field label="动态分发（dynamic_dispatch）">
             <Flex align="center" gap={8}>

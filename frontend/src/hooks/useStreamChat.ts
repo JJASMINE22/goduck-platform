@@ -170,7 +170,10 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
 
   const cancel = useCallback(() => {
     abortRef.current?.abort()
-    useChatStore.getState().setStatus('idle')
+    const store = useChatStore.getState()
+    // 中止后固化仍在流式的消息（转 Markdown 渲染，而非停留在纯文本流式态），再回 idle
+    store.finalizeStreaming()
+    store.setStatus('idle')
   }, [])
 
   const status = useChatStore((s) => s.status)

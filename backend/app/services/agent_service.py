@@ -70,6 +70,7 @@ class AgentService:
         model_id: uuid.UUID,
         description: Optional[str],
         updater: str,
+        name: Optional[str] = None,
     ) -> dict:
         valid, errs = self.validate_config(config)
         if not valid:
@@ -77,7 +78,15 @@ class AgentService:
         existing = await dbmod.get_agent(self.pool, agent_id)
         if existing is None:
             raise KeyError(f"agent {agent_id} not found")
-        return await dbmod.update_agent(self.pool, agent_id, config, model_id, description, updater)
+        # 改名去重：仅当传入新名字且与当前名不同时校验；命中"其它"智能体即冲突（router→409）。
+        # agent.name 上已有 UNIQUE 约束，此处前置校验是为了返回语义化 409 而非 IntegrityError→500。
+        if name is not None and name != existing["name"]:
+            owner = await dbmod.get_agent_by_name(self.pool, name)
+            if owner is not None and owner["id"] != agent_id:
+                raise FileExistsError(name)
+        return await dbmod.update_agent(
+            self.pool, agent_id, config, model_id, description, updater, name
+        )
 
     async def restore(self, agent_id: uuid.UUID, history_id: uuid.UUID, operator: str) -> Optional[dict]:
         return await dbmod.restore_agent(self.pool, agent_id, history_id, operator)

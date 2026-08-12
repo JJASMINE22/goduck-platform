@@ -807,6 +807,23 @@ pre,
   background: var(--color-primary);
 }
 
+/* 抽屉预览左缘拖拽分隔条（placement=right 抽屉的左缘），按住向左拖加宽预览 */
+.drawer-resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 12;
+  transition: background 0.15s ease;
+}
+.drawer-resizer:hover,
+.drawer-resizer:active {
+  background: var(--color-primary);
+}
+
 /* 行拖拽分隔条（消息流 | 输入框），按住向上拖加高输入区 */
 .row-resizer {
   height: 8px;
@@ -966,6 +983,43 @@ pre,
 .ws-panel__body .ant-tree .ant-tree-title {
   display: inline-flex;
   align-items: center;
+}
+
+/* 树节点标题：名称 + 体积 + 悬停操作（下载/删除） */
+.ws-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+.ws-node__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ws-node__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-node__size {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+.ws-node__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+/* 行悬停或操作区聚焦（Popconfirm 展开）时显出操作按钮 */
+.ant-tree-treenode:hover .ws-node__actions,
+.ws-node__actions:focus-within {
+  opacity: 1;
 }
 
 /* 工作区文件预览（抽屉内） */

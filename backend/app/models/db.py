@@ -230,11 +230,13 @@ async def update_agent(
     model_id: uuid.UUID,
     description: Optional[str],
     updater: str,
+    name: Optional[str] = None,
 ) -> Optional[dict]:
     """Update agent config + model_id in-place + append history snapshot.
 
     Side effects (same tx): cascade-delete this agent's sessions + clean LangGraph
     checkpoints for those thread_ids. Returns None if agent not found.
+    name=None（默认）保持原名，便于 restore_agent 等不改名的调用方。
     """
     async with pool.connection() as conn:
         async with conn.transaction():
@@ -250,10 +252,11 @@ async def update_agent(
                 await cur.execute(
                     "UPDATE agent SET config_json = %s, model_id = %s, "
                     "description = COALESCE(%s, description), "
+                    "name = COALESCE(%s, name), "
                     "updater = %s, updated_at = now() WHERE id = %s "
                     "RETURNING id, name, description, config_json, model_id, status, "
                     "creator, updater, created_at, updated_at",
-                    (Json(config_json), model_id, description, updater, agent_id),
+                    (Json(config_json), model_id, description, name, updater, agent_id),
                 )
                 agent = await cur.fetchone()
                 if agent is None:

@@ -6,17 +6,19 @@
 = 读在哪"——杜绝 backend 落 ``u_<hash>/`` 而浏览 API 查 ``<raw>/`` 的错配。
 
 接口（router prefix /sessions）：
-- GET /sessions/{id}/workspace-capability : 是否启用工作区（驱动面板可见性）
-- GET /sessions/{id}/workspace/tree       : 递归文件树（受限条目/深度）
-- GET /sessions/{id}/workspace/file       : 读文本文件（带截断；二进制仅元信息）
-- GET /sessions/{id}/workspace/download   : 下载单文件（RFC5987 中文文件名）或目录 zip
-- GET /sessions/{id}/workspace/preview    : office 文档 markitdown → Markdown
+- GET    /sessions/{id}/workspace-capability : 是否启用工作区（驱动面板可见性）
+- GET    /sessions/{id}/workspace/tree       : 递归文件树（受限条目/深度）
+- GET    /sessions/{id}/workspace/file       : 读文本文件（带截断；二进制仅元信息）
+- GET    /sessions/{id}/workspace/download   : 下载单文件（RFC5987 中文文件名）或目录 zip
+- GET    /sessions/{id}/workspace/preview    : office 文档 markitdown → Markdown
+- DELETE /sessions/{id}/workspace            : 删除文件或目录（用户裁剪拓扑，递归删目录）
 
 安全（plan §4 缓解）：
 - 路径穿越：``_resolve_safe`` 用 ``resolve().relative_to(user_root)`` 校验，跟随
   符号链接后必须仍在用户根内（与 FilesystemBackend._resolve_path 同构）。
 - 体积上限：文本读取 / 下载 / 目录 zip 均设上限，超限返回 413。
-- 只读：本模块绝不写入或删除工作区文件。
+- 删除：仅删用户工作区内文件/目录；禁止删用户根（空路径/`.`）。删除是显式用户
+  行为，不影响智能体逻辑（产物落盘由 agent 控制，用户裁剪历史产物以专注当前任务）。
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import asyncio
 import io
 import logging
 import mimetypes
+import shutil
 import uuid
 import zipfile
 from datetime import datetime
@@ -39,6 +42,7 @@ from app.deps import get_appstate
 from app.models import db as dbmod
 from app.models.schemas import (
     WorkspaceCapability,
+    WorkspaceDeleted,
     WorkspaceFileContent,
     WorkspaceNode,
     WorkspacePreview,
@@ -310,3 +314,58 @@ async def workspace_download(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# delete (file or directory; user prunes the topology)
+# ---------------------------------------------------------------------------
+@router.delete("/{session_id}/workspace", response_model=WorkspaceDeleted)
+async def workspace_delete(
+    session_id: uuid.UUID,
+    request: Request,
+    path: str = Query(..., description="相对用户工作区根的路径（文件或目录）"),
+):
+    """删除文件或目录（递归删目录）—— 用户裁剪历史产物以专注当前任务。
+
+    纯用户行为：产物由 agent 落盘，删除不影响智能体逻辑（agent 写入按需重建）。
+    安全：路径穿越由 ``_resolve_safe`` 拦截；禁止删除用户根（空路径 / "."）。
+    """
+    st = get_appstate(request)
+    user_id = await _load_session_user(st, session_id)
+    root = _user_root(st, user_id)
+
+    rel = (path or "").strip().lstrip("/")
+    if not rel:
+        raise HTTPException(status_code=400, detail="请指定要删除的文件或目录")
+
+    full = _resolve_safe(root, path)
+    # 禁止删除用户根（resolve 后等于 root，含 "." 输入）。
+    if full == root.resolve():
+        raise HTTPException(status_code=400, detail="不能删除工作区根目录")
+    if not full.exists():
+        raise HTTPException(status_code=404, detail="文件或目录不存在")
+
+    is_dir = full.is_dir()
+    name = full.name
+
+    def _remove():
+        if is_dir:
+            shutil.rmtree(full)
+        else:
+            full.unlink()
+
+    try:
+        await asyncio.to_thread(_remove)
+    except OSError as e:
+        strerror = getattr(e, "strerror", None) or str(e)
+        raise HTTPException(status_code=500, detail=f"删除失败: {strerror}") from e
+
+    logger.info("workspace delete: user=%s path=%s is_dir=%s", _sanitize_log(user_id), rel, is_dir)
+    return WorkspaceDeleted(deleted=rel, name=name, was_dir=is_dir)
+
+
+def _sanitize_log(user_id: str) -> str:
+    """日志脱敏：不落原始 user_id（即便它已是白名单内值）。"""
+    from app.core.user_scoped_backend import _sanitize_user
+
+    return _sanitize_user(user_id)

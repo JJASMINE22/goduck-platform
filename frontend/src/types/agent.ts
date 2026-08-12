@@ -14,7 +14,7 @@ export interface RubricConfig {
 /**
  * 后端 AgentConfig（schema_utils.py）—— 配置树，递归 subagents。
  * 主代理: is_main=true, name/description 为 null, 可设 memory/allow_attachments/allow_knowledge
- * 子代理: is_main 省略/false, 必须设 name/description, 禁 memory/allow_attachments/allow_knowledge (workspace 主子均可)
+ * 子代理: is_main 省略/false, 必须设 name/description, 禁 memory/allow_attachments/allow_knowledge (workspace/allow_shell 主子均可)
  */
 export interface AgentConfig {
   name?: string | null
@@ -32,6 +32,7 @@ export interface AgentConfig {
   rubric?: RubricConfig | null
   allow_attachments?: boolean
   allow_knowledge?: boolean // 会话内知识库（RAG）开关，仅主代理
+  allow_shell?: boolean // 本地 shell 执行（execute 工具）开关，主代理与子代理均可设（与 workspace 同构，per-node）
 }
 
 // —— 请求体（schemas.py）——
@@ -46,6 +47,8 @@ export interface AgentCreate {
 export interface AgentUpdate {
   config: AgentConfig
   model_id: UUID
+  /** 可选改名；省略时后端保持原名，改名时后端排除自身做唯一性校验（409） */
+  name?: string
   description?: string | null
   updater: string
 }

@@ -32,6 +32,8 @@ export const queryKeys = {
     ['sessions', sessionId, 'workspace-file', path] as const,
   workspacePreview: (sessionId: string, path: string) =>
     ['sessions', sessionId, 'workspace-preview', path] as const,
+  shellCapability: (sessionId: string) =>
+    ['sessions', sessionId, 'shell-capability'] as const,
 } as const
 
 export function createQueryClient(): QueryClient {

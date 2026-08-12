@@ -21,6 +21,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphBubbleUp
 
 from app.core.user_scoped_backend import UserScopedFilesystemBackend
+from app.core.user_scoped_shell_backend import UserScopedLocalShellBackend
 from app.tools.rubric_tools import make_grader_tools
 
 logger = logging.getLogger(__name__)
@@ -157,8 +158,8 @@ def build_rubric_middleware(
 
 # ======================== Backend build ========================
 
-def _build_backend(ctx, *, memory, workspace, has_skills):
-    """Build CompositeBackend with conditionally-mounted routes.
+def _build_backend(ctx, *, memory, workspace, has_skills, allow_shell):
+    """Build CompositeBackend with conditionally-mounted routes + default backend.
 
     Routes are mounted ONLY when the corresponding config value is truthy
     (config-driven backend assembly, ported from DeepAgentsDemos). All paths
@@ -170,6 +171,10 @@ def _build_backend(ctx, *, memory, workspace, has_skills):
         memory: bool (True -> mount /memories/).
         workspace: bool (True -> mount /workspace/ at LOCAL_ROOT/workspace).
         has_skills: bool (True -> mount /skills/).
+        allow_shell: bool (True -> default backend is the per-user local shell
+            backend, which auto-registers the ``execute`` tool). Route A
+            (``ctx.sandbox``) takes precedence if provided; otherwise allow_shell
+            chooses shell-vs-StateBackend (the previous default).
     """
     sandbox = ctx.sandbox
     routes = {}
@@ -198,7 +203,19 @@ def _build_backend(ctx, *, memory, workspace, has_skills):
             root_dir=os.path.abspath(ctx.skills_dir).replace("\\", "/"),
             virtual_mode=True,
         )
+    # Default backend decides shell capability:
+    # - Route A (ctx.sandbox) wins if provided (real BaseSandbox: Docker/VM).
+    # - Route B (allow_shell): per-user local shell backend — auto-registers the
+    #   `execute` tool (SandboxBackendProtocol). base_root 复用 workspace_dir，
+    #   确保 shell cwd == 文件后端 cwd == 浏览 API 根。
+    # - otherwise StateBackend (no execute tool) — the previous default.
+    if sandbox is not None:
+        default_backend = sandbox
+    elif allow_shell:
+        default_backend = UserScopedLocalShellBackend(base_root=ctx.workspace_dir)
+    else:
+        default_backend = StateBackend()
     return CompositeBackend(
-        default=sandbox if sandbox is not None else StateBackend(),
+        default=default_backend,
         routes=routes,
     )

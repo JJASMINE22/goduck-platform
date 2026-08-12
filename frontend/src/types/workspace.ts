@@ -32,3 +32,10 @@ export interface WorkspacePreview {
   path: string
   markdown: string
 }
+
+/** DELETE /sessions/{id}/workspace —— 删除结果（用户裁剪工作区拓扑） */
+export interface WorkspaceDeleted {
+  deleted: string
+  name: string
+  was_dir: boolean
+}

@@ -81,6 +81,13 @@ class AgentConfig(BaseModel):
         description="是否启用会话内知识库（RAG）。True 时会话框出现 KB 选择器；仅主代理可开。"
         "检索由 agent 经 MCP 工具 <注册名>__kb_search 自主完成（Agentic RAG）。",
     )
+    allow_shell: bool = Field(
+        default=False,
+        description="是否启用本地 shell 执行能力（execute 工具）。主代理与子代理均可设（与 workspace 同构，"
+        "per-node：设了该开关的节点获得自己的 UserScopedLocalShellBackend）。"
+        "True 时挂载 per-user cwd 后端，并强制 interrupt_on={'execute': True} 每条命令人工审批。"
+        "注意：dicted 子代理共享父代理 backend（随父生效），compiled 子代理独立（需自身开启）。",
+    )
 
     @field_validator("skills")
     @classmethod

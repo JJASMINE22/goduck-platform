@@ -99,6 +99,7 @@ def create_agent_recursive(
     # read config-driven backend triggers BEFORE to_dict() (from typed object)
     cfg_memory = agent_config.memory
     cfg_workspace = agent_config.workspace
+    cfg_allow_shell = agent_config.allow_shell
     cfg_has_skills = _has_skills_anywhere(agent_config)
 
     # rubric middleware comes from config, independent of agent tools; read from
@@ -141,13 +142,14 @@ def create_agent_recursive(
     # 路由与主代理指向同一磁盘目录 (LOCAL_ROOT/workspace)，故子代理写入即落盘、主代理及
     # 其余带 workspace 的子代理皆可读取。memory 仍由上面的 is_main_agent 守住，子代理
     # 不会挂载 /memories/ 路由（偏好记忆仍为主代理独占）。
-    needs_backend = is_main_agent or cfg_workspace
+    needs_backend = is_main_agent or cfg_workspace or cfg_allow_shell
     backend = (
         _build_backend(
             ctx,
             memory=memory,
             workspace=cfg_workspace,
             has_skills=cfg_has_skills,
+            allow_shell=cfg_allow_shell,
         )
         if needs_backend
         else None
@@ -156,6 +158,11 @@ def create_agent_recursive(
     agent_tools = [t for t in tools if t.name in agent_config.get("tool_names", [])]
     agent_skills = agent_config.get("skills", None)
     interrupt_on = agent_config.get("interrupt_on", None)
+    # 强制 execute HITL：allow_shell 一开，每条 shell 命令必须人工审批（Route B
+    # 唯一靠谱的护栏）。execute 由 middleware 自动注册、不在 tool_names，故前端
+    # interrupt UI 无法勾选——必须在此自动注入。
+    if cfg_allow_shell:
+        interrupt_on = {**(interrupt_on or {}), "execute": True}
 
     # Middleware mounting strategy:
     # - tool-related middleware (e.g. error handling) only when tools exist (preserves HITL)
@@ -224,6 +231,7 @@ def create_agent_dictionary(
     # read config-driven backend triggers BEFORE to_dict()
     cfg_memory = agent_config.memory
     cfg_workspace = agent_config.workspace
+    cfg_allow_shell = agent_config.allow_shell
     cfg_has_skills = _has_skills_anywhere(agent_config)
 
     # main agent rubric (from config), decoupled from tools
@@ -267,11 +275,16 @@ def create_agent_dictionary(
         memory=memory,
         workspace=cfg_workspace,
         has_skills=cfg_has_skills,
+        allow_shell=cfg_allow_shell,
     )
 
     main_agent_tools = [t for t in tools if t.name in agent_config.get("tool_names", [])]
     main_agent_skills = agent_config.get("skills", None)
     main_agent_interrupt_on = agent_config.get("interrupt_on", None)
+    # 强制 execute HITL（同 create_agent_recursive；Route B 唯一靠谱护栏）。
+    
+    if cfg_allow_shell:
+        main_agent_interrupt_on = {**(main_agent_interrupt_on or {}), "execute": True}
 
     tool_middleware = middleware if main_agent_tools and middleware else ()
     main_middleware = (

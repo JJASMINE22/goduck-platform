@@ -17,7 +17,12 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.schema_utils import AgentConfig
 from app.deps import SimpleUser, get_appstate
 from app.models import db as dbmod
-from app.models.schemas import KnowledgeCapability, ResumeRequest, SendMessageRequest
+from app.models.schemas import (
+    KnowledgeCapability,
+    ResumeRequest,
+    SendMessageRequest,
+    ShellCapability,
+)
 from app.services.hitl_resolver import HITLResolver
 
 router = APIRouter(prefix="/sessions", tags=["流式对话"])
@@ -149,6 +154,36 @@ async def get_knowledge_capability(session_id: uuid.UUID, request: Request):
         if agent_row is not None:
             allow = AgentConfig.model_validate(agent_row["config_json"]).allow_knowledge
     return KnowledgeCapability(allow_knowledge=allow)
+
+
+@router.get("/{session_id}/shell-capability", response_model=ShellCapability)
+async def get_shell_capability(session_id: uuid.UUID, request: Request):
+    """是否启用 shell 执行 —— 驱动会话页 shell 能力徽标（准则 F2 能力驱动 UI）。
+
+    allow_shell = 该会话智能体主代理或任一子代理配置 allow_shell=true。
+    （compiled 子代理需自身开启才有独立 shell 后端；dicted 子代理共享父
+    后端，故随父代理生效。）
+    """
+    st = get_appstate(request)
+
+    from app.services.session_service import SessionService
+
+    session = await SessionService(st.pool).get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    allow = False
+    agent_row = await dbmod.get_agent(st.pool, session["agent_id"])
+    if agent_row is not None:
+        allow = _allows_shell_anywhere(AgentConfig.model_validate(agent_row["config_json"]))
+    return ShellCapability(allow_shell=allow)
+
+
+def _allows_shell_anywhere(cfg: AgentConfig) -> bool:
+    """主代理或任一（递归）子代理声明了 allow_shell 即视为可执行 shell。"""
+    if cfg.allow_shell:
+        return True
+    return any(_allows_shell_anywhere(sa) for sa in (cfg.subagents or []))
 
 
 @router.post("/{session_id}/resume")
