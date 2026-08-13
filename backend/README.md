@@ -88,6 +88,48 @@ backend/
   backend 条件挂载（memory/workspace/skills 按配置是否声明决定是否挂路由）。
 - **HITL 统一**：`interrupt_on` 在 SSE/HTTP 层统一为 `event: interrupt`；SSE 异常兜底转 `event: error`。
 
+## 运行时依赖补齐（allow_shell + JIT 安装）
+
+预置 `allow_shell` 开关（`app/core/schema_utils.py` AgentConfig）：任一节点置 `true`，`_build_backend`
+（`app/core/core_utils.py`）即挂载 `UserScopedLocalShellBackend`，框架自动注册 `execute` 工具。结合容器内
+预装的 `uv/uvx/npm/npx/python`（`Dockerfile`），可让智能体**在会话中即时安装 MCP 前置依赖 / 补齐缺失环境**
+——这是应对"镜像未预热的第三方 MCP"的主要运行时手段。
+
+### 工作链路
+1. 智能体通过 `execute` 跑安装命令（逐条 HITL 审批，见下"风险点"）。
+2. 安装完成后，调 `POST /mcp/refresh`（见"API 速览 / MCP 运维"）让新注册的 stdio MCP 重连上线。
+3. 目标 agent 在 `tool_names` 引用 `{server}__{tool}` 即可使用。
+
+### 命令规范（容器以非 root `app`(uid 1001) 运行，无 sudo）
+| 目标 | 正确做法 | 原因 |
+|---|---|---|
+| Python 包 | `pip install --user <pkg>` 或 `uv tool install <pkg>`（命中已授权的 `/opt/uv-cache`） | `app` 不可写 `/usr/local`；裸 `pip install` 会 `PermissionError` |
+| Node 包 | `npm pack <pkg>`（仅拉缓存）或本地 `npm install` | 全局目录同样不可写 |
+| 系统包 | **不支持**，只能走 `Dockerfile` 的 `apt-get`（build 期 root） | 容器无 `sudo`，`app` 非 sudoer |
+| 真隔离 | `python -m venv /home/app/<env>` 后在 venv 内装 | venv 的 site-packages 不进后端 `sys.path` |
+
+### ⚠️ 风险点（务必遵守）
+- **共享解释器 + 共享 HOME**：`execute` 是 backend 容器内以 `app` 跑的 subprocess，与后端用**同一个
+  `/usr/local/bin/python`、同一个 `HOME=/home/app`**。Python 默认把 `/home/app/.local/lib/python3.11/site-packages`
+  加入 `sys.path` 且**优先级高于系统包** ⇒ `--user` 装的包后端也能 import；**若覆盖后端已有同名依赖的版本，会直接拖崩后端**。
+  规避：`--user` 只加新包、绝不 `--upgrade` 已有依赖；需无副作用隔离时用 venv。
+- **execute 非 jail**：`cwd` 仅设起始目录，命令可 `cd /`、读 `../..` 触达任意路径（含其他用户 workspace）。
+  正因如此，`allow_shell` 一开会**强制注入** `interrupt_on={"execute": True}`（`app/core/graph_utils.py`，不可关闭）——
+  每条命令必须人工 approve，这是唯一护栏。
+- **不持久化**：运行时装入容器的包，容器重启 / 重打镜像即丢。要持久化须把 `/opt/uv-cache`、`/opt/npm-cache`
+  挂成卷，或纳入 `Dockerfile` 的 `UVX_MCP_PACKAGES` / `NPM_MCP_PACKAGES` 构建期预热。
+
+### 参考用例：环境安装专用智能体
+建一个**仅开 shell** 的轻量 agent（`system_prompt` 约束其只做依赖安装，不做其他），典型会话：
+```text
+用户：注册一个 arxiv-mcp，但镜像没预热，先帮我装好。
+agent(execute)：uv tool install arxiv-mcp-server        ← 你逐条 approve
+用户：装好了，去 /settings/mcp 注册并刷新。
+（前端：POST /mcp/servers 注册 stdio MCP → POST /mcp/refresh）
+agent：已确认工具列表出现 arxiv__*，业务 agent 的 tool_names 引用即可。
+```
+> 生产建议：稳定依赖优先写进 `Dockerfile` 预热（`UVX_MCP_PACKAGES`），JIT 安装仅用于临时 / 补漏 / 一次性场景。
+
 ## 运行
 
 ### 1. 依赖

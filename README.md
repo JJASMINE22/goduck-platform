@@ -38,6 +38,7 @@
 - **MCP 工具**：MCP server 运行时注册，工具按 `{server}__{tool}` 命名空间化防冲突。
 - **附件能力**：图片 / 文档上传（MinIO 持久），支持多模态（视觉）模型。
 - **技能池**：跨智能体共享的 `/skills/` 目录，multipart 上传。
+- **运行时依赖补齐**：开启 `allow_shell` 的智能体可在会话中用 `uv / pip / npm` 即时装包补齐 MCP 前置依赖（非 root、强制每条命令人工审批）。⚠️ 与后端共享 Python 解释器，覆盖同名依赖会拖崩后端，详见 [backend/README.md](./backend/README.md)。
 
 ## 技术栈
 
