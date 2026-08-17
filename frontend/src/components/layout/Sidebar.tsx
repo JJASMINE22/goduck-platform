@@ -35,7 +35,7 @@ function selectedKey(pathname: string): string[] {
   return [top]
 }
 
-export function Sidebar(): ReactNode {
+export function Sidebar({ collapsed = false }: { collapsed?: boolean }): ReactNode {
   const navigate = useNavigate()
   const location = useLocation()
   const { kb_enabled } = useCapabilities()
@@ -52,17 +52,17 @@ export function Sidebar(): ReactNode {
           height: 56,
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          padding: '0 20px',
+          justifyContent: 'center',
+          padding: collapsed ? '0 12px' : '0 20px',
           fontWeight: 700,
           fontSize: 18,
           borderBottom: '1px solid var(--color-border-soft)',
         }}
       >
         <img
-          src="/logo.png"
+          src="/logo-transparent.png"
           alt="goduck"
-          style={{ height: 40, width: 'auto', borderRadius: 10, boxShadow: 'var(--shadow-sm)' }}
+          style={{ maxHeight: '100%', maxWidth: '100%', marginTop: 20 }}
         />
       </div>
       <Menu

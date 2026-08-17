@@ -20,7 +20,7 @@ export function AppShell(): ReactNode {
         width={220}
         style={{ borderRight: '1px solid var(--color-border-soft)', overflow: 'auto' }}
       >
-        <Sidebar />
+        <Sidebar collapsed={collapsed} />
       </Sider>
       <Layout>
         <Header style={{ padding: 0, height: 56, lineHeight: '56px' }}>

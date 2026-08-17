@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -78,10 +78,21 @@ class ValidateResponse(BaseModel):
 class SessionCreate(BaseModel):
     user_id: str = Field(min_length=1)
     agent_id: uuid.UUID
-    title: Optional[str] = None
+    title: Optional[str] = Field(
+        default=None,
+        description="可选标题；空白（含纯空格）归一为 None=未命名，未命名会话可多个",
+    )
     thread_id: Optional[str] = Field(
         default=None, description="Custom thread_id; auto-generated if omitted"
     )
+
+    @field_validator("title")
+    @classmethod
+    def _blank_title_to_none(cls, v: Optional[str]) -> Optional[str]:
+        """空白标题 → None：未命名会话不参与 (user_id, title) 去重，允许多个。"""
+        if isinstance(v, str):
+            return v.strip() or None
+        return v
 
 
 class SessionOut(BaseModel):
@@ -101,6 +112,8 @@ class AgentOut(BaseModel):
     name: str
     description: Optional[str]
     model_id: Optional[uuid.UUID] = None
+    # 绑定模型名称（LEFT JOIN model 表；create/update 的 RETURNING 无法跨表，为 None）
+    model_name: Optional[str] = None
     status: str
     creator: str
     updater: Optional[str]

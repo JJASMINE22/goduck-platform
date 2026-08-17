@@ -7,8 +7,9 @@ are created by AsyncPostgresSaver/Store `.setup()`.
 
 Design (plan §1, 方案 B):
 - agent.id 全程稳定不变; 更新 = in-place 覆写 config_json + 追加 agent_config_history 快照。
-- 更新即级联删该 agent 的全部会话, 并清理 LangGraph checkpoints 残留 (两类历史区分:
-  会话历史删, 配置历史保留)。
+- 更新时该 agent 的全部 active 会话软归档（checkpoint 保留 → 历史仍可浏览；
+  stream/resume 对 archived 409，防止旧 checkpoint 在新图上恢复）。配置历史保留。
+  （物理删除仅在 agent purge / session purge，不可恢复。）
 
 Notes:
 - psycopg3 uses `%s` placeholders (NOT asyncpg's `$1`).
@@ -192,6 +193,28 @@ async def init_business_schema(pool: AsyncConnectionPool) -> None:
     except Exception:  # noqa: BLE001
         logger.exception("ensure kb_document(kb_id, filename) unique index failed (legacy dupes?)")
 
+    # 会话同用户同名去重的并发兜底：部分唯一索引（仅 active + 非空 title 参与去重，
+    # 归档会话豁免 → 归档即释放标题；agent 更新软归档会话同理）。先清理历史重复的
+    # active 行（同 user 同 title 保留最新），再加索引；失败仅告警不阻断启动。
+    # 注意：未来若增加「取消归档」端点，须做同名预检（索引不会自动放行 re-active）。
+    try:
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "DELETE FROM session a USING session b "
+                        "WHERE a.user_id = b.user_id AND a.title = b.title "
+                        "AND a.status = 'active' AND b.status = 'active' "
+                        "AND (a.updated_at, a.id) < (b.updated_at, b.id)"
+                    )
+                    await cur.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_user_title_active "
+                        "ON session(user_id, title) "
+                        "WHERE status = 'active' AND title IS NOT NULL AND title <> ''"
+                    )
+    except Exception:  # noqa: BLE001
+        logger.exception("ensure session(user_id, title) active-unique index failed (legacy dupes?)")
+
 
 # ============================ Agent ops ===================================
 
@@ -207,13 +230,17 @@ async def create_agent(
     async with pool.connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    "INSERT INTO agent (name, description, config_json, model_id, creator) "
-                    "VALUES (%s, %s, %s, %s, %s) "
-                    "RETURNING id, name, description, config_json, model_id, status, "
-                    "creator, updater, created_at, updated_at",
-                    (name, description, Json(config_json), model_id, creator),
-                )
+                try:
+                    await cur.execute(
+                        "INSERT INTO agent (name, description, config_json, model_id, creator) "
+                        "VALUES (%s, %s, %s, %s, %s) "
+                        "RETURNING id, name, description, config_json, model_id, status, "
+                        "creator, updater, created_at, updated_at",
+                        (name, description, Json(config_json), model_id, creator),
+                    )
+                except UniqueViolation:
+                    # 并发兜底：service 预检通过后、INSERT 落地前的同名竞态 → 归一 409
+                    raise FileExistsError(name)
                 agent = await cur.fetchone()
                 await cur.execute(
                     "INSERT INTO agent_config_history (agent_id, config_json, model_id, action, operator) "
@@ -234,30 +261,32 @@ async def update_agent(
 ) -> Optional[dict]:
     """Update agent config + model_id in-place + append history snapshot.
 
-    Side effects (same tx): cascade-delete this agent's sessions + clean LangGraph
-    checkpoints for those thread_ids. Returns None if agent not found.
-    name=None（默认）保持原名，便于 restore_agent 等不改名的调用方。
+    Side effects (same tx): archive this agent's ACTIVE sessions (soft).
+    Checkpoints are kept so /history stays browsable (history is read from the
+    checkpointer's messages channel, independent of graph topology); the
+    stream/resume endpoints refuse archived sessions (409), so stale checkpoint
+    state can never be resumed against the new graph. Titles auto-release via
+    the (user_id, title) active-partial unique index.
+    Returns None if agent not found. name=None（默认）保持原名，便于 restore_agent
+    等不改名的调用方。
     """
     async with pool.connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
-                # collect soon-to-be-orphaned thread_ids BEFORE deleting sessions
-                await cur.execute(
-                    "SELECT thread_id FROM session WHERE agent_id = %s",
-                    (agent_id,),
-                )
-                thread_rows = await cur.fetchall()
-                thread_ids = [r["thread_id"] for r in thread_rows]
-
-                await cur.execute(
-                    "UPDATE agent SET config_json = %s, model_id = %s, "
-                    "description = COALESCE(%s, description), "
-                    "name = COALESCE(%s, name), "
-                    "updater = %s, updated_at = now() WHERE id = %s "
-                    "RETURNING id, name, description, config_json, model_id, status, "
-                    "creator, updater, created_at, updated_at",
-                    (Json(config_json), model_id, description, name, updater, agent_id),
-                )
+                try:
+                    await cur.execute(
+                        "UPDATE agent SET config_json = %s, model_id = %s, "
+                        "description = COALESCE(%s, description), "
+                        "name = COALESCE(%s, name), "
+                        "updater = %s, updated_at = now() WHERE id = %s "
+                        "RETURNING id, name, description, config_json, model_id, status, "
+                        "creator, updater, created_at, updated_at",
+                        (Json(config_json), model_id, description, name, updater, agent_id),
+                    )
+                except UniqueViolation:
+                    # 并发改名兜底：预检无冲突后、UPDATE 落地前名字被他方占用 → 409。
+                    # 仅 name 实际变更时才可能触发（name=None 保持原名不参与竞争）。
+                    raise FileExistsError(name)
                 agent = await cur.fetchone()
                 if agent is None:
                     return None
@@ -268,18 +297,18 @@ async def update_agent(
                     (agent_id, Json(config_json), model_id, updater),
                 )
 
-                # delete this agent's sessions (CASCADE-friendly explicit delete)
-                await cur.execute("DELETE FROM session WHERE agent_id = %s", (agent_id,))
-
-                # clean LangGraph checkpoint tables for orphaned thread_ids
-                if thread_ids:
-                    for tbl in _CHECKPOINT_TABLES:
-                        await cur.execute(
-                            f"DELETE FROM {tbl} WHERE thread_id = ANY(%s)",
-                            (thread_ids,),
-                        )
-    if thread_ids:
-        logger.info("agent %s updated; purged %d sessions + checkpoint state", agent_id, len(thread_ids))
+                # soft-archive this agent's active sessions (checkpoints kept)
+                await cur.execute(
+                    "UPDATE session SET status = 'archived', updated_at = now() "
+                    "WHERE agent_id = %s AND status = 'active'",
+                    (agent_id,),
+                )
+                archived = cur.rowcount
+    if archived:
+        logger.info(
+            "agent %s updated; archived %d active sessions (checkpoints kept)",
+            agent_id, archived,
+        )
     return agent
 
 
@@ -310,7 +339,8 @@ async def restore_agent(
     The caller MUST validate the snapshot's model_id beforehand (see
     get_history_snapshot): history.model_id has no FK, so legacy snapshots may
     be NULL or point to a deleted model; restoring either would leave the agent
-    unbuildable — and update_agent purge sessions+checkpoints before failing.
+    unbuildable (sessions get archived by update_agent, but the agent itself
+    must stay runnable).
     """
     snapshot = await get_history_snapshot(pool, agent_id, history_id)
     if snapshot is None:
@@ -324,10 +354,12 @@ async def restore_agent(
 async def list_agents(pool: AsyncConnectionPool, include_archived: bool = False) -> list[dict]:
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            where = "" if include_archived else " WHERE status != 'archived'"
+            where = "" if include_archived else " WHERE a.status != 'archived'"
             await cur.execute(
-                f"SELECT id, name, description, model_id, status, creator, updater, created_at, updated_at "
-                f"FROM agent{where} ORDER BY updated_at DESC"
+                f"SELECT a.id, a.name, a.description, a.model_id, m.name AS model_name, "
+                f"a.status, a.creator, a.updater, a.created_at, a.updated_at "
+                f"FROM agent a LEFT JOIN model m ON m.id = a.model_id{where} "
+                f"ORDER BY a.updated_at DESC"
             )
             rows = await cur.fetchall()
     return rows
@@ -337,8 +369,10 @@ async def get_agent(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> Optional[
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, name, description, config_json, model_id, status, creator, updater, "
-                "created_at, updated_at FROM agent WHERE id = %s",
+                "SELECT a.id, a.name, a.description, a.config_json, a.model_id, "
+                "m.name AS model_name, a.status, a.creator, a.updater, "
+                "a.created_at, a.updated_at "
+                "FROM agent a LEFT JOIN model m ON m.id = a.model_id WHERE a.id = %s",
                 (agent_id,),
             )
             row = await cur.fetchone()
@@ -430,16 +464,58 @@ async def create_session(
     thread_id: str,
     title: Optional[str],
 ) -> dict:
+    """Insert a session row.
+
+    UniqueViolation → 归一化异常（service 预检与 INSERT 之间竞态的兜底）：
+    - idx_session_user_title_active：同用户活跃会话标题撞车 → FileExistsError(409)
+    - session_thread_id_key：自传 thread_id 撞车 → ValueError(400)
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            try:
+                await cur.execute(
+                    "INSERT INTO session (agent_id, user_id, thread_id, title) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "RETURNING id, agent_id, user_id, thread_id, title, status, created_at, updated_at",
+                    (agent_id, user_id, thread_id, title),
+                )
+                row = await cur.fetchone()
+            except UniqueViolation as e:
+                constraint = getattr(e.diag, "constraint_name", "") or ""
+                if constraint == "session_thread_id_key":
+                    raise ValueError(f"thread_id '{thread_id}' 已被其它会话使用")
+                # 其余唯一冲突均为 (user_id, title) 活跃会话标题
+                raise FileExistsError(title or "")
+    return row
+
+
+async def get_active_session_by_user_title(
+    pool: AsyncConnectionPool, user_id: str, title: str
+) -> Optional[dict]:
+    """按 (user_id, title) 查活跃会话（去重预检用；归档会话豁免）。"""
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "INSERT INTO session (agent_id, user_id, thread_id, title) "
-                "VALUES (%s, %s, %s, %s) "
-                "RETURNING id, agent_id, user_id, thread_id, title, status, created_at, updated_at",
-                (agent_id, user_id, thread_id, title),
+                "SELECT id, agent_id, user_id, thread_id, title, status, created_at, updated_at "
+                "FROM session WHERE user_id = %s AND title = %s AND status = 'active' "
+                "LIMIT 1",
+                (user_id, title),
             )
-            row = await cur.fetchone()
-    return row
+            return await cur.fetchone()
+
+
+async def get_session_by_thread(
+    pool: AsyncConnectionPool, thread_id: str
+) -> Optional[dict]:
+    """按 thread_id 查会话（自传 thread_id 冲突预检用）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, agent_id, user_id, thread_id, title, status, created_at, updated_at "
+                "FROM session WHERE thread_id = %s",
+                (thread_id,),
+            )
+            return await cur.fetchone()
 
 
 async def list_sessions_by_user(
@@ -524,26 +600,96 @@ async def list_mcp_servers(pool: AsyncConnectionPool) -> list[dict]:
     return rows
 
 
-async def upsert_mcp_server(
+async def get_mcp_server(
+    pool: AsyncConnectionPool, server_id: uuid.UUID
+) -> Optional[dict]:
+    """Fetch one MCP server registration by id."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, name, kind, config_json, enabled, created_at "
+                "FROM mcp_server WHERE id = %s",
+                (server_id,),
+            )
+            return await cur.fetchone()
+
+
+async def get_mcp_server_by_name(pool: AsyncConnectionPool, name: str) -> Optional[dict]:
+    """Row by unique name — create/update name-conflict pre-checks."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, name, kind, config_json, enabled, created_at "
+                "FROM mcp_server WHERE name = %s",
+                (name,),
+            )
+            return await cur.fetchone()
+
+
+async def list_agent_configs(pool: AsyncConnectionPool) -> list[dict]:
+    """All agents' {id, name, config_json} — MCP 引用扫描用（改名/删除前置校验）。
+
+    config_json 任意层级的 *tool_names（tool_names / grader_tool_names /
+    subagents[*].tool_names ...）均按名引用 `{server}__{tool}` 命名空间。含
+    archived（与 list_agents_by_model 同口径：解除归档后工具必须仍可用）。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT id, name, config_json FROM agent")
+            return await cur.fetchall()
+
+
+async def insert_mcp_server(
     pool: AsyncConnectionPool,
     name: str,
     kind: str,
     config_json: dict,
     enabled: bool,
 ) -> dict:
-    """Insert or update (by unique name) an MCP server registration."""
+    """Insert a new MCP server registration.
+
+    UniqueViolation → FileExistsError：应用层 check-then-insert 之间的并发竞态
+    由 mcp_server.name UNIQUE 约束兜住，路由层统一映射 409（对齐 kb_document）。
+    """
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                "INSERT INTO mcp_server (name, kind, config_json, enabled) "
-                "VALUES (%s, %s, %s, %s) "
-                "ON CONFLICT (name) DO UPDATE SET "
-                "kind = EXCLUDED.kind, config_json = EXCLUDED.config_json, enabled = EXCLUDED.enabled "
-                "RETURNING id, name, kind, config_json, enabled, created_at",
-                (name, kind, Json(config_json), enabled),
-            )
-            row = await cur.fetchone()
-    return row
+            try:
+                await cur.execute(
+                    "INSERT INTO mcp_server (name, kind, config_json, enabled) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "RETURNING id, name, kind, config_json, enabled, created_at",
+                    (name, kind, Json(config_json), enabled),
+                )
+                return await cur.fetchone()
+            except UniqueViolation:
+                raise FileExistsError(name)
+
+
+async def update_mcp_server(
+    pool: AsyncConnectionPool,
+    server_id: uuid.UUID,
+    name: str,
+    kind: str,
+    config_json: dict,
+    enabled: bool,
+) -> Optional[dict]:
+    """Update an MCP server registration by PK (name may change).
+
+    取代旧的按名 upsert（改名会 INSERT 新行残留旧行；撞名会静默覆写他人配置）。
+    UniqueViolation → FileExistsError 为并发改名兜底。Returns None if absent.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            try:
+                await cur.execute(
+                    "UPDATE mcp_server SET name = %s, kind = %s, config_json = %s, "
+                    "enabled = %s WHERE id = %s "
+                    "RETURNING id, name, kind, config_json, enabled, created_at",
+                    (name, kind, Json(config_json), enabled, server_id),
+                )
+                return await cur.fetchone()
+            except UniqueViolation:
+                raise FileExistsError(name)
 
 
 async def delete_mcp_server(pool: AsyncConnectionPool, server_id: uuid.UUID) -> bool:
@@ -903,15 +1049,19 @@ async def insert_model(
     """Insert a registered model definition. api_key stored at the row level."""
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                f"INSERT INTO model (name, provider_kind, model_type, api_key, base_url, "
-                f"supports_vision, temperature, top_p, enable_thinking, enabled) "
-                f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                f"RETURNING {_MODEL_COLUMNS}",
-                (name, provider_kind, model_type, api_key, base_url, supports_vision,
-                 temperature, top_p, enable_thinking, enabled),
-            )
-            row = await cur.fetchone()
+            try:
+                await cur.execute(
+                    f"INSERT INTO model (name, provider_kind, model_type, api_key, base_url, "
+                    f"supports_vision, temperature, top_p, enable_thinking, enabled) "
+                    f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    f"RETURNING {_MODEL_COLUMNS}",
+                    (name, provider_kind, model_type, api_key, base_url, supports_vision,
+                     temperature, top_p, enable_thinking, enabled),
+                )
+                row = await cur.fetchone()
+            except UniqueViolation:
+                # 并发兜底：service 预检通过后、INSERT 落地前的同名竞态 → 归一 409
+                raise FileExistsError(name)
     return row
 
 
@@ -943,14 +1093,18 @@ async def update_model(
                 + ([api_key] if api_key is not None else [])
                 + [model_id]
             )
-            await cur.execute(
-                f"UPDATE model SET name = %s, provider_kind = %s, model_type = %s, "
-                f"base_url = %s, supports_vision = %s, temperature = %s, top_p = %s, "
-                f"enable_thinking = %s, enabled = %s, {set_api_key}, "
-                f"updated_at = now() WHERE id = %s RETURNING {_MODEL_COLUMNS}",
-                tuple(params),
-            )
-            row = await cur.fetchone()
+            try:
+                await cur.execute(
+                    f"UPDATE model SET name = %s, provider_kind = %s, model_type = %s, "
+                    f"base_url = %s, supports_vision = %s, temperature = %s, top_p = %s, "
+                    f"enable_thinking = %s, enabled = %s, {set_api_key}, "
+                    f"updated_at = now() WHERE id = %s RETURNING {_MODEL_COLUMNS}",
+                    tuple(params),
+                )
+                row = await cur.fetchone()
+            except UniqueViolation:
+                # 并发改名兜底：预检无冲突后、UPDATE 落地前名字被他方占用 → 409
+                raise FileExistsError(name)
     return row
 
 

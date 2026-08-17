@@ -1,19 +1,23 @@
 /* 聊天页面（DESIGN §10.3）—— SSE 消息流 + HITL 决策 + 附件（能力驱动）+ 历史灌入。
    状态机由 useStreamChat 驱动（准则 F3）。进入会话 reset + 灌历史；auto-scroll 跟随新消息。
-   布局：消息流居中阅读列（修"显示不全"）+ 右侧可拖拽上下文面板 + 输入框可拖拽改高。 */
-import { Alert, App as AntApp, Button, Flex, Space, Tag, Typography } from 'antd'
+   布局：页内双视图（会话 | 工作区）display 切换保活 —— 切到工作区时聊天组件不卸载，
+   SSE 流与滚动位置不丢（useStreamChat 卸载即中止流的约束）；消息流居中阅读列 +
+   输入框可拖拽改高。 */
+import { Alert, App as AntApp, Button, Flex, Segmented, Space, Tag, Typography } from 'antd'
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Folder, Trash2 } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { ArrowLeft, FolderOpen, MessageSquare, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
 import { useStreamChat } from '@/hooks/useStreamChat'
 import { useWorkspaceCapability } from '@/hooks/useWorkspace'
+import { queryKeys } from '@/hooks/queryKeys'
 import { useShellCapability } from '@/hooks/useShell'
 import { useChatStore } from '@/store/chatStore'
 import { MessageList } from '@/features/chat/MessageList'
 import { HitlCard } from '@/features/chat/HitlCard'
 import { ChatInput } from '@/features/chat/ChatInput'
-import { WorkspacePanel } from '@/features/workspace/WorkspacePanel'
+import { WorkspaceView } from '@/features/workspace/WorkspaceView'
 import { PageLoading } from '@/components/feedback/states'
 import { sessionsApi } from '@/api/sessions'
 import { ApiError } from '@/api/client'
@@ -21,6 +25,9 @@ import { toastError, toastSuccess } from '@/lib/antdStatic'
 import type { WithdrawResponse } from '@/types'
 
 const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v))
+
+/** 页内视图：会话 | 工作区 */
+type ChatView = 'chat' | 'workspace'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -77,7 +84,19 @@ export function ChatPage(): ReactNode {
   const allowWorkspace = wsCapQ.data?.allow_workspace === true
   const shellCapQ = useShellCapability(sessionId || null)
   const allowShell = shellCapQ.data?.allow_shell === true
-  const [wsOpen, setWsOpen] = useState(false)
+  // —— 页内双视图（会话 | 工作区）——
+  // display 切换而非卸载：切到工作区时聊天组件保持挂载，流式生成不中断。
+  // 状态自带 sessionId 作用域：切换会话时旧值按 scope 在渲染期派生回初始态，
+  // 无需 effect 内 setState 重置（避免级联渲染）。
+  const [wsState, setWsState] = useState<{ sessionId: string; view: ChatView; visited: boolean }>({
+    sessionId,
+    view: 'chat',
+    visited: false,
+  })
+  const wsView: ChatView = wsState.sessionId === sessionId ? wsState.view : 'chat'
+  // 工作区懒挂载 + 保活：首次切入才挂载，此后保持挂载（树展开态/预览选中态在会话内持续）
+  const wsVisited = wsState.sessionId === sessionId ? wsState.visited : false
+  const queryClient = useQueryClient()
   const reset = useChatStore((s) => s.reset)
   const loadHistory = useChatStore((s) => s.loadHistory)
   const streamError = useChatStore((s) => s.streamError)
@@ -114,25 +133,6 @@ export function ChatPage(): ReactNode {
     document.addEventListener('mouseup', onUp)
   }
 
-  // —— 工作区侧边栏宽度（纵向分隔条：向左拖加宽侧边栏）——
-  const [wsWidth, setWsWidth] = useState(300)
-
-  const onWsResizeDown = (e: ReactMouseEvent) => {
-    e.preventDefault()
-    const startX = e.clientX
-    const startW = wsWidth
-    // 向左拖(clientX 减小) → 工作区侧边栏变宽
-    const onMove = (ev: MouseEvent) => setWsWidth(clamp(240, 560, startW + (startX - ev.clientX)))
-    const onUp = () => {
-      document.body.style.cursor = ''
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-    }
-    document.body.style.cursor = 'col-resize'
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }
-
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
@@ -147,7 +147,7 @@ export function ChatPage(): ReactNode {
   // 记录本会话上次成功灌入的历史条数；用于拒绝"同一会话历史从非空突变为空"的异常快照
   const lastHistoryLenRef = useRef(0)
 
-  // 会话切换：重置 store + 历史长度标记
+  // 会话切换：重置 store + 历史长度标记（视图状态按 sessionId 作用域自动失效）
   useEffect(() => {
     lastHistoryLenRef.current = 0
     reset()
@@ -192,7 +192,11 @@ export function ChatPage(): ReactNode {
       pinnedRef.current = true
       scrollToBottom()
     }
-  }, [stream.status, scrollToBottom])
+    // 流式结束（idle/interrupted/error）：工作区已挂载则刷新文件树，agent 落盘产物即时可见
+    if (prev === 'streaming' && stream.status !== 'streaming' && wsVisited) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceTree(sessionId) })
+    }
+  }, [stream.status, scrollToBottom, wsVisited, queryClient, sessionId])
 
   // token 流式增长：仅在贴底时跟随（用户上滑翻历史则不打扰）。
   // 订阅 store 而非派生状态，避免逐 token 重渲染整页；rAF 等布局就绪再滚动。
@@ -217,6 +221,8 @@ export function ChatPage(): ReactNode {
 
   const session = sessionQ.data
   const archived = session.status === 'archived'
+  // 渲染期兜底：能力被关闭 / 会话归档时强制回会话视图，避免停留在无切换入口的死角
+  const effectiveView: ChatView = allowWorkspace && !archived ? wsView : 'chat'
 
   /** 回撤一个完整回合：① 流式中先中止 → ② 解析真实 id → ③ 调回撤（409 退避重试）
       → ④ 乐观移除 + 回填草稿/附件 + 退出中断态 → ⑤ 历史重拉兜底一致性。 */
@@ -272,13 +278,22 @@ export function ChatPage(): ReactNode {
         {archived ? null : (
           <Space>
             {allowWorkspace ? (
-              <Button
-                icon={<Folder size={14} />}
-                type={wsOpen ? 'primary' : 'default'}
-                onClick={() => setWsOpen((o) => !o)}
-              >
-                工作区
-              </Button>
+              <Segmented
+                value={effectiveView}
+                onChange={(v) => {
+                  const next = v as ChatView
+                  // 切到工作区标记已挂载（此后保活）；scope 内继承 visited，跨会话丢弃旧值
+                  setWsState((cur) => ({
+                    sessionId,
+                    view: next,
+                    visited: next === 'workspace' || (cur.sessionId === sessionId && cur.visited),
+                  }))
+                }}
+                options={[
+                  { label: '会话', value: 'chat', icon: <MessageSquare size={13} /> },
+                  { label: '工作区', value: 'workspace', icon: <FolderOpen size={13} /> },
+                ]}
+              />
             ) : null}
             <Button danger icon={<Trash2 size={14} />} onClick={handleArchive}>
               归档
@@ -298,9 +313,14 @@ export function ChatPage(): ReactNode {
         />
       ) : null}
 
-      {/* 主体：消息流（居中阅读列）+ 行拖拽条 + 输入 composer；右侧可折叠工作区面板 */}
+      {/* 主体：页内双视图（会话 | 工作区）display 切换保活 —— 切到工作区时聊天列
+          不卸载，SSE 流与滚动位置不中断/不丢失 */}
       <Flex gap={12} style={{ flex: 1, minHeight: 0 }}>
-        <Flex vertical gap={0} style={{ flex: 1, minWidth: 0 }}>
+        <Flex
+          vertical
+          gap={0}
+          style={{ flex: 1, minWidth: 0, display: effectiveView === 'chat' ? 'flex' : 'none' }}
+        >
           <div
             ref={scrollRef}
             onScroll={handleScroll}
@@ -340,11 +360,10 @@ export function ChatPage(): ReactNode {
           )}
         </Flex>
 
-        {wsOpen && allowWorkspace ? (
-          <>
-            <div className="panel-resizer" onMouseDown={onWsResizeDown} title="拖拽调整工作区宽度" />
-            <WorkspacePanel sessionId={session.id} width={wsWidth} onClose={() => setWsOpen(false)} />
-          </>
+        {wsVisited && allowWorkspace && !archived ? (
+          <div className={effectiveView === 'workspace' ? 'ws-page' : 'ws-page ws-page--hidden'}>
+            <WorkspaceView sessionId={session.id} />
+          </div>
         ) : null}
       </Flex>
     </Flex>

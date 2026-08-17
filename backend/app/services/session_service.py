@@ -31,10 +31,23 @@ class SessionService:
         title: Optional[str],
         thread_id: Optional[str] = None,
     ) -> dict:
+        """创建会话（同用户活跃会话内标题唯一；归档会话豁免，可复用标题）。
+
+        - 标题归一：strip 后为空视为未命名（NULL，允许多个）。
+        - 自传 thread_id：撞库即 400（thread_id 是 checkpointer 键，全局唯一）。
+        - 预检（语义化 409/400）+ DB 部分唯一索引竞态兜底（见 db.create_session）。
+        """
         if await dbmod.get_agent(self.pool, agent_id) is None:
             raise KeyError(f"agent {agent_id} not found")
+        title = (title or "").strip() or None
+        if title is not None:
+            dup = await dbmod.get_active_session_by_user_title(self.pool, user_id, title)
+            if dup is not None:
+                raise FileExistsError(title)  # router maps -> 409
         if not thread_id:
             thread_id = f"thread-{uuid.uuid4().hex}"
+        elif await dbmod.get_session_by_thread(self.pool, thread_id) is not None:
+            raise ValueError(f"thread_id '{thread_id}' 已被其它会话使用")  # -> 400
         return await dbmod.create_session(
             self.pool,
             agent_id=agent_id,

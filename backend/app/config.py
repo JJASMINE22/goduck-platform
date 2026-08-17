@@ -53,6 +53,15 @@ class Settings(BaseSettings):
         default=True,
         description="允许 http MCP server 指向回环/内网地址 (SSRF 防护开关)。",
     )
+    mcp_connect_timeout: int = Field(
+        default=45,
+        gt=0,
+        description=(
+            "单个 MCP server 连接（含 stdio 子进程握手）超时秒数。"
+            "无此上限时，不可达的 uvx/uv stdio server（如 pypi 被墙时每次解析重试 "
+            "~44s）会把整轮 refresh 乃至保存接口拖到分钟级。"
+        ),
+    )
 
     # ---- MinIO (附件字节持久层) ----
     minio_endpoint: str = "localhost:9000"

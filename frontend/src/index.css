@@ -807,23 +807,6 @@ pre,
   background: var(--color-primary);
 }
 
-/* 抽屉预览左缘拖拽分隔条（placement=right 抽屉的左缘），按住向左拖加宽预览 */
-.drawer-resizer {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 5px;
-  cursor: col-resize;
-  background: transparent;
-  z-index: 12;
-  transition: background 0.15s ease;
-}
-.drawer-resizer:hover,
-.drawer-resizer:active {
-  background: var(--color-primary);
-}
-
 /* 行拖拽分隔条（消息流 | 输入框），按住向上拖加高输入区 */
 .row-resizer {
   height: 8px;
@@ -952,37 +935,75 @@ pre,
   font-size: 12px;
 }
 
-/* ============ 会话页「工作区」侧面板（plan §3.2） ============ */
-.ws-panel {
-  flex-shrink: 0;
-  width: 300px;
+/* ============ 会话页「工作区」视图（与会话同级的页内页面） ============ */
+/* 双视图保活容器：display 切换而非卸载，聊天流与滚动位置在切换间保持 */
+.ws-page {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  flex-direction: column;
+}
+.ws-page--hidden {
+  display: none;
+}
+
+/* 全页分栏：文件树 | 预览（选中文件后才出现右栏与分隔条） */
+.ws-view {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   overflow: hidden;
 }
-.ws-panel__header {
+.ws-view__tree {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* 仅在右侧预览分栏存在时描边（树独占全宽时不产生双重边框） */
+.ws-view__tree:not(:last-child) {
+  border-right: 1px solid var(--color-border-soft);
+}
+.ws-view__tree-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 8px 10px;
   border-bottom: 1px solid var(--color-border-soft);
   background: var(--color-bg-elevated);
+  flex-shrink: 0;
 }
-.ws-panel__body {
+.ws-view__tree-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: 4px 6px;
 }
-.ws-panel__body .ant-tree {
+.ws-view__tree-body .ant-tree {
   font-size: 13px;
 }
-.ws-panel__body .ant-tree .ant-tree-title {
+.ws-view__tree-body .ant-tree .ant-tree-title {
   display: inline-flex;
   align-items: center;
+}
+/* 折叠箭头容器（antd 对 .ant-tree-switcher-icon 内的 svg 施加收起旋转） */
+.ws-view__switcher {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* 右侧预览分栏 */
+.ws-view__preview {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ws-view__preview > * {
+  flex: 1;
+  min-height: 0;
 }
 
 /* 树节点标题：名称 + 体积 + 悬停操作（下载/删除） */
@@ -1022,7 +1043,7 @@ pre,
   opacity: 1;
 }
 
-/* 工作区文件预览（抽屉内） */
+/* 工作区文件预览（分栏右侧，由 WorkspaceFilePreview 渲染） */
 .ws-preview {
   display: flex;
   flex-direction: column;

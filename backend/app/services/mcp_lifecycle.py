@@ -14,7 +14,6 @@ import asyncio
 import ipaddress
 import logging
 import socket
-from typing import Optional
 from urllib.parse import urlparse
 
 from langchain_core.tools import BaseTool
@@ -26,7 +25,27 @@ from app.models import db as dbmod
 
 logger = logging.getLogger(__name__)
 
-_TOOL_SEP = "__"
+# Tool namespace separator: exposed tools are `{server_name}__{tool_name}`.
+# Public: api/mcp.py uses it to scan agent configs for references before
+# rename/delete (single source of truth for the prefix contract).
+TOOL_SEP = "__"
+
+
+def _format_error(e: BaseException) -> str:
+    """单行错误描述（供 /mcp/status error 字段），解包 ExceptionGroup 取真实原因。
+
+    anyio TaskGroup 把 stdio 子进程的真实失败包成 "unhandled errors in a
+    TaskGroup (1 sub-exception)"——对排障毫无信息量；递归取 sub-exception
+    的类型+消息拼出根因（如 uvx 连不上 pypi 的 TCP error、WinError 267）。
+    """
+    subs = getattr(e, "exceptions", None)
+    if subs:
+        inner = "; ".join(_format_error(s) for s in subs[:3])
+        out = f"{type(e).__name__}[{inner}]"
+    else:
+        msg = str(e).strip()
+        out = f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+    return out[:300]
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -59,6 +78,7 @@ class MCPLifecycle:
         self._per_server_status: dict[str, dict] = {}  # name -> {status, tool_count, kind}
         self._lock = asyncio.Lock()
         self._started = False
+        self._bg_tasks: set[asyncio.Task] = set()
 
     async def startup(self) -> None:
         """Connect all enabled MCP servers, pre-warm tool list."""
@@ -98,7 +118,12 @@ class MCPLifecycle:
         raise ValueError(f"未知 MCP server kind: {kind}")
 
     async def refresh(self) -> None:
-        """Reload servers from DB and reconnect each (fault-isolated)."""
+        """Reload servers from DB and reconnect each (fault-isolated, time-bounded).
+
+        每个 server 的连接由 mcp_connect_timeout 兜底（asyncio.wait_for）：
+        不可达的 stdio/http server（如 uvx 解析包时 pypi 被墙、TCP 黑洞）最多
+        烧一个超时窗口即标记 down，不再拖住整轮 refresh。
+        """
         async with self._lock:
             rows = await self._load_server_rows()
             tasks = {r["name"]: self._connect_one(r) for r in rows}
@@ -107,15 +132,15 @@ class MCPLifecycle:
             self._per_server_status.clear()
             for row, res in zip(rows, results):
                 name, kind = row["name"], row["kind"]
-                if isinstance(res, Exception):
+                if isinstance(res, BaseException):
                     self._per_server_status[name] = {
                         "status": "down",
                         "tool_count": 0,
                         "kind": kind,
-                        "error": f"{type(res).__name__}: {res}",
+                        "error": _format_error(res),
                     }
                     self._per_server_tools[name] = []
-                    logger.warning("MCP server '%s' down: %s", name, res)
+                    logger.warning("MCP server '%s' down: %s", name, _format_error(res))
                 else:
                     self._per_server_status[name] = {
                         "status": "ok",
@@ -131,8 +156,19 @@ class MCPLifecycle:
                 for t in tools:
                     self._tools.append(self._rename_tool(name, t))
 
+    def refresh_in_background(self) -> None:
+        """非阻塞触发 refresh（CRUD 端点用）：保存立即返回，重连在后台进行。
+
+        refresh 内部有 _lock 串行 + 每连接超时，故多次快速保存只会排队做有界
+        的幂等重连，不会堆积无限任务。工具/状态由前端轮询（/mcp/status 60s、
+        /mcp/tools 30s）收敛，「强制重连」按钮仍走同步 /mcp/refresh。
+        """
+        task = asyncio.create_task(self.refresh())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
     def _rename_tool(self, server_name: str, tool: BaseTool) -> BaseTool:
-        namespaced = f"{server_name}{_TOOL_SEP}{tool.name}"
+        namespaced = f"{server_name}{TOOL_SEP}{tool.name}"
         if tool.name == namespaced:
             return tool
         # shallow-copy + rename so AgentConfig.tool_names can reference the
@@ -145,13 +181,21 @@ class MCPLifecycle:
         return renamed
 
     def namespaced_name(self, server_name: str, tool_name: str) -> str:
-        return f"{server_name}{_TOOL_SEP}{tool_name}"
+        return f"{server_name}{TOOL_SEP}{tool_name}"
 
     async def _connect_one(self, row: dict) -> list[BaseTool]:
-        """Connect a single MCP server independently (fault-isolated)."""
+        """Connect a single MCP server independently (fault-isolated, timed)."""
         sub_config = self._build_sub_config(row)
         manager = MCPClientManager(sub_config)
-        return await manager.get_all_mcp_tools()
+        try:
+            return await asyncio.wait_for(
+                manager.get_all_mcp_tools(), timeout=self.settings.mcp_connect_timeout
+            )
+        except asyncio.TimeoutError as e:
+            raise TimeoutError(
+                f"连接超时（>{self.settings.mcp_connect_timeout}s）：stdio 首次运行需"
+                "下载依赖（检查包索引可达性）或 http 端点无响应"
+            ) from e
 
     async def get_tools(self) -> list[BaseTool]:
         """Return cached full (namespaced) tool list."""
@@ -183,6 +227,9 @@ class MCPLifecycle:
         }
 
     async def shutdown(self) -> None:
+        for t in self._bg_tasks:
+            t.cancel()
+        self._bg_tasks.clear()
         self._tools = []
         self._per_server_tools = {}
         self._per_server_status = {}

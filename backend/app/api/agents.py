@@ -118,9 +118,11 @@ async def list_history(agent_id: uuid.UUID, request: Request):
 async def restore_agent(agent_id: uuid.UUID, body: RestoreRequest, request: Request):
     st = get_appstate(request)
     svc = _service(request)
-    # validate the snapshot's model BEFORE the destructive restore commit:
-    # history.model_id has no FK — legacy snapshots may be NULL or stale, and
-    # restore_agent purges sessions+checkpoints before any later build can fail.
+    # validate the snapshot's model BEFORE the restore commit:
+    # history.model_id has no FK — legacy snapshots may be NULL or stale.
+    # Restoring either would leave the agent unbuildable (and update_agent
+    # archives all active sessions in the same tx — avoid that on a doomed
+    # restore).
     snapshot = await svc.history_snapshot(agent_id, body.history_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="history not found")

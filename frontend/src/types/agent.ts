@@ -70,6 +70,7 @@ export interface AgentOut {
   name: string
   description?: string | null
   model_id?: UUID | null
+  model_name?: string | null // 绑定模型名称（后端 LEFT JOIN；create/update 响应可能为 null）
   status: AgentStatus
   creator: string
   updater?: string | null

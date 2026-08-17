@@ -35,7 +35,8 @@ export function SessionsListPage(): ReactNode {
     const session = await createSession.mutateAsync({
       user_id: userId,
       agent_id: v.agent_id,
-      title: v.title || null,
+      // 空白标题归一为未命名（后端同名校验仅对非空标题生效）
+      title: v.title?.trim() || null,
     })
     setOpen(false)
     form.resetFields()
@@ -77,7 +78,7 @@ export function SessionsListPage(): ReactNode {
       dataIndex: 'status',
       key: 'status',
       width: 90,
-      render: (v: string) => (v === 'active' ? <Tag color="green">活跃</Tag> : <Tag>归档</Tag>),
+      render: (v: string) => (v === 'active' ? <Tag color="green">活跃</Tag> : <Tag>已归档</Tag>),
     },
     { title: '更新', dataIndex: 'updated_at', key: 'updated_at', width: 140, render: formatRelative },
     {
@@ -136,7 +137,7 @@ export function SessionsListPage(): ReactNode {
       ) : !rows.length ? (
         <EmptyState
           title={`用户「${userId}」暂无会话`}
-          description={activeAgents.length ? '点击「新建会话」开始对话' : '请先在「智能体」中创建一个 active 智能体'}
+          description={activeAgents.length ? '点击「新建会话」开始对话' : '请先在「智能体」中创建一个可用（活跃）智能体'}
         />
       ) : (
         <Table<SessionOut>
@@ -165,7 +166,7 @@ export function SessionsListPage(): ReactNode {
         <Form<{ agent_id: string; title?: string }> form={form} layout="vertical">
           <Form.Item name="agent_id" label="智能体" rules={[{ required: true, message: '请选择智能体' }]}>
             <Select
-              placeholder="选择一个 active 智能体"
+              placeholder="选择一个可用（活跃）智能体"
               options={activeAgents.map((a) => ({ value: a.id, label: a.name }))}
               loading={agents.isLoading}
             />

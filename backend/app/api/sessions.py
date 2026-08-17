@@ -34,6 +34,13 @@ async def create_session(body: SessionCreate, request: Request):
         return await svc.create(body.user_id, body.agent_id, body.title, body.thread_id)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except FileExistsError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"会话标题 '{body.title}' 已存在（同用户活跃会话内唯一；归档后可复用）",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("", response_model=list[SessionOut])

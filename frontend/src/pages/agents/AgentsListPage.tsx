@@ -15,9 +15,9 @@ import { toastSuccess } from '@/lib/antdStatic'
 import type { AgentOut } from '@/types'
 
 const STATUS_TAG: Record<string, { color: string; text: string }> = {
-  active: { color: 'green', text: 'active' },
-  draft: { color: 'default', text: 'draft' },
-  archived: { color: 'red', text: 'archived' },
+  active: { color: 'green', text: '活跃' },
+  draft: { color: 'default', text: '草稿' },
+  archived: { color: 'red', text: '已归档' },
 }
 
 export function AgentsListPage(): ReactNode {
@@ -99,10 +99,16 @@ export function AgentsListPage(): ReactNode {
     },
     {
       title: '绑定模型',
-      dataIndex: 'model_id',
-      key: 'model_id',
-      width: 120,
-      render: (v: string | null) => (v ? <code style={{ fontSize: 12 }}>{shortId(v)}</code> : <span style={{ color: 'var(--color-text-tertiary)' }}>未绑定</span>),
+      dataIndex: 'model_name',
+      key: 'model_name',
+      width: 160,
+      ellipsis: true,
+      render: (v: string | null, r) => {
+        // 优先名称（后端 JOIN）；名称缺失（旧数据/变更响应）回退短 id，未绑定显示占位
+        if (v) return <span title={v}>{v}</span>
+        if (r.model_id) return <code style={{ fontSize: 12 }}>{shortId(r.model_id)}</code>
+        return <span style={{ color: 'var(--color-text-tertiary)' }}>未绑定</span>
+      },
     },
     { title: '更新', dataIndex: 'updated_at', key: 'updated_at', width: 140, render: formatRelative },
     {

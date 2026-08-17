@@ -292,7 +292,7 @@ export function AgentEditorPage(): ReactNode {
                 <List.Item.Meta
                   title={
                     <Space>
-                      <Tag color={item.action === 'create' ? 'blue' : 'green'}>{item.action}</Tag>
+                      <Tag color={item.action === 'create' ? 'blue' : 'green'}>{item.action === 'create' ? '创建' : '更新'}</Tag>
                       <span>{item.operator}</span>
                     </Space>
                   }

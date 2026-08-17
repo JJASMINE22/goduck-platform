@@ -21,7 +21,13 @@ export function useMcpServers() {
 }
 
 export function useMcpTools() {
-  return useQuery({ queryKey: queryKeys.mcpTools, queryFn: mcpApi.tools })
+  // 30s 轮询：CRUD 保存后后端在后台重连（保存秒回），新 server 的工具
+  // 经轮询自动出现，无需手动刷新；状态轮询见 useMcpStatus。
+  return useQuery({
+    queryKey: queryKeys.mcpTools,
+    queryFn: mcpApi.tools,
+    refetchInterval: 30_000,
+  })
 }
 
 export function useMcpStatus() {

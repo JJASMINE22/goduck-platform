@@ -5,9 +5,9 @@
    - office(docx/xlsx/pptx/csv…) → /preview 取 markitdown Markdown 渲染；503 降级
    - binary/未知/失败 → 降级卡片（元信息 + 下载）
    任何预览失败都回退卡片，杜绝破图/空白。 */
-import { Alert, Button, Skeleton, Space, Typography } from 'antd'
+import { Alert, Button, Skeleton, Space, Tooltip, Typography } from 'antd'
 import { type ReactNode } from 'react'
-import { Download, FileText } from 'lucide-react'
+import { Download, FileText, X } from 'lucide-react'
 import { Markdown } from '@/components/markdown/Markdown'
 import { useWorkspaceFile, useWorkspacePreview } from '@/hooks/useWorkspace'
 import { workspaceApi } from '@/api/workspace'
@@ -23,12 +23,14 @@ function DownloadBar({
   name,
   size,
   modifiedAt,
+  onClose,
 }: {
   sessionId: UUID
   path: string
   name: string
   size?: number
   modifiedAt?: string | null
+  onClose?: () => void
 }) {
   return (
     <div className="ws-preview__bar">
@@ -38,13 +40,20 @@ function DownloadBar({
         {size != null ? <Text type="secondary" style={{ fontSize: 12 }}>{formatSize(size)}</Text> : null}
         {modifiedAt ? <Text type="secondary" style={{ fontSize: 12 }}>{modifiedAt.slice(0, 19).replace('T', ' ')}</Text> : null}
       </Space>
-      <Button
-        size="small"
-        icon={<Download size={13} />}
-        onClick={() => workspaceApi.download(sessionId, path)}
-      >
-        下载
-      </Button>
+      <Space size={4}>
+        <Button
+          size="small"
+          icon={<Download size={13} />}
+          onClick={() => workspaceApi.download(sessionId, path)}
+        >
+          下载
+        </Button>
+        {onClose ? (
+          <Tooltip title="关闭预览">
+            <Button size="small" type="text" icon={<X size={14} />} onClick={onClose} />
+          </Tooltip>
+        ) : null}
+      </Space>
     </div>
   )
 }
@@ -56,6 +65,7 @@ function FallbackCard({
   size,
   modifiedAt,
   reason,
+  onClose,
 }: {
   sessionId: UUID
   path: string
@@ -63,10 +73,11 @@ function FallbackCard({
   size?: number
   modifiedAt?: string | null
   reason: string
+  onClose?: () => void
 }) {
   return (
     <div className="ws-preview__fallback">
-      <DownloadBar sessionId={sessionId} path={path} name={name} size={size} modifiedAt={modifiedAt} />
+      <DownloadBar sessionId={sessionId} path={path} name={name} size={size} modifiedAt={modifiedAt} onClose={onClose} />
       <div className="ws-preview__fallback-body">
         <FileText size={40} />
         <Text type="secondary">{reason}</Text>
@@ -90,10 +101,12 @@ export function WorkspaceFilePreview({
   sessionId,
   path,
   name,
+  onClose,
 }: {
   sessionId: UUID
   path: string
   name: string
+  onClose?: () => void
 }): ReactNode {
   const kind = classifyFile(name)
   const downloadHref = workspaceApi.downloadUrl(sessionId, path)
@@ -108,7 +121,7 @@ export function WorkspaceFilePreview({
   // 通用顶部下载条 + body
   const wrap = (body: ReactNode, size?: number, modifiedAt?: string | null): ReactNode => (
     <div className="ws-preview">
-      <DownloadBar sessionId={sessionId} path={path} name={name} size={size} modifiedAt={modifiedAt} />
+      <DownloadBar sessionId={sessionId} path={path} name={name} size={size} modifiedAt={modifiedAt} onClose={onClose} />
       <div className="ws-preview__body">{body}</div>
     </div>
   )
@@ -126,7 +139,7 @@ export function WorkspaceFilePreview({
   if (kind === 'text' || kind === 'markdown') {
     if (fileQ.isLoading) return wrap(<Skeleton active paragraph={{ rows: 8 }} />)
     if (fileQ.isError) {
-      return <FallbackCard sessionId={sessionId} path={path} name={name} reason={errMsg(fileQ.error)} />
+      return <FallbackCard sessionId={sessionId} path={path} name={name} reason={errMsg(fileQ.error)} onClose={onClose} />
     }
     const data = fileQ.data
     if (!data || !data.is_text || !data.content) {
@@ -138,6 +151,7 @@ export function WorkspaceFilePreview({
           size={data?.size}
           modifiedAt={data?.modified_at}
           reason="该文件为二进制，无法在线预览"
+          onClose={onClose}
         />
       )
     }
@@ -173,6 +187,7 @@ export function WorkspaceFilePreview({
           path={path}
           name={name}
           reason={errMsg(previewQ.error)}
+          onClose={onClose}
         />
       )
     }
@@ -188,7 +203,7 @@ export function WorkspaceFilePreview({
   }
 
   // binary / 未知类型
-  return <FallbackCard sessionId={sessionId} path={path} name={name} {...meta} reason="该类型不支持在线预览" />
+  return <FallbackCard sessionId={sessionId} path={path} name={name} {...meta} reason="该类型不支持在线预览" onClose={onClose} />
 }
 
 /** 文件名 → 代码块语言提示（rehype-highlight 用；未命中走纯文本）。 */
