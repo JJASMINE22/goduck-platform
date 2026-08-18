@@ -154,8 +154,8 @@ export function SkillsPage(): ReactNode {
 
   return (
     <PageContainer
-      title="技能管理"
-      subtitle="个人技能池，跨智能体共享；AgentConfig.skills 引用 /skills/<name>/"
+      title="技能列表"
+      subtitle="个人技能池，跨智能体共享；按 /skills/<name>/ 引用"
       extra={
         <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
           上传技能

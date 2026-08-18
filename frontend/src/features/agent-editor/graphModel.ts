@@ -59,6 +59,7 @@ export function toConfigTree(nodes: AgentGraphNode[]): AgentConfig {
       allow_attachments: node.allow_attachments,
       allow_knowledge: node.allow_knowledge,
       allow_shell: node.allow_shell,
+      task_planning: node.task_planning,
     }
     cfg.subagents = kids.length ? kids.map(build) : []
     return cfg

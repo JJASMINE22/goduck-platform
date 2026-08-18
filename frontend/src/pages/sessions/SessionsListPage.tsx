@@ -113,8 +113,8 @@ export function SessionsListPage(): ReactNode {
 
   return (
     <PageContainer
-      title="会话"
-      subtitle="选择智能体开启对话；会话绑定 thread_id（LangGraph checkpointer 键）"
+      title="会话列表"
+      subtitle="选择智能体开启对话；归档会话可追溯查看"
       extra={
         <Button type="primary" icon={<Plus size={16} />} onClick={() => setOpen(true)} disabled={!activeAgents.length}>
           新建会话

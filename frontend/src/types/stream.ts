@@ -11,6 +11,7 @@ export type SSEEventType =
   | 'tool_result'
   | 'thinking'
   | 'agent_message'
+  | 'todos'
   | 'interrupt'
   | 'done'
   | 'error'
@@ -60,6 +61,18 @@ export interface ToolResultPayload {
 
 export interface ErrorPayload {
   message: string
+}
+
+// —— todos payload（stream_adapter._normalize_todos：TodoListMiddleware 状态通道）——
+/** 单条任务项；status 与后端 write_todos 对齐 */
+export interface TodoItem {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed' | string
+}
+
+/** todos 事件 payload：该 agent_path 的全量清单（增量由前端整表替换） */
+export interface TodosPayload {
+  todos: TodoItem[]
 }
 
 // —— interrupt payload（hitl_resolver._extract_interrupt）——

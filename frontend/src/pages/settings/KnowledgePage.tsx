@@ -149,8 +149,8 @@ export function KnowledgePage(): ReactNode {
 
   return (
     <PageContainer
-      title="知识库管理"
-      subtitle="上传 pdf/docx 自动切块入库；智能体经 kb_search 工具检索召回"
+      title="知识库列表"
+      subtitle="上传 pdf/docx 自动切块入库；智能体经 kb_search 检索召回"
       extra={
         <Button type="primary" icon={<Plus size={16} />} onClick={openCreate} disabled={kbDisabled}>
           新建知识库

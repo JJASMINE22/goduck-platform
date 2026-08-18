@@ -217,8 +217,8 @@ export function ModelsPage(): ReactNode {
 
   return (
     <PageContainer
-      title="模型管理"
-      subtitle="注册 OpenAI 兼容模型（通吃 OpenAI / DeepSeek / Qwen / 本地）。智能体按 model_id 绑定。"
+      title="模型列表"
+      subtitle="注册 OpenAI 兼容模型；智能体按 model_id 绑定"
       extra={
         <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
           注册模型

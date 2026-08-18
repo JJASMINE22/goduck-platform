@@ -3,13 +3,14 @@
    组件引用 var(--xxx)。配色集中管理，换肤只改本文件 + theme.ts。 */
 
 :root {
-  /* —— 中性色（浅色）——
-     页面底用极浅灰 #f8f9fa，卡片/抬升面用纯白，形成 AI Studio 式的"白卡浮于浅底"分层。 */
-  --color-bg: #f8f9fa;
+  /* —— 中性色（浅色·冷灰画布）——
+     画布用冷灰蓝，卡片/抬升面纯白，形成“白卡浮于冷灰画布”的高对比模块分层；
+     模块间靠 gutter + 背景对比隔离，而非显式分隔条。 */
+  --color-bg: #eef1f6;
   --color-bg-elevated: #ffffff;
   --color-surface: #ffffff;
-  --color-border: #dadce0;
-  --color-border-soft: #e8eaed;
+  --color-border: #d8dde6;
+  --color-border-soft: #e4e8f0;
 
   /* —— 文本（Google 灰阶）—— */
   --color-text: #1f1f1f;
@@ -52,7 +53,7 @@
   --font-mono: "Roboto Mono", "JetBrains Mono", "SFMono-Regular", Consolas, Menlo, monospace;
   --font-handwriting: "ZCOOL KuaiLe", var(--font-sans);
 
-  /* —— 阴影（浅色下的柔和高程，Material 式双层）—— */
-  --shadow-sm: 0 1px 2px rgba(60, 64, 67, 0.1), 0 1px 3px rgba(60, 64, 67, 0.06);
-  --shadow-md: 0 1px 3px rgba(60, 64, 67, 0.12), 0 4px 12px rgba(60, 64, 67, 0.1);
+  /* —— 阴影（浅色下的柔和高程，Material 式双层；稍增强以衬托浮起模块）—— */
+  --shadow-sm: 0 1px 2px rgba(60, 64, 67, 0.08), 0 1px 3px rgba(60, 64, 67, 0.05);
+  --shadow-md: 0 2px 6px rgba(60, 64, 67, 0.1), 0 8px 24px rgba(60, 64, 67, 0.08);
 }

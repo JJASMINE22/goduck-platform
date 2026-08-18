@@ -5,6 +5,8 @@ Streams in two modes simultaneously to deliver **token-level** output:
 - stream_mode="updates"  : node-complete msgs -> `tool_call` / `tool_result`
   (and `thinking` / `agent_message` as an atomic fallback for any AI message
   that was NOT streamed token-by-token).
+  Node updates carrying a `todos` state change (TodoListMiddleware, per-node
+  task planning) additionally emit a `todos` event — deduped per agent_path.
 
 Dedup: every AI message delivered as tokens is recorded in `streamed_ids`
 (matched by message id). In updates mode its content/reasoning are skipped to
@@ -103,6 +105,30 @@ def _stream_id(chunk, meta: dict, agent_path: str) -> str:
     if cid:
         return str(cid)
     return f"{agent_path}:{meta.get('langgraph_node', '?')}:{meta.get('langgraph_step', '?')}"
+
+
+def _normalize_todos(raw: Any) -> Optional[list[dict]]:
+    """Normalize a `todos` state-channel value into [{content, status}] dicts.
+
+    TodoListMiddleware persists todos in graph state; versions differ on entry
+    shape (plain dict vs attribute object), so both are handled defensively.
+    Returns None when the value is not a list (key absent / unexpected type).
+    """
+    if not isinstance(raw, list):
+        return None
+    items: list[dict] = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            content = entry.get("content")
+            status = entry.get("status")
+        else:
+            content = getattr(entry, "content", None)
+            status = getattr(entry, "status", None)
+        items.append({
+            "content": content if isinstance(content, str) else str(content or ""),
+            "status": status if isinstance(status, str) else str(status or "pending"),
+        })
+    return items
 
 
 def _msg_to_events(msg, agent_path: str, streamed_ids: set[str]) -> list[SSEEvent]:
@@ -247,6 +273,9 @@ class StreamAdapter:
     ) -> AsyncIterator[SSEEvent]:
         # ids of AI messages already delivered token-by-token (dedup vs updates)
         streamed_ids: set[str] = set()
+        # agent_path -> last emitted todos (dedup: node updates may repeat the
+        # same todos value; only state CHANGES are pushed as SSE events)
+        last_todos: dict[str, list[dict]] = {}
         try:
             while True:
                 # Dual mode + subgraphs => each item is (namespace, mode, data):
@@ -271,6 +300,18 @@ class StreamAdapter:
                             for msg in state.get("messages", []):
                                 for ev in _msg_to_events(msg, agent_path, streamed_ids):
                                     yield ev
+                            # Task planning: TodoListMiddleware writes the `todos`
+                            # state channel inside the same node update as messages.
+                            # Emit AFTER the messages so the timeline stays causal
+                            # (write_todos tool card precedes its list effect).
+                            todos = _normalize_todos(state.get("todos"))
+                            if todos is not None and todos != last_todos.get(agent_path):
+                                last_todos[agent_path] = todos
+                                yield SSEEvent(
+                                    type="todos",
+                                    agent_path=agent_path,
+                                    payload={"todos": todos},
+                                )
 
                 state = await agent.aget_state(config)
 

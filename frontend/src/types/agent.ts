@@ -33,6 +33,7 @@ export interface AgentConfig {
   allow_attachments?: boolean
   allow_knowledge?: boolean // 会话内知识库（RAG）开关，仅主代理
   allow_shell?: boolean // 本地 shell 执行（execute 工具）开关，主代理与子代理均可设（与 workspace 同构，per-node）
+  task_planning?: boolean // 任务规划（TodoListMiddleware / write_todos）开关，per-node 不继承，主/子代理均可设
 }
 
 // —— 请求体（schemas.py）——

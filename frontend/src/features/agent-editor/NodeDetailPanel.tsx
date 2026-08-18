@@ -236,6 +236,16 @@ export function NodeDetailPanel(): ReactNode {
           </Field>
         ) : null}
 
+        <Field label="任务规划（task_planning）">
+          <Flex align="center" gap={8}>
+            <Switch checked={!!node.task_planning} onChange={(v) => patch({ task_planning: v })} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              开启后该代理获得 write_todos 工具，执行中实时推送任务清单（会话窗顶部进度面板）。
+              per-node 不继承，主代理与子代理均可独立开启。
+            </Typography.Text>
+          </Flex>
+        </Field>
+
         <RubricEditor value={node.rubric} onChange={(v) => patch({ rubric: v })} />
       </Flex>
     </div>

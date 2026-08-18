@@ -16,6 +16,7 @@ EventType = Literal[
     "tool_result",
     "thinking",
     "agent_message",
+    "todos",
     "interrupt",
     "done",
     "error",

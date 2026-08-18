@@ -14,6 +14,7 @@ import type {
   InterruptPayload,
   SSEEvent,
   ThinkingPayload,
+  TodoItem,
   TokenPayload,
   ToolCallPayload,
   ToolResultPayload,
@@ -73,6 +74,12 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       case 'tool_result': {
         const p = e.payload as unknown as ToolResultPayload
         store.setToolResult(p.tool_call_id, p.content)
+        break
+      }
+      case 'todos': {
+        // 任务规划清单：整表替换该代理的 todos（后端按 agent_path 变更去重推送）
+        const p = e.payload as unknown as { todos: TodoItem[] }
+        store.setTodos(e.agent_path ?? 'root', p.todos ?? [])
         break
       }
       case 'interrupt':

@@ -18,7 +18,7 @@ from deepagents import CompiledSubAgent, create_deep_agent
 from langchain.agents.middleware.types import AgentMiddleware
 from langgraph.graph.state import CompiledStateGraph
 
-from app.core.core_utils import _build_backend, build_rubric_middleware
+from app.core.core_utils import _build_backend, build_rubric_middleware, build_todo_middleware
 from app.core.schema_utils import AgentConfig
 
 
@@ -100,6 +100,7 @@ def create_agent_recursive(
     cfg_memory = agent_config.memory
     cfg_workspace = agent_config.workspace
     cfg_allow_shell = agent_config.allow_shell
+    cfg_task_planning = agent_config.task_planning
     cfg_has_skills = _has_skills_anywhere(agent_config)
 
     # rubric middleware comes from config, independent of agent tools; read from
@@ -124,9 +125,13 @@ def create_agent_recursive(
         base_middleware = (
             middleware if agent_config.get("tool_names", []) and middleware else ()
         )
-        agentic_middleware = (
-            [*base_middleware, rubric_middleware] if rubric_middleware else base_middleware
+        agentic_middleware: list = (
+            [*base_middleware, rubric_middleware] if rubric_middleware else [*base_middleware]
         )
+        # task planning 与 rubric 同类：工具无关（write_todos 是自注册工具，不包裹
+        # 既有工具调用），dicted 路径可安全注入；不继承主代理，按本节点开关生效。
+        if cfg_task_planning:
+            agentic_middleware.append(build_todo_middleware())
 
         agent_config.update(
             {"tools": [t for t in tools if t.name in agent_config.get("tool_names", [])]}
@@ -167,10 +172,13 @@ def create_agent_recursive(
     # Middleware mounting strategy:
     # - tool-related middleware (e.g. error handling) only when tools exist (preserves HITL)
     # - rubric middleware independent of tools; mounts whenever config declares it
+    # - todo middleware (task planning) likewise tool-independent; per-node opt-in
     tool_middleware = middleware if agent_tools and middleware else ()
     agentic_middleware = (
-        [*tool_middleware, rubric_middleware] if rubric_middleware else tool_middleware
+        [*tool_middleware, rubric_middleware] if rubric_middleware else [*tool_middleware]
     )
+    if cfg_task_planning:
+        agentic_middleware.append(build_todo_middleware())
     if agent_config.get("dynamic_dispatch", False):
         # lazy import: langchain_quickjs 仅在启用动态子代理时需要,
         # 避免对不使用 dynamic_dispatch 的部署强制该依赖 (需 `pip install -e ".[quickjs]"`)。
@@ -232,6 +240,7 @@ def create_agent_dictionary(
     cfg_memory = agent_config.memory
     cfg_workspace = agent_config.workspace
     cfg_allow_shell = agent_config.allow_shell
+    cfg_task_planning = agent_config.task_planning
     cfg_has_skills = _has_skills_anywhere(agent_config)
 
     # main agent rubric (from config), decoupled from tools
@@ -259,11 +268,14 @@ def create_agent_dictionary(
                 ctx.model,
                 workspace_root=ctx.workspace_dir,
             )
-        sub_middleware = (
+        sub_middleware: list = (
             [*base_middleware, sub_rubric_middleware]
             if sub_rubric_middleware
-            else base_middleware
+            else [*base_middleware]
         )
+        # 任务规划：per-node 开关，子代理声明式 spec 的 middleware 字段生效（不继承主代理）
+        if subagent_config.get("task_planning", False):
+            sub_middleware.append(build_todo_middleware())
         subagent_config.update({"middleware": sub_middleware})
         subagent_config.pop("tool_names", None)
         subagent_config.pop("is_dicted", None)
@@ -287,11 +299,13 @@ def create_agent_dictionary(
         main_agent_interrupt_on = {**(main_agent_interrupt_on or {}), "execute": True}
 
     tool_middleware = middleware if main_agent_tools and middleware else ()
-    main_middleware = (
+    main_middleware: list = (
         [*tool_middleware, main_rubric_middleware]
         if main_rubric_middleware
-        else tool_middleware
+        else [*tool_middleware]
     )
+    if cfg_task_planning:
+        main_middleware.append(build_todo_middleware())
 
     memory_sources = ["/memories/preferences.md"] if memory else None
 

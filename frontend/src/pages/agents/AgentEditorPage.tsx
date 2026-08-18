@@ -2,8 +2,8 @@
    草稿由 agentEditorStore（归一化 nodes）持有（准则 F8）。保存前 toConfigTree(nodes) 序列化为
    AgentConfig 树：新建 POST /agents；更新 PUT（二次确认级联删会话）。后端契约不变。
    实时校验走 POST /agents/validate（防抖 600ms，准则 F6）。 */
-import { Alert, App as AntApp, Button, Card, Drawer, Empty, Flex, Input, List, Select, Space, Tag, Typography } from 'antd'
-import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import { App as AntApp, Button, Drawer, Empty, Input, List, Popover, Select, Space, Tag } from 'antd'
+import { type ReactNode, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, History, RotateCcw, Save } from 'lucide-react'
 import {
@@ -15,7 +15,9 @@ import {
   useValidateAgent,
 } from '@/hooks/useAgents'
 import { useModels } from '@/hooks/useModels'
+import { useDragResize } from '@/hooks/useDragResize'
 import { useAgentEditorStore } from '@/store/agentEditorStore'
+import { usePageHeaderStore } from '@/store/pageHeaderStore'
 import { useCurrentUser } from '@/store/userStore'
 import { toConfigTree } from '@/features/agent-editor/graphModel'
 import { NodePalette } from '@/features/agent-editor/canvas/NodePalette'
@@ -40,6 +42,7 @@ export function AgentEditorPage(): ReactNode {
   const historyQ = useAgentHistory(id ?? null)
   const { modal } = AntApp.useApp()
   const currentUserId = useCurrentUser((s) => s.userId)
+  const setHeader = usePageHeaderStore((s) => s.setHeader)
 
   const nodes = useAgentEditorStore((s) => s.nodes)
   const agentIdInStore = useAgentEditorStore((s) => s.agentId)
@@ -56,29 +59,18 @@ export function AgentEditorPage(): ReactNode {
   const setValidation = useAgentEditorStore((s) => s.setValidation)
 
   const [histOpen, setHistOpen] = useState(false)
-  const [detailWidth, setDetailWidth] = useState(360)
-  const draggingRef = useRef(false)
-
-  const onResizerMouseDown = (e: ReactMouseEvent) => {
-    e.preventDefault()
-    draggingRef.current = true
-    const startX = e.clientX
-    const startWidth = detailWidth
-    const onMove = (ev: MouseEvent) => {
-      if (!draggingRef.current) return
-      // 向左拖(clientX 减小) → 详情面板变宽
-      setDetailWidth(Math.min(720, Math.max(280, startWidth + (startX - ev.clientX))))
-    }
-    const onUp = () => {
-      draggingRef.current = false
-      document.body.style.cursor = ''
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-    }
-    document.body.style.cursor = 'col-resize'
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }
+  // 右侧详情面板宽度：手柄在其左缘（edge='left'，向左拖变宽）；双击重置；宽度持久化
+  const {
+    size: detailWidth,
+    onResizeStart: onDetailResizeStart,
+    reset: resetDetailWidth,
+  } = useDragResize({
+    initial: 360,
+    min: 280,
+    max: 720,
+    edge: 'left',
+    storageKey: 'agent-detail-width',
+  })
 
   // —— 初始化草稿（保留跨页面切换的进度）——
   // 新建：仅当无草稿、或草稿属于已存在智能体时才初始化，避免切到设置页再回来被清空
@@ -177,24 +169,21 @@ export function AgentEditorPage(): ReactNode {
     })
   }
 
-  if (!isCreate && agentQ.isLoading) return <PageLoading />
-  if (!nodes) return <PageLoading />
-
-  const modelOptions = (models.data ?? []).map((m) => ({
-    value: m.id,
-    label: `${m.name}（${m.model_type}）${m.supports_vision ? ' · 视觉' : ''}`,
-    disabled: !m.enabled,
-  }))
-
-  return (
-    <Flex vertical gap={12} style={{ height: '100%', padding: '16px 20px', overflow: 'auto' }}>
-      <Flex justify="space-between" align="center">
+  // 标题/动作上提顶部 Header 卡（与列表页/会话页一致的模块化布局）。
+  // 每次渲染重注册：名称输入即时反映到标题，保存按钮回调闭包保持新鲜。
+  useEffect(() => {
+    setHeader({
+      title: (
         <Space>
           <Button icon={<ArrowLeft size={14} />} onClick={() => navigate('/agents')}>
-            返回列表
+            返回
           </Button>
-          <Typography.Text strong>{isCreate ? '新建智能体' : `编辑：${name}`}</Typography.Text>
+          <span style={{ fontSize: 15, fontWeight: 600 }}>
+            {isCreate ? '新建智能体' : `编辑智能体：${name || '未命名'}`}
+          </span>
         </Space>
+      ),
+      extra: (
         <Space>
           {!isCreate ? (
             <Button
@@ -216,20 +205,78 @@ export function AgentEditorPage(): ReactNode {
             保存
           </Button>
         </Space>
-      </Flex>
+      ),
+    })
+    return () => setHeader(null)
+  })
 
-      {/* 基本信息 + 绑定模型 */}
-      <Card size="small">
-        <Flex gap={24} wrap="wrap" align="center">
-          <FieldRow label="名称（唯一）">
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="如 代码评审助手" style={{ width: 220 }} />
-          </FieldRow>
-          <FieldRow label="描述">
-            <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="一句话说明" style={{ width: 240 }} />
-          </FieldRow>
-          <FieldRow label="绑定模型（必选）">
+  if (!isCreate && agentQ.isLoading) return <PageLoading />
+  if (!nodes) return <PageLoading />
+
+  const modelOptions = (models.data ?? []).map((m) => ({
+    value: m.id,
+    label: `${m.name}（${m.model_type}）${m.supports_vision ? ' · 视觉' : ''}`,
+    disabled: !m.enabled,
+  }))
+
+  // 校验状态收敛为工具条上的 Tag：未改动保持中性；未通过时 Popover 展开错误清单
+  const validationTag = !configDirty ? (
+    <Tag style={{ marginInlineEnd: 0 }}>未校验</Tag>
+  ) : errors.length ? (
+    <Popover
+      trigger={['hover', 'click']}
+      placement="bottomLeft"
+      title="配置校验未通过"
+      content={
+        <ul style={{ margin: 0, paddingLeft: 18, maxWidth: 360 }}>
+          {errors.map((e, i) => (
+            <li key={i}>{e}</li>
+          ))}
+        </ul>
+      }
+    >
+      <Tag color="error" style={{ marginInlineEnd: 0, cursor: 'pointer' }}>
+        校验未通过 · {errors.length}
+      </Tag>
+    </Popover>
+  ) : (
+    <Tag color="success" style={{ marginInlineEnd: 0 }}>
+      校验通过
+    </Tag>
+  )
+
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* 单一工作区卡：顶部基本信息条（外置标签 + 内联编辑 + 校验状态）+ 三区
+          （模块面板 | 画布 | 详情）。标题/历史/保存已上提 Header 卡。 */}
+      <div className="editor-workspace">
+        <div className="editor-workspace__fields">
+          {/* 外置标签：值填入后仍可见字段含义（placeholder 会被值顶掉，
+              编辑已有智能体时无法仅靠 placeholder 判断输入类型） */}
+          <div className="editor-field editor-field--required">
+            <span className="editor-field__label">名称</span>
+            <Input
+              variant="filled"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="如 代码评审助手"
+              style={{ width: 176, fontWeight: 600 }}
+            />
+          </div>
+          <div className="editor-field">
+            <span className="editor-field__label">描述</span>
+            <Input
+              variant="filled"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="一句话说明（可选）"
+              style={{ width: 184 }}
+            />
+          </div>
+          <div className="editor-field editor-field--required">
+            <span className="editor-field__label">模型</span>
             <Select
-              style={{ width: 260 }}
+              style={{ width: 208 }}
               placeholder="选择已注册模型"
               value={modelId ?? undefined}
               onChange={(v) => setModelId(v)}
@@ -238,39 +285,34 @@ export function AgentEditorPage(): ReactNode {
               showSearch
               optionFilterProp="label"
             />
-          </FieldRow>
-        </Flex>
-      </Card>
-
-      {/* 校验状态：未改动配置前保持中性提示，避免空表单红/绿闪烁；改动后才红/绿 */}
-      {!configDirty ? (
-        <Alert type="info" showIcon message="编辑配置后将自动校验（配置树改动后触发）" />
-      ) : errors.length ? (
-        <Alert
-          type="error"
-          showIcon
-          message="配置校验未通过"
-          description={
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {errors.map((e, i) => (
-                <li key={i}>{e}</li>
-              ))}
-            </ul>
-          }
-        />
-      ) : (
-        <Alert type="success" showIcon message="配置校验通过" />
-      )}
-
-      {/* 三栏：模块面板 | 画布 | 详情（详情宽度可拖拽） */}
-      <Flex gap={12} style={{ flex: 1, minHeight: 320 }}>
-        <NodePalette />
-        <AgentCanvas />
-        <div className="panel-resizer" onMouseDown={onResizerMouseDown} />
-        <div style={{ width: detailWidth, flexShrink: 0 }}>
-          <NodeDetailPanel />
+          </div>
+          {validationTag}
         </div>
-      </Flex>
+
+        {/* 三区：去卡壳靠背景对比分区；详情宽度可拖拽（覆盖式手柄），双击重置 */}
+        <div className="editor-workspace__main">
+          <NodePalette />
+          <AgentCanvas />
+          <div
+            style={{
+              width: detailWidth,
+              flexShrink: 0,
+              position: 'relative',
+              minWidth: 0,
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            <div
+              className="panel-resizer panel-resizer--overlay"
+              onMouseDown={onDetailResizeStart}
+              onDoubleClick={resetDetailWidth}
+              title="拖拽调整详情面板宽度（双击重置）"
+            />
+            <NodeDetailPanel />
+          </div>
+        </div>
+      </div>
 
       {/* 配置历史 / 还原 */}
       <Drawer title="配置历史（可还原）" open={histOpen} onClose={() => setHistOpen(false)} width={440}>
@@ -303,15 +345,6 @@ export function AgentEditorPage(): ReactNode {
           />
         )}
       </Drawer>
-    </Flex>
-  )
-}
-
-function FieldRow({ label, children }: { label: string; children: ReactNode }): ReactNode {
-  return (
-    <Flex align="center" gap={8}>
-      <div style={{ width: 90, flexShrink: 0, fontSize: 13, color: 'var(--color-text-secondary)' }}>{label}</div>
-      {children}
-    </Flex>
+    </div>
   )
 }

@@ -46,32 +46,36 @@ export function Sidebar({ collapsed = false }: { collapsed?: boolean }): ReactNo
   const onClick: MenuProps['onClick'] = ({ key }) => navigate(key)
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {/* 品牌带 76px：logo 底对齐（视觉中心比 56px 居中低 20px），高度计入布局
+          而非 margin 溢出——曾用 marginTop 补偿导致卡片滚动条 */}
       <div
         style={{
-          height: 56,
+          height: 76,
           display: 'flex',
-          alignItems: 'center',
+          alignItems: 'flex-end',
           justifyContent: 'center',
-          padding: collapsed ? '0 12px' : '0 20px',
+          padding: collapsed ? '0 12px 0' : '0 20px',
           fontWeight: 700,
           fontSize: 18,
           borderBottom: '1px solid var(--color-border-soft)',
+          flexShrink: 0,
         }}
       >
         <img
           src="/logo-transparent.png"
           alt="goduck"
-          style={{ maxHeight: '100%', maxWidth: '100%', marginTop: 20 }}
+          style={{ maxHeight: 56, maxWidth: '100%', objectFit: 'contain' }}
         />
       </div>
+      {/* 菜单区自身滚动：菜单项再多也不撑出卡片级滚动条（卡片整体不滚动） */}
       <Menu
         mode="inline"
         selectedKeys={selectedKey(location.pathname)}
         defaultOpenKeys={['设置组']}
         items={items}
         onClick={onClick}
-        style={{ flex: 1, borderInlineEnd: 'none' }}
+        style={{ flex: 1, borderInlineEnd: 'none', overflowX: 'hidden', overflowY: 'auto', paddingBottom: 8 }}
       />
     </div>
   )

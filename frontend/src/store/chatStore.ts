@@ -6,6 +6,7 @@ import type {
   ChatStreamStatus,
   InterruptPayload,
   KnowledgeBaseOut,
+  TodoItem,
   UploadOut,
 } from '@/types'
 
@@ -48,6 +49,8 @@ export interface ChatState {
   attachments: UploadOut[] // 待发附件，发消息后清空
   selectedKbs: KnowledgeBaseOut[] // 本次启用的知识库，发消息后清空
   streamError: string | null
+  /** 各代理的任务规划清单（todos 事件整表写入，agent_path 键控；跨回合保留——清单存于 graph state） */
+  todosByAgent: Record<string, TodoItem[]>
   // 发送框草稿：上提到 store，使回撤可回填原文（受控于 store，非组件局部 state）
   draft: string
 
@@ -65,6 +68,8 @@ export interface ChatState {
   setInterrupt: (payload: InterruptPayload) => void
   clearInterrupt: () => void
   setStreamError: (msg: string | null) => void
+  /** todos 事件落地：整表替换该 agent 的清单（后端已按变更去重） */
+  setTodos: (agentPath: string, todos: TodoItem[]) => void
   addAttachment: (u: UploadOut) => void
   removeAttachment: (uploadId: string) => void
   clearAttachments: () => void
@@ -89,6 +94,7 @@ const initialState = {
   attachments: [] as UploadOut[],
   selectedKbs: [] as KnowledgeBaseOut[],
   streamError: null as string | null,
+  todosByAgent: {} as Record<string, TodoItem[]>,
   draft: '' as string,
 }
 
@@ -178,6 +184,8 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setStreamError: (msg) => set({ streamError: msg, status: msg ? 'error' : 'idle' }),
 
+  setTodos: (agentPath, todos) => set((s) => ({ todosByAgent: { ...s.todosByAgent, [agentPath]: todos } })),
+
   addAttachment: (u) => set((s) => ({ attachments: [...s.attachments, u] })),
 
   removeAttachment: (uploadId) =>
@@ -214,7 +222,7 @@ export const useChatStore = create<ChatState>((set) => ({
       }
     }),
 
-  loadHistory: (msgs) => set({ messages: msgs, toolCalls: [], status: 'idle', pendingInterrupt: null, streamError: null }),
+  loadHistory: (msgs) => set({ messages: msgs, toolCalls: [], status: 'idle', pendingInterrupt: null, streamError: null, todosByAgent: {} }),
 
   reset: () => set({ ...initialState }),
 }))

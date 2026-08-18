@@ -88,6 +88,13 @@ class AgentConfig(BaseModel):
         "True 时挂载 per-user cwd 后端，并强制 interrupt_on={'execute': True} 每条命令人工审批。"
         "注意：dicted 子代理共享父代理 backend（随父生效），compiled 子代理独立（需自身开启）。",
     )
+    task_planning: bool = Field(
+        default=False,
+        description="是否启用任务规划（TodoListMiddleware）。True 时该节点获得 write_todos 工具与 "
+        "todos 状态通道，执行中通过 SSE todos 事件推送清单进度。主代理与子代理均可独立开启"
+        "（不继承：各节点的 todos 存在于各自的 graph state，互不可见）。"
+        "工具无关（不包裹既有工具调用，不影响 HITL），dicted 叶子亦可开启。",
+    )
 
     @field_validator("skills")
     @classmethod

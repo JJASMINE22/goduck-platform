@@ -14,8 +14,10 @@ import { useWorkspaceCapability } from '@/hooks/useWorkspace'
 import { queryKeys } from '@/hooks/queryKeys'
 import { useShellCapability } from '@/hooks/useShell'
 import { useChatStore } from '@/store/chatStore'
+import { usePageHeaderStore } from '@/store/pageHeaderStore'
 import { MessageList } from '@/features/chat/MessageList'
 import { HitlCard } from '@/features/chat/HitlCard'
+import { TodoPanel } from '@/features/chat/TodoPanel'
 import { ChatInput } from '@/features/chat/ChatInput'
 import { WorkspaceView } from '@/features/workspace/WorkspaceView'
 import { PageLoading } from '@/components/feedback/states'
@@ -84,6 +86,7 @@ export function ChatPage(): ReactNode {
   const allowWorkspace = wsCapQ.data?.allow_workspace === true
   const shellCapQ = useShellCapability(sessionId || null)
   const allowShell = shellCapQ.data?.allow_shell === true
+  const setHeader = usePageHeaderStore((s) => s.setHeader)
   // —— 页内双视图（会话 | 工作区）——
   // display 切换而非卸载：切到工作区时聊天组件保持挂载，流式生成不中断。
   // 状态自带 sessionId 作用域：切换会话时旧值按 scope 在渲染期派生回初始态，
@@ -111,6 +114,9 @@ export function ChatPage(): ReactNode {
   const scrollRef = useRef<HTMLDivElement>(null)
   // 是否"贴底"：用户没主动上滑翻历史。发消息/新条目出现时强制置 true。
   const pinnedRef = useRef(true)
+  // 指针是否悬停在消息流内：流式期间悬停时暂停"追底"滚动——否则持续增长的
+  // 内容会把"停止并回撤"等悬浮操作按钮推离光标，hover 断链、根本点不中。
+  const hoverRef = useRef(false)
 
   // —— 可拖拽布局状态 ——
   // 输入区高度（纵向拖拽，作为 composer 最小高度）。默认 null=贴合内容（短提示不显瘦高），
@@ -119,15 +125,19 @@ export function ChatPage(): ReactNode {
 
   const onInputResizeDown = (e: ReactMouseEvent) => {
     e.preventDefault()
+    const el = e.currentTarget as HTMLElement
     const startY = e.clientY
     const startH = inputHeight ?? 96
-    // 向上拖 → 输入区变高
     const onMove = (ev: MouseEvent) => setInputHeight(clamp(52, 360, startH + (startY - ev.clientY)))
     const onUp = () => {
+      el.removeAttribute('data-resizing')
+      document.body.style.userSelect = ''
       document.body.style.cursor = ''
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
+    el.setAttribute('data-resizing', '')
+    document.body.style.userSelect = 'none'
     document.body.style.cursor = 'row-resize'
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
@@ -198,15 +208,80 @@ export function ChatPage(): ReactNode {
     }
   }, [stream.status, scrollToBottom, wsVisited, queryClient, sessionId])
 
-  // token 流式增长：仅在贴底时跟随（用户上滑翻历史则不打扰）。
+  // token 流式增长：仅在贴底且指针不在消息流内时跟随（用户上滑翻历史或悬停
+  // 瞄准操作按钮时不打扰；离开消息流后若仍贴底则立即追上流式进度）。
   // 订阅 store 而非派生状态，避免逐 token 重渲染整页；rAF 等布局就绪再滚动。
   useEffect(() => {
     const unsub = useChatStore.subscribe(() => {
-      if (!pinnedRef.current) return
+      if (!pinnedRef.current || hoverRef.current) return
       requestAnimationFrame(scrollToBottom)
     })
     return unsub
   }, [scrollToBottom])
+
+  // 页面标题/动作上提顶部 Header 卡（与列表页一致的模块化布局）。
+  // 每次渲染重注册：状态 Tag（生成中/待审批）与动作回调闭包保持新鲜；
+  // 早退分支（加载中）也会注册，标题用短 id 兜底。
+  useEffect(() => {
+    const session = sessionQ.data
+    const archived = session?.status === 'archived'
+    const effView: ChatView = allowWorkspace && !archived ? wsView : 'chat'
+    setHeader({
+      title: (
+        <Space>
+          <Button icon={<ArrowLeft size={14} />} onClick={() => navigate('/sessions')}>
+            返回
+          </Button>
+          <Typography.Text strong>{session?.title || `会话 ${sessionId.slice(0, 8)}`}</Typography.Text>
+          {session?.agent_name ? <Tag color="purple">{session.agent_name}</Tag> : null}
+          {allowShell ? <Tag color="magenta">Shell</Tag> : null}
+          {stream.status === 'streaming' ? <Tag color="processing">生成中</Tag> : null}
+          {stream.status === 'interrupted' ? <Tag color="orange">待审批</Tag> : null}
+          {archived ? <Tag color="default">已归档（只读）</Tag> : null}
+        </Space>
+      ),
+      extra: archived ? null : (
+        <Space>
+          {allowWorkspace ? (
+            <Segmented
+              value={effView}
+              onChange={(v) => {
+                const next = v as ChatView
+                // 切到工作区标记已挂载（此后保活）；scope 内继承 visited，跨会话丢弃旧值
+                setWsState((cur) => ({
+                  sessionId,
+                  view: next,
+                  visited: next === 'workspace' || (cur.sessionId === sessionId && cur.visited),
+                }))
+              }}
+              options={[
+                { label: '会话', value: 'chat', icon: <MessageSquare size={13} /> },
+                { label: '工作区', value: 'workspace', icon: <FolderOpen size={13} /> },
+              ]}
+            />
+          ) : null}
+          <Button
+            danger
+            icon={<Trash2 size={14} />}
+            onClick={() => {
+              if (!session) return
+              modal.confirm({
+                title: '归档该会话？',
+                content: '归档后无法继续对话。',
+                okType: 'danger',
+                okText: '归档',
+                cancelText: '取消',
+                onOk: () => archiveSession.mutateAsync(session.id).then(() => navigate('/sessions')),
+              })
+            }}
+          >
+            归档
+          </Button>
+        </Space>
+      ),
+    })
+    return () => setHeader(null)
+  })
 
   if (sessionQ.isLoading) return <PageLoading tip="加载会话…" />
   if (!sessionQ.data) {
@@ -249,88 +324,42 @@ export function ChatPage(): ReactNode {
     }
   }
 
-  const handleArchive = () => {
-    modal.confirm({
-      title: '归档该会话？',
-      content: '归档后无法继续对话。',
-      okType: 'danger',
-      okText: '归档',
-      cancelText: '取消',
-      onOk: () => archiveSession.mutateAsync(session.id).then(() => navigate('/sessions')),
-    })
-  }
-
   return (
-    <Flex vertical gap={0} style={{ height: '100%', padding: '16px 20px' }}>
-      {/* 顶部 */}
-      <Flex justify="space-between" align="center" style={{ paddingBottom: 8 }}>
-        <Space>
-          <Button icon={<ArrowLeft size={14} />} onClick={() => navigate('/sessions')}>
-            返回
-          </Button>
-          <Typography.Text strong>{session.title || `会话 ${session.id.slice(0, 8)}`}</Typography.Text>
-          {session.agent_name ? <Tag color="purple">{session.agent_name}</Tag> : null}
-          {allowShell ? <Tag color="magenta">Shell</Tag> : null}
-          {stream.status === 'streaming' ? <Tag color="processing">生成中</Tag> : null}
-          {stream.status === 'interrupted' ? <Tag color="orange">待审批</Tag> : null}
-          {archived ? <Tag color="default">已归档（只读）</Tag> : null}
-        </Space>
-        {archived ? null : (
-          <Space>
-            {allowWorkspace ? (
-              <Segmented
-                value={effectiveView}
-                onChange={(v) => {
-                  const next = v as ChatView
-                  // 切到工作区标记已挂载（此后保活）；scope 内继承 visited，跨会话丢弃旧值
-                  setWsState((cur) => ({
-                    sessionId,
-                    view: next,
-                    visited: next === 'workspace' || (cur.sessionId === sessionId && cur.visited),
-                  }))
-                }}
-                options={[
-                  { label: '会话', value: 'chat', icon: <MessageSquare size={13} /> },
-                  { label: '工作区', value: 'workspace', icon: <FolderOpen size={13} /> },
-                ]}
-              />
-            ) : null}
-            <Button danger icon={<Trash2 size={14} />} onClick={handleArchive}>
-              归档
-            </Button>
-          </Space>
-        )}
-      </Flex>
+    <Flex vertical gap={0} style={{ height: '100%' }}>
+      {/* 顶部（标题/状态/切换/归档已上提 Header 卡，见上方 setHeader effect） */}
 
-      {/* 错误提示 */}
+      {/* 错误提示（仅出错时出现，不占常规布局） */}
       {streamError ? (
         <Alert
           type="error"
           message="会话出错"
           description={streamError}
           closable
-          style={{ margin: '8px 0' }}
+          style={{ margin: '0 0 8px' }}
         />
       ) : null}
 
-      {/* 主体：页内双视图（会话 | 工作区）display 切换保活 —— 切到工作区时聊天列
-          不卸载，SSE 流与滚动位置不中断/不丢失 */}
+      {/* 主体：页内双视图（会话 | 工作区）display 切换保活 —— 切到工作区时聊天面板
+          不卸载，SSE 流与滚动位置不中断/不丢失。会话区包装为独立模块卡片（chat-panel），
+          消息流与输入框之间的分隔条内化为卡片内部，默认隐形。 */}
       <Flex gap={12} style={{ flex: 1, minHeight: 0 }}>
-        <Flex
-          vertical
-          gap={0}
-          style={{ flex: 1, minWidth: 0, display: effectiveView === 'chat' ? 'flex' : 'none' }}
-        >
+        <section className="chat-panel" style={{ display: effectiveView === 'chat' ? 'flex' : 'none' }}>
           <div
+            className="chat-panel__scroll"
             ref={scrollRef}
             onScroll={handleScroll}
-            /* overflowY/scrollbar-gutter:stable 预留滚动条空间，避免流式时纵向滚动条
-               瞬时弹出与横向布局位移（Windows 经典滚动条占宽）；overflowX:hidden 杜绝
-               流式半截内容触发的横向滚动条闪烁。 */
-            style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', scrollbarGutter: 'stable' }}
+            onMouseEnter={() => {
+              hoverRef.current = true
+            }}
+            onMouseLeave={() => {
+              hoverRef.current = false
+              if (pinnedRef.current) scrollToBottom()
+            }}
           >
             {/* 阅读列：放宽上限，避免过窄；气泡完整度已由发光边框保证 */}
-            <div style={{ maxWidth: 1180, margin: '0 auto', paddingInline: 4 }}>
+            <div className="chat-panel__column">
+              {/* 任务规划清单：仅任一代理有 todos 时出现（task_planning 开关驱动） */}
+              <TodoPanel />
               <MessageList
                 sessionId={session.id}
                 onWithdraw={handleWithdraw}
@@ -343,11 +372,13 @@ export function ChatPage(): ReactNode {
 
           {/* 输入：归档会话只读，不可继续对话 */}
           {archived ? (
-            <Alert type="info" message="该会话已归档，仅支持查看历史记录，不可继续对话。" style={{ marginTop: 8 }} />
+            <div className="chat-panel__composer">
+              <Alert type="info" message="该会话已归档，仅支持查看历史记录，不可继续对话。" />
+            </div>
           ) : (
             <>
               <div className="row-resizer" onMouseDown={onInputResizeDown} title="拖拽调整输入区高度" />
-                <div style={{ flexShrink: 0, minHeight: inputHeight ?? undefined, display: 'flex', flexDirection: 'column' }}>
+              <div className="chat-panel__composer" style={{ minHeight: inputHeight ?? undefined }}>
                 <ChatInput
                   sessionId={session.id}
                   userId={session.user_id}
@@ -358,7 +389,7 @@ export function ChatPage(): ReactNode {
               </div>
             </>
           )}
-        </Flex>
+        </section>
 
         {wsVisited && allowWorkspace && !archived ? (
           <div className={effectiveView === 'workspace' ? 'ws-page' : 'ws-page ws-page--hidden'}>

@@ -58,7 +58,7 @@ export function MessageList({
   ].sort((a, b) => a.ts - b.ts)
 
   return (
-    <Flex vertical gap={12} style={{ padding: '16px 0', height: '100%' }}>
+    <Flex vertical gap={14} style={{ padding: '0 0 10px', height: '100%' }}>
       {!timeline.length ? (
         <div className="chat-welcome">
           <Bot size={40} />

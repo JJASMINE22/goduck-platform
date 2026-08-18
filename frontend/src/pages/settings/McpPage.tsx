@@ -234,8 +234,8 @@ export function McpPage(): ReactNode {
 
   return (
     <PageContainer
-      title="MCP 服务"
-      subtitle="工具全 MCP 化；工具按 {server}__{tool} 命名防跨 server 冲突"
+      title="MCP 服务列表"
+      subtitle="工具全 MCP 化；按 {server}__{tool} 命名防跨服务冲突"
       extra={
         <Space>
           <Button icon={<RefreshCw size={14} />} loading={refresh.isPending} onClick={() => refresh.mutate()}>

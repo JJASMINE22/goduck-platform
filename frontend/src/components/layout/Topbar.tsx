@@ -1,11 +1,12 @@
-/* 顶栏 —— 路由面包屑（方位感）+ 用户身份切换（账号芯片/Popover）+ 后端健康指示灯。
-   用户切换即时生效：创建智能体/会话的身份、后端记忆命名空间均跟随此值。 */
+/* 顶栏 —— 页面标题区（由各页面经 pageHeaderStore 上提注册）+ 用户身份切换
+    （账号芯片/Popover）+ 后端健康指示灯。用户切换即时生效：创建智能体/会话的
+    身份、后端记忆命名空间均跟随此值。 */
 import { Flex, Input, Popover, Tooltip, Typography } from 'antd'
-import { Fragment, useMemo, useState, type ReactNode } from 'react'
-import { useLocation } from 'react-router-dom'
-import { Check, ChevronDown, ChevronRight, Search } from 'lucide-react'
+import { useMemo, useState, type ReactNode } from 'react'
+import { Check, ChevronDown, Search } from 'lucide-react'
 import { useHealth } from '@/hooks/useHealth'
 import { useCurrentUser } from '@/store/userStore'
+import { usePageHeaderStore } from '@/store/pageHeaderStore'
 
 function HealthBadge(): ReactNode {
   const { data, isLoading, isError } = useHealth()
@@ -22,46 +23,28 @@ function HealthBadge(): ReactNode {
   )
 }
 
-/** 路由 → 面包屑分段：顶部方位感，与内容区大标题互补（不重复） */
-function resolveCrumbs(pathname: string): string[] {
-  if (pathname === '/agents' || pathname.startsWith('/agents/')) {
-    const seg = pathname === '/agents/new' ? ['新建'] : /^\/agents\/[^/]+$/.test(pathname) ? ['编辑'] : []
-    return ['智能体', ...seg]
-  }
-  if (pathname === '/sessions' || pathname.startsWith('/sessions/')) {
-    const seg = /^\/sessions\/[^/]+$/.test(pathname) ? ['对话'] : []
-    return ['会话', ...seg]
-  }
-  if (pathname.startsWith('/settings/models')) return ['设置', '模型']
-  if (pathname.startsWith('/settings/mcp')) return ['设置', 'MCP 服务']
-  if (pathname.startsWith('/settings/skills')) return ['设置', '技能']
-  return []
-}
-
-function RouteBreadcrumb(): ReactNode {
-  const { pathname } = useLocation()
-  const crumbs = resolveCrumbs(pathname)
-  if (!crumbs.length) return null
+export function Topbar(): ReactNode {
+  const header = usePageHeaderStore((s) => s.header)
   return (
-    <Flex align="center" gap={4}>
-      {crumbs.map((c, i) => {
-        const last = i === crumbs.length - 1
-        return (
-          <Fragment key={`${c}-${i}`}>
-            {i > 0 && <ChevronRight size={14} style={{ color: 'var(--color-text-tertiary)' }} />}
-            <span
-              style={{
-                fontSize: 14,
-                fontWeight: last ? 600 : 400,
-                color: last ? 'var(--color-text)' : 'var(--color-text-tertiary)',
-              }}
-            >
-              {c}
-            </span>
-          </Fragment>
-        )
-      })}
-    </Flex>
+    <span className="topbar">
+      {header ? (
+        <>
+          {/* 页面主题：标题 + 副标题（长副标题省略号截断），占据左侧弹性空间 */}
+          <span className="topbar-page">
+            <span className="topbar-page__title">{header.title}</span>
+            {header.subtitle ? (
+              <span className="topbar-page__subtitle">{header.subtitle}</span>
+            ) : null}
+          </span>
+          {/* 页面主动作（新建/保存等），紧邻用户区之前 */}
+          {header.extra ? <span className="topbar-extra">{header.extra}</span> : null}
+        </>
+      ) : null}
+      <span className="topbar-status">
+        <UserSwitcher />
+        <HealthBadge />
+      </span>
+    </span>
   )
 }
 
@@ -212,23 +195,3 @@ function UserSwitcher(): ReactNode {
   )
 }
 
-export function Topbar(): ReactNode {
-  return (
-    <span
-      style={{
-        height: '100%',
-        padding: '0 24px',
-        borderBottom: '1px solid var(--color-border-soft)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-      }}
-    >
-      <RouteBreadcrumb />
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 20 }}>
-        <UserSwitcher />
-        <HealthBadge />
-      </span>
-    </span>
-  )
-}

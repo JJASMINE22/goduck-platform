@@ -139,8 +139,8 @@ export function AgentsListPage(): ReactNode {
 
   return (
     <PageContainer
-      title="智能体"
-      subtitle="个人智能体搭建 / 迭代；更新即替换（旧会话级联删除，配置历史可还原）"
+      title="智能体列表"
+      subtitle="搭建 / 迭代个人智能体；更新即替换，配置历史可还原"
       extra={
         <Button type="primary" icon={<Plus size={16} />} onClick={() => navigate('/agents/new')}>
           新建智能体

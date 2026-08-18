@@ -3,20 +3,19 @@
      （后端已限条目/深度）。
    - 行内悬停操作：下载（文件直链 / 目录 zip）、删除（Popconfirm，递归删目录）。
    - 选中文件 → 右侧分栏 WorkspaceFilePreview（按类型分派）；未选中时树占满全宽，
-     选中后树收窄为左栏，宽度可拖拽（panel-resizer）。
+     选中后树收窄为左栏，宽度可拖拽（panel-resizer，向右拖变宽，双击重置）。
    - 删除是用户裁剪历史产物的行为，不影响智能体逻辑；选中文件被删后预览自动关闭。 */
 import { Button, Empty, Popconfirm, Skeleton, Space, Tooltip, Tree, Typography } from 'antd'
 import type { DataNode } from 'antd/es/tree'
-import { type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useMemo, useState } from 'react'
 import { ChevronDown, Download, Folder, File as FileIcon, FolderOpen, RefreshCw, Trash2 } from 'lucide-react'
 import { workspaceApi } from '@/api/workspace'
 import { useDeleteWorkspaceItem, useWorkspaceTree } from '@/hooks/useWorkspace'
+import { useDragResize } from '@/hooks/useDragResize'
 import type { UUID, WorkspaceNode } from '@/types'
 import { WorkspaceFilePreview } from './WorkspaceFilePreview'
 
 const { Text } = Typography
-
-const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v))
 
 /** 文件树栏宽度（选中文件后分栏，拖拽分隔条调整） */
 const TREE_WIDTH = { min: 200, max: 560, default: 320 } as const
@@ -116,23 +115,18 @@ export function WorkspaceView({ sessionId }: { sessionId: UUID }): ReactNode {
   const treeQ = useWorkspaceTree(sessionId, true)
   const deleteMut = useDeleteWorkspaceItem(sessionId)
   const [selected, setSelected] = useState<Selected>(null)
-  // 左栏宽度（选中文件后生效；向左拖 clientX 减小 → 树变宽）
-  const [treeWidth, setTreeWidth] = useState<number>(TREE_WIDTH.default)
-
-  const onTreeResizeDown = (e: ReactMouseEvent) => {
-    e.preventDefault()
-    const startX = e.clientX
-    const startW = treeWidth
-    const onMove = (ev: MouseEvent) => setTreeWidth(clamp(TREE_WIDTH.min, TREE_WIDTH.max, startW + (startX - ev.clientX)))
-    const onUp = () => {
-      document.body.style.cursor = ''
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-    }
-    document.body.style.cursor = 'col-resize'
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }
+  // 左栏宽度：手柄在树右缘（edge='right'，向右拖变宽）；双击重置；宽度持久化跨刷新保留
+  const {
+    size: treeWidth,
+    onResizeStart: onTreeResizeStart,
+    reset: resetTreeWidth,
+  } = useDragResize({
+    initial: TREE_WIDTH.default,
+    min: TREE_WIDTH.min,
+    max: TREE_WIDTH.max,
+    edge: 'right',
+    storageKey: 'ws-tree-width',
+  })
 
   // 删除为事件驱动（非 effect）：成功后失效树（hook 全局 onSuccess）+ 关闭预览分栏
   // （当被删项正是打开的文件，或被删目录包含该文件时）。mutate 引用稳定（react-query 保证）。
@@ -212,7 +206,12 @@ export function WorkspaceView({ sessionId }: { sessionId: UUID }): ReactNode {
 
       {selected ? (
         <>
-          <div className="panel-resizer" onMouseDown={onTreeResizeDown} title="拖拽调整文件树宽度" />
+          <div
+            className="panel-resizer"
+            onMouseDown={onTreeResizeStart}
+            onDoubleClick={resetTreeWidth}
+            title="拖拽调整文件树宽度（双击重置）"
+          />
           <section className="ws-view__preview">
             {/* key=文件路径：切换文件时重挂载，滚动复位且不闪现上一文件内容 */}
             <WorkspaceFilePreview

@@ -29,6 +29,28 @@ logger = logging.getLogger(__name__)
 
 # ======================== Middleware ========================
 
+def build_todo_middleware() -> AgentMiddleware:
+    """Construct TodoListMiddleware with a version-defensive import.
+
+    TodoListMiddleware 的归属随版本迁移过：langchain>=1.0 位于
+    langchain.agents.middleware，早期 deepagents 内置位于 deepagents.middleware。
+    deepagents 依赖未 pin 版本，两处按序尝试；均不可用时给出明确修复指引，
+    让显式启用 task_planning 的构建在保存期即失败（fail-fast），而非静默降级。
+    仅在 task_planning=True 的节点调用（未启用的构建不受依赖版本影响）。
+    """
+    try:
+        from langchain.agents.middleware import TodoListMiddleware  # type: ignore
+    except ImportError:  # pragma: no cover - depends on installed versions
+        try:
+            from deepagents.middleware import TodoListMiddleware  # type: ignore
+        except ImportError:
+            raise ImportError(
+                "task_planning 需要 TodoListMiddleware，但当前 langchain/deepagents "
+                "版本均未提供。请升级依赖：pip install -U 'langchain>=1.0' deepagents"
+            ) from None
+    return TodoListMiddleware()
+
+
 class ToolErrorHandlingMiddleware(AgentMiddleware):
     """Wrap tool execution: catch exceptions (incl. HITL signals) and convert to
     error ToolMessages for the LLM to reason about.

@@ -14,7 +14,9 @@ langchain-openai>=0.2
 langchain-mcp-adapters>=0.1
 langgraph>=0.2
 langgraph-checkpoint-postgres>=2.0
-deepagents
+# >=0.7: 任务规划（TodoListMiddleware）为 opt-in——显式挂载不会与其旧版默认注入的
+# 实例重复注册 write_todos（task_planning per-node 开关依赖此语义）
+deepagents>=0.7
 fastmcp>=2.0
 tavily-python>=0.5
 python-dotenv>=1.0
