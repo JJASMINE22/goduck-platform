@@ -4,6 +4,8 @@
      单一真相源在后端 settings，前端零配置、永不漂移。 */
 export interface Capabilities {
   kb_enabled: boolean
+  /** 语音输入（voice_enabled 且 ASSEMBLYAI_API_KEY 已配；麦克风按钮可见性） */
+  voice_enabled: boolean
 }
 
 export interface HealthStatus {

@@ -139,11 +139,30 @@ def create_app() -> FastAPI:
 
         app.include_router(knowledge.router)
 
+    # 语音路由：仅 voice_enabled=true 且已配 AssemblyAI key 时挂载（能力位同步下发）。
+    # key 缺失属部署错误：降级为不挂载 + 警告（健康位 false），不让启动崩溃。
+    if settings.voice_enabled:
+        if settings.assemblyai_api_key:
+            from app.api import voice
+
+            app.include_router(voice.router)
+            logger.info("voice input enabled (assemblyai stt ready)")
+        else:
+            logger.warning(
+                "voice_enabled=true but ASSEMBLYAI_API_KEY missing — voice routes NOT mounted"
+            )
+
     @app.get("/health", tags=["健康检查"], response_model=HealthResponse)
     async def health():
         # capabilities 前端零配置感知全局能力开关（kb_enabled 等），
         # 驱动菜单/路由/页面可见性（F2）。单一真相源 = settings。
-        return {"status": "ok", "capabilities": {"kb_enabled": settings.kb_enabled}}
+        return {
+            "status": "ok",
+            "capabilities": {
+                "kb_enabled": settings.kb_enabled,
+                "voice_enabled": settings.voice_enabled and bool(settings.assemblyai_api_key),
+            },
+        }
 
     return app
 

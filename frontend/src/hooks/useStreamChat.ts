@@ -3,24 +3,14 @@
    - send：发新消息（仅 idle 可用）
    - resume：HITL 决策恢复（仅 interrupted 可用）
    - cancel：中止当前流
-   终态仅由 done/interrupt/error 决定（准则 F3）。 */
+   终态仅由 done/interrupt/error 决定（准则 F3）。
+   注：SSE 事件分发已提取为 lib/streamEvents.dispatchStreamEvent，
+   与语音 WS 下行隧道共用同一映射。 */
 import { useCallback, useEffect, useRef } from 'react'
 import { streamApi } from '@/api/stream'
 import { useChatStore } from '@/store/chatStore'
-import type {
-  AgentMessagePayload,
-  ChatStreamStatus,
-  Decision,
-  FileChangePayload,
-  InterruptPayload,
-  SSEEvent,
-  ThinkingPayload,
-  TodoItem,
-  TokenPayload,
-  ToolCallPayload,
-  ToolResultPayload,
-  UUID,
-} from '@/types'
+import { dispatchStreamEvent } from '@/lib/streamEvents'
+import type { ChatStreamStatus, Decision, UUID } from '@/types'
 
 export interface SendOptions {
   rubric?: string
@@ -51,73 +41,9 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
     }
   }, [])
 
-  /** 把单个 SSE 事件分发到 chatStore */
-  const dispatchEvent = useCallback((e: SSEEvent) => {
-    const store = useChatStore.getState()
-    switch (e.type) {
-      case 'token': {
-        // 逐 token 增量：聚合进流式消息（content 或 reasoning）
-        const p = e.payload as unknown as TokenPayload
-        store.appendToken(e.agent_path ?? 'root', p.id, p.delta, !!p.reasoning)
-        break
-      }
-      case 'agent_message': {
-        const p = e.payload as unknown as AgentMessagePayload
-        store.pushAgent(e.agent_path ?? 'root', p.content)
-        break
-      }
-      case 'thinking': {
-        const p = e.payload as unknown as ThinkingPayload
-        store.pushReasoning(e.agent_path ?? 'root', p.content)
-        break
-      }
-      case 'tool_call': {
-        const p = e.payload as unknown as ToolCallPayload
-        store.upsertToolCall({
-          id: p.id ?? `${p.name}-${Date.now()}`,
-          name: p.name,
-          args: p.args ?? {},
-          caller: p.caller,
-          agentPath: e.agent_path ?? 'root',
-        })
-        break
-      }
-      case 'tool_result': {
-        const p = e.payload as unknown as ToolResultPayload
-        store.setToolResult(p.tool_call_id, p.content)
-        break
-      }
-      case 'todos': {
-        // 任务规划清单：整表替换该代理的 todos（后端按 agent_path 变更去重推送）
-        const p = e.payload as unknown as { todos: TodoItem[] }
-        store.setTodos(e.agent_path ?? 'root', p.todos ?? [])
-        break
-      }
-      case 'file_change': {
-        // 工作区文件变更徽标：一批落盘记录追加进本回合时间线
-        const p = e.payload as unknown as FileChangePayload
-        store.applyFileChange(Array.isArray(p.records) ? p.records : [])
-        break
-      }
-      case 'interrupt':
-        // 流式在 HITL 处暂停：固化已到达的部分文本再进入待审批态
-        store.finalizeStreaming()
-        store.setInterrupt(e.payload as unknown as InterruptPayload)
-        break
-      case 'done':
-        store.finalizeStreaming()
-        store.clearAttachments()
-        store.setStatus('idle')
-        break
-      case 'error': {
-        const p = e.payload as { message?: string }
-        store.finalizeStreaming()
-        store.setStreamError(p.message ?? '会话出错')
-        break
-      }
-      default:
-        break
-    }
+  /** 把单个 SSE 事件分发到 chatStore（共享实现，语音 WS 同源复用） */
+  const dispatchEvent = useCallback((e: Parameters<typeof dispatchStreamEvent>[0]) => {
+    dispatchStreamEvent(e)
   }, [])
 
   /** 发起新消息流 */

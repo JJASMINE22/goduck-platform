@@ -10,6 +10,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, FolderOpen, MessageSquare, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
 import { useStreamChat } from '@/hooks/useStreamChat'
+import { useVoiceInput } from '@/hooks/useVoiceInput'
 import { useWorkspaceCapability } from '@/hooks/useWorkspace'
 import { queryKeys } from '@/hooks/queryKeys'
 import { useShellCapability } from '@/hooks/useShell'
@@ -83,6 +84,8 @@ export function ChatPage(): ReactNode {
   const { modal } = AntApp.useApp()
 
   const stream = useStreamChat(sessionId || null)
+  // 语音输入：会话页挂载即预建 WS（与按键解耦）；推理闸门复用 stream.status
+  const voice = useVoiceInput(sessionId || null)
   const wsCapQ = useWorkspaceCapability(sessionId || null)
   const allowWorkspace = wsCapQ.data?.allow_workspace === true
   const shellCapQ = useShellCapability(sessionId || null)
@@ -433,6 +436,7 @@ export function ChatPage(): ReactNode {
                   status={stream.status}
                   send={stream.send}
                   cancel={stream.cancel}
+                  voice={voice}
                 />
               </div>
             </>

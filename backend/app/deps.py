@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres import AsyncPostgresStore
 from psycopg_pool import AsyncConnectionPool
@@ -155,6 +155,11 @@ async def init_state(app: FastAPI) -> AppState:
 # ---------------------------------------------------------------------------
 def get_appstate(request: Request) -> AppState:
     return request.app.state.appstate
+
+
+def get_ws_appstate(ws: WebSocket) -> AppState:
+    """WebSocket 侧的 AppState 访问器（WS 端点无 Request 依赖注入）。"""
+    return ws.app.state.appstate
 
 
 def get_pool(request: Request) -> AsyncConnectionPool:

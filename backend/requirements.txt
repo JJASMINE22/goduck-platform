@@ -28,6 +28,11 @@ minio>=7.2
 filetype>=1.2
 python-docx>=1.1
 pymupdf>=1.24
+# ---- 语音输入（STT）：AssemblyAI Streaming 客户端直连 wss。
+#      uvicorn[standard] 虽传递引入 websockets（ASGI WS 终止用），但本模块直接
+#      import 其客户端 API（>=13 的 websockets.asyncio.client，旧版自动回落），
+#      显式声明避免依赖传递断裂（uvicorn 未来收紧 extra 即崩）。----
+websockets>=13
 # ---- 工作区 office 文档预览：markitdown 转 Markdown（保留标题/列表/表格结构）。
 #      与 mcp-servers 同库，但本进程实例服务工作区文件（本机磁盘），不复用 mcp-servers（按 upload_id 从 MinIO 取）。
 #      [docx,pdf,xlsx,pptx] 拉 mammoth/pdfminer+pdfplumber/openpyxl/python-pptx 各 converter。----

@@ -282,6 +282,54 @@ pre,
   cursor: not-allowed;
 }
 
+/* 麦克风按钮：与左下工具栏圆形图标按钮同规格；长按说话（pointer 按下/松起）。
+   录音中（--active）点亮主色 + 呼吸光圈，提示"正在听" */
+.chat-composer__mic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  touch-action: none; /* 长按不触发浏览器手势（滚动/长按菜单） */
+  user-select: none;
+}
+.chat-composer__mic:not(:disabled):hover {
+  background: var(--color-border-soft);
+  color: var(--color-primary);
+}
+.chat-composer__mic:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.chat-composer__mic--active,
+.chat-composer__mic--active:not(:disabled):hover {
+  color: var(--color-primary);
+  background: var(--color-primary-bg);
+  animation: mic-pulse 1.6s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 30%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-primary) 8%, transparent);
+  }
+}
+/* 录音/识别期间右侧提示文案（替代发送按钮的位置语义） */
+.chat-composer__voice-hint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
 /* ===== Markdown 代码块 / mermaid 块 / 图像（复制 · 下载）===== */
 .md-codeblock {
   border: 1px solid var(--color-border);

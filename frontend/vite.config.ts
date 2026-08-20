@@ -25,6 +25,8 @@ export default defineConfig({
         changeOrigin: true,
         // /api/agents -> http://localhost:8000/agents
         rewrite: (path) => path.replace(/^\/api/, ''),
+        // 语音输入 WS（/api/sessions/{id}/voice）经同一代理升级转发
+        ws: true,
       },
     },
   },

@@ -96,6 +96,10 @@ services:
       EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-24}
       KB_ENABLED: ${KB_ENABLED:-true}
       KB_STORE_MINIO: ${KB_STORE_MINIO:-true}
+      # ---- 语音输入（STT 触发会话，AssemblyAI Streaming）----
+      # key 缺省为空 → 后端降级：voice 路由不挂载、健康能力位 false（前端无麦克风入口）。
+      VOICE_ENABLED: ${VOICE_ENABLED:-false}
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
     # 跨机 TEI 可选：把 tei 服务名映射到 GPU 机 LAN IP，则 EMBEDDING_BASE_URL 可写 http://tei:8082/v1
     # extra_hosts:
     #   - "tei:192.168.x.x"

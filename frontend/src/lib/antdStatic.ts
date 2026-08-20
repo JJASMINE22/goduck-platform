@@ -26,3 +26,8 @@ export function toastError(content: string): void {
 export function toastSuccess(content: string): void {
   fns?.message.success(content)
 }
+
+/** 便捷：直接弹信息 toast */
+export function toastInfo(content: string): void {
+  fns?.message.info(content)
+}

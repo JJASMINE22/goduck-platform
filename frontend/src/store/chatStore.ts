@@ -9,6 +9,7 @@ import type {
   KnowledgeBaseOut,
   TodoItem,
   UploadOut,
+  VoiceState,
 } from '@/types'
 
 // —— 前端聊天视图模型（非后端契约，仅 UI 层）——
@@ -65,6 +66,11 @@ export interface ChatState {
   fileChanges: FileChangeEntry[]
   // 发送框草稿：上提到 store，使回撤可回填原文（受控于 store，非组件局部 state）
   draft: string
+  // —— 语音输入（麦克风小状态机，与 status 正交联动）——
+  /** 'idle'=可按压；'recording'=长按采麦中；'transcribing'=松开等终稿 */
+  voiceState: VoiceState
+  /** stt_chunk 实时中间稿（录音期间流式渲染；stt_output 固化后清空） */
+  interimTranscript: string
 
   // —— 动作 ——
   pushUser: (content: string, attachments?: UploadOut[]) => void
@@ -93,6 +99,10 @@ export interface ChatState {
   clearKbs: () => void
   setKbs: (list: KnowledgeBaseOut[]) => void
   setDraft: (v: string) => void
+  /** 语音状态机流转（idle→recording→transcribing→idle） */
+  setVoiceState: (s: VoiceState) => void
+  /** stt_chunk 中间稿整段替换（后端每 Turn 全量下发，非增量） */
+  setInterimTranscript: (v: string) => void
   /** 乐观移除一个完整回合（用户消息 + 其后到下一用户消息前的全部 AI/工具消息）
       及同时间窗内的工具调用卡；真值以后端历史重拉兜底（准则 R9） */
   removeTurn: (messageId: string) => void
@@ -113,6 +123,8 @@ const initialState = {
   todosByAgent: {} as Record<string, TodoItem[]>,
   fileChanges: [] as FileChangeEntry[],
   draft: '',
+  voiceState: 'idle' as VoiceState,
+  interimTranscript: '',
 }
 
 let idSeq = 0
@@ -230,6 +242,10 @@ export const useChatStore = create<ChatState>((set) => ({
   setKbs: (list) => set({ selectedKbs: list }),
 
   setDraft: (v) => set({ draft: v }),
+
+  setVoiceState: (voiceState) => set({ voiceState }),
+
+  setInterimTranscript: (interimTranscript) => set({ interimTranscript }),
 
   removeTurn: (messageId) =>
     set((s) => {

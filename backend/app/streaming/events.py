@@ -21,6 +21,10 @@ EventType = Literal[
     "interrupt",
     "done",
     "error",
+    # —— 语音 STT（仅 WS 下行隧道使用，SSE 端点不产出）——
+    "stt_chunk",   # 部分 Turn：composer 实时渲染中间稿
+    "stt_output",  # 终稿 Turn：触发会话推理（镜像 POST /messages）
+    "stt_empty",   # flush 后判空：复位麦克风，不产生消息
 ]
 
 

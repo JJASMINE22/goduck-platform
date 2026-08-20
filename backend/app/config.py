@@ -114,6 +114,35 @@ class Settings(BaseSettings):
     registry_max_entries: int = 16
     registry_ttl_seconds: int = 3600
 
+    # ---- 语音输入（STT 触发会话，单 WS 全管线）----
+    voice_enabled: bool = Field(
+        default=False,
+        description="语音能力总开关：false 时不挂载 /sessions/{id}/voice WS 路由（健康能力位同步为 false）。",
+    )
+    assemblyai_api_key: str = Field(
+        default="",
+        description="AssemblyAI Streaming STT API key（voice_enabled=true 时必填，启动时校验）。",
+    )
+    stt_sample_rate: int = Field(default=16000, gt=0, description="STT 采样率（PCM16 mono；前端采麦按此重采样）")
+    stt_flush_timeout: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "松开麦克风（flush→Terminate）后等待供应商终稿的兜底秒数；"
+            "超时按空转写收场（stt_empty），不让回合挂死。"
+        ),
+    )
+    voice_heartbeat_interval: int = Field(
+        default=30,
+        gt=0,
+        description="浏览器⇄后端常驻 WS 空闲期应用层 ping 间隔（秒）；应用层 ping/pong 可穿透所有代理。",
+    )
+    voice_idle_timeout: int = Field(
+        default=600,
+        gt=0,
+        description="常驻 WS 最大空闲秒数，超时服务端主动 close(4408) 回收（客户端自动重连）。",
+    )
+
     # ---- Derived path properties (resolved relative to local_root) ----
     @property
     def local_dir(self) -> Path:

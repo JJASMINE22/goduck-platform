@@ -24,6 +24,7 @@ from app.models.schemas import (
     ShellCapability,
 )
 from app.services.hitl_resolver import HITLResolver
+from app.services.message_content import MessageContentError, build_message_content
 
 router = APIRouter(prefix="/sessions", tags=["流式对话"])
 
@@ -70,44 +71,19 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
     config = _config_for(session)
     agent = await _build_agent_or_409(st, session["agent_id"])
 
-    # 附件校验 + KB 锚点注入 + content 组装（plan §6.5）
-    upload_ids: list[str] = []
-    content: str | list = body.content
-    needs_agent_cfg = bool(body.attachments) or bool(body.knowledge_base_ids)
-    agent_row = await dbmod.get_agent(st.pool, session["agent_id"]) if needs_agent_cfg else None
-    agent_cfg = (
-        AgentConfig.model_validate(agent_row["config_json"]) if agent_row is not None else None
-    )
-
-    # ① 附件：能力门控 + upload_id 有效性/归属 + 多模态组装
-    if body.attachments:
-        assert agent_cfg is not None
-        if not agent_cfg.allow_attachments:
-            raise HTTPException(422, "该智能体未启用附件能力")
-        for a in body.attachments:
-            upload = await dbmod.get_upload(st.pool, uuid.UUID(a.upload_id))
-            if upload is None or upload["session_id"] != session["id"]:
-                raise HTTPException(403, f"无效附件: {a.upload_id}")
-            upload_ids.append(a.upload_id)
-        supports_vision = st.model_store.supports_vision(agent_row["model_id"])
-        content = await st.content_composer.build(
+    # 附件校验 + KB 锚点注入 + content 组装（plan §6.5）—— 与语音 WS 共享同一
+    # 组装器，行为完全一致（能力门控 422 / 附件归属 403 / KB 不存在 404 / 503）。
+    try:
+        built = await build_message_content(
+            st,
+            session,
             user_query=body.content,
-            upload_ids=upload_ids,
-            supports_vision=supports_vision,
+            attachments=body.attachments,
+            knowledge_base_ids=body.knowledge_base_ids,
         )
-
-    # ② 知识库锚点：能力门控 + 选中 KB 存在性 + 语义暗示注入（不在此检索）
-    # 工具发现交给 agent 原生 function-calling：无检索工具则按锚点原则自主降级。
-    if body.knowledge_base_ids:
-        assert agent_cfg is not None
-        if st.knowledge_service is None:
-            raise HTTPException(503, "知识库能力未启用")
-        if not agent_cfg.allow_knowledge:
-            raise HTTPException(422, "该智能体未启用知识库能力")
-        kbs = await dbmod.get_kbs_by_ids(st.pool, body.knowledge_base_ids)
-        if len(kbs) != len(body.knowledge_base_ids):
-            raise HTTPException(404, "部分所选知识库不存在")
-        content = st.content_composer.with_kb_anchor(content, kbs)
+    except MessageContentError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    content, upload_ids = built.content, built.upload_ids
 
     adapter = st.stream_adapter
 

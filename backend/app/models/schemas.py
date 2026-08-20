@@ -169,6 +169,22 @@ class ResumeRequest(BaseModel):
     decisions: list[Decision]
 
 
+# ---------------------------------------------------------------------------
+# 语音输入（WS /sessions/{id}/voice 上行控制帧）
+# ---------------------------------------------------------------------------
+class VoiceStartFrame(BaseModel):
+    """按下麦克风时发送的回合起始帧：附件/KB/rubric 快照，校验错误在录音前暴露。
+
+    字段语义与 SendMessageRequest 对齐（能力门控/归属校验走同一共享组装器），
+    使语音回合与手打回合的消息组装行为完全一致。
+    """
+
+    type: Literal["start"]
+    attachments: list[Attachment] = Field(default_factory=list)
+    knowledge_base_ids: list[uuid.UUID] = Field(default_factory=list)
+    rubric: Optional[str] = None
+
+
 class WithdrawRequest(BaseModel):
     message_id: str = Field(
         ..., min_length=1, description="LangGraph 用户消息 id，定位被回撤的整段回合"
@@ -337,6 +353,7 @@ class Capabilities(BaseModel):
     （DESIGN 准则 F2 能力驱动 UI）。单一真相源在后端 settings，前端零配置。"""
 
     kb_enabled: bool
+    voice_enabled: bool = False
 
 
 class HealthResponse(BaseModel):

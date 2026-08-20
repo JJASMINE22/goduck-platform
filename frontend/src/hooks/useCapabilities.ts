@@ -10,6 +10,7 @@ export interface CapabilitiesState {
   /** 全部能力已就绪（true=health 已成功返回） */
   ready: boolean
   kb_enabled: boolean
+  voice_enabled: boolean
 }
 
 export function useCapabilities(): CapabilitiesState {
@@ -23,5 +24,6 @@ export function useCapabilities(): CapabilitiesState {
   return {
     ready: !!cap,
     kb_enabled: !!cap?.kb_enabled,
+    voice_enabled: !!cap?.voice_enabled,
   }
 }

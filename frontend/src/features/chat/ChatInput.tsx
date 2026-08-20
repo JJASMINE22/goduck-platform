@@ -1,17 +1,20 @@
-/* 聊天输入 composer（AI Studio 风）—— 单一圆角容器，把附件/知识库入口收敛为左下角图标按钮
+/* 聊天输入 composer（AI Studio 风）—— 单一圆角容器，把附件/知识库/语音入口收敛为左下角图标按钮
     （Tooltip + 点击打开选择器），已选项以 chip 嵌在容器内。
     发送仅在 status==='idle' 启用；streaming/interrupted 时由消息流/HITL 卡处理。
-    附件图标与知识库图标各自独立成入口（准则 F2 能力驱动 UI：未开启时图标不显示）。 */
+    附件图标、知识库图标与麦克风（长按说话）各自独立成入口（准则 F2 能力驱动 UI：未开启时不显示）。
+    录音中输入框只读展示流式转写（interimTranscript），与手打输入互斥。 */
 import { Button, Checkbox, Flex, Input, Popover, Tooltip, Typography, Upload } from 'antd'
 import { type ReactNode, useState } from 'react'
-import { BookOpen, ChevronDown, ChevronUp, FileText, Paperclip, Send, Square, X } from 'lucide-react'
+import { AudioLines, BookOpen, ChevronDown, ChevronUp, FileText, Paperclip, Send, Square, X } from 'lucide-react'
 import { useAttachmentCapability, useUploadFile } from '@/hooks/useUploads'
 import { useKnowledgeBases, useKnowledgeCapability } from '@/hooks/useKnowledge'
+import { useCapabilities } from '@/hooks/useCapabilities'
 import { uploadsApi } from '@/api/uploads'
 import { useChatStore } from '@/store/chatStore'
 import { toastError } from '@/lib/antdStatic'
 import type { ChatStreamStatus, KnowledgeBaseOut, UUID } from '@/types'
 import type { SendOptions } from '@/hooks/useStreamChat'
+import type { UseVoiceInput } from '@/hooks/useVoiceInput'
 
 export function ChatInput({
   sessionId,
@@ -19,12 +22,14 @@ export function ChatInput({
   status,
   send,
   cancel,
+  voice,
 }: {
   sessionId: UUID
   userId: string
   status: ChatStreamStatus
   send: (content: string, opts?: SendOptions) => Promise<void>
   cancel: () => void
+  voice: UseVoiceInput
 }): ReactNode {
   // 发送框文本上提到 store（draft）：回撤需回填原文，故 composer 受控于 store 而非局部 state。
   const draft = useChatStore((s) => s.draft)
@@ -47,10 +52,20 @@ export function ChatInput({
   const addKb = useChatStore((s) => s.addKb)
   const removeKb = useChatStore((s) => s.removeKb)
 
+  // —— 语音（能力驱动：后端 voice_enabled 才显示麦克风）——
+  const capabilities = useCapabilities()
+  const voiceEnabled = capabilities.voice_enabled
+  const voiceState = useChatStore((s) => s.voiceState)
+  const interimTranscript = useChatStore((s) => s.interimTranscript)
+  const recording = voiceState === 'recording'
+  const transcribing = voiceState === 'transcribing'
+
   const idle = status === 'idle'
   const streaming = status === 'streaming'
   const canAttach = !!cap.data?.allow_attachments
   const canUseKb = !!kbCap.data?.allow_knowledge
+  // 麦克风闸门（与 press() 内部守卫同源）：连接就绪 + 会话空闲 + 无进行中的语音回合
+  const micDisabled = !voice.ready || voiceState !== 'idle' || status !== 'idle'
 
   const toggleKb = (kb: KnowledgeBaseOut) => {
     if (selectedKbs.some((k) => k.id === kb.id)) {
@@ -83,6 +98,8 @@ export function ChatInput({
   const handleSend = () => {
     const text = draft.trim()
     if (!text || !idle) return
+    // 语音回合进行中（录音/识别）不与手打发送并发
+    if (useChatStore.getState().voiceState !== 'idle') return
     void send(text, { rubric: rubric.trim() || undefined })
     setDraft('')
     setRubric('')
@@ -189,16 +206,25 @@ export function ChatInput({
         </Flex>
       ) : null}
 
-      {/* 输入区（无边框，融入容器） */}
+      {/* 输入区（无边框，融入容器）；录音/转写期间只读展示流式转写 */}
       <Input.TextArea
         className="chat-composer__input"
         variant="borderless"
         autoSize={{ minRows: 1, maxRows: 6 }}
-        value={draft}
+        value={recording || transcribing ? interimTranscript : draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
+        readOnly={recording || transcribing}
         placeholder={
-          idle ? '输入消息，Enter 发送，Shift+Enter 换行' : streaming ? '生成中…（可中止）' : '等待人工审批…'
+          recording
+            ? '正在听…松开麦克风发送'
+            : transcribing
+              ? '正在整理语音…'
+              : idle
+                ? '输入消息，Enter 发送，Shift+Enter 换行'
+                : streaming
+                  ? '生成中…（可中止）'
+                  : '等待人工审批…'
         }
       />
 
@@ -246,6 +272,36 @@ export function ChatInput({
               </Tooltip>
             </Popover>
           ) : null}
+          {voiceEnabled ? (
+            <Tooltip
+              title={
+                !voice.ready
+                  ? '语音连接建立中…'
+                  : recording
+                    ? '松开发送'
+                    : '按住说话（语音转文字后自动发送）'
+              }
+              placement="top"
+            >
+              <button
+                type="button"
+                className={`chat-composer__mic${recording ? ' chat-composer__mic--active' : ''}`}
+                disabled={micDisabled && !recording}
+                onPointerDown={(e) => {
+                  // 仅主键；按下即起录（start 帧零握手直发）
+                  if (e.button !== 0) return
+                  e.preventDefault()
+                  void voice.press(rubric.trim() || undefined)
+                }}
+                onPointerUp={() => voice.release()}
+                onPointerLeave={() => voice.release()}
+                onPointerCancel={() => voice.release()}
+                onContextMenu={(e) => e.preventDefault()}
+              >
+                <AudioLines size={16} />
+              </button>
+            </Tooltip>
+          ) : null}
         </Flex>
         <Flex gap={8} align="center">
           <Tooltip title={showRubric ? '收起 rubric' : '单次 rubric 覆盖'}>
@@ -261,6 +317,10 @@ export function ChatInput({
             <Button danger icon={<Square size={14} />} onClick={cancel}>
               中止
             </Button>
+          ) : recording || transcribing ? (
+            <span className="chat-composer__voice-hint">
+              {recording ? '录音中…' : '识别中…'}
+            </span>
           ) : (
             <button
               type="button"
