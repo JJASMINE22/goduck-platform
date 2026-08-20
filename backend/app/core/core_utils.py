@@ -20,7 +20,7 @@ from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphBubbleUp
 
-from app.core.user_scoped_backend import UserScopedFilesystemBackend
+from app.core.user_scoped_backend import TrackedUserScopedFilesystemBackend
 from app.core.user_scoped_shell_backend import UserScopedLocalShellBackend
 from app.tools.rubric_tools import make_grader_tools
 
@@ -216,7 +216,8 @@ def _build_backend(ctx, *, memory, workspace, has_skills, allow_shell):
         # 操作时由 cwd property 按 runtime 当前 user 惰性解析（plan §3.1-1/2）。
         # 绝不能在构建期注入 per-user root——图按 agent_id 缓存（agent_registry.py），
         # 首用户 root 会被烘焙并静默串给所有用户（plan 风险 R3）。
-        routes["/workspace/"] = UserScopedFilesystemBackend(
+        # Tracked 子类仅做落盘埋点（diff 徽标数据源），写入语义 100% 继承。
+        routes["/workspace/"] = TrackedUserScopedFilesystemBackend(
             base_root=ctx.workspace_dir,
             virtual_mode=True,
         )

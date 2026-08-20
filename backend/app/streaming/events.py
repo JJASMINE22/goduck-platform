@@ -17,6 +17,7 @@ EventType = Literal[
     "thinking",
     "agent_message",
     "todos",
+    "file_change",
     "interrupt",
     "done",
     "error",

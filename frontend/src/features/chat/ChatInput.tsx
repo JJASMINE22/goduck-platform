@@ -262,9 +262,15 @@ export function ChatInput({
               中止
             </Button>
           ) : (
-            <Button type="primary" icon={<Send size={14} />} disabled={!idle} onClick={handleSend}>
+            <button
+              type="button"
+              className={`chat-composer__send${idle && draft.trim() ? ' chat-composer__send--ready' : ''}`}
+              disabled={!idle}
+              onClick={handleSend}
+            >
+              <Send size={14} />
               发送
-            </Button>
+            </button>
           )}
         </Flex>
       </Flex>

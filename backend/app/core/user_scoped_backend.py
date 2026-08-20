@@ -34,6 +34,13 @@ from pathlib import Path
 from deepagents.backends.filesystem import FilesystemBackend
 from langgraph.runtime import get_runtime
 
+from app.core.file_change_tracker import (
+    FileChangeRecord,
+    count_line_diff,
+    read_text_if_diffable,
+    record_change,
+)
+
 # Same whitelist as the deepagents StoreBackend namespace validation
 # (backends/store.py: _NAMESPACE_COMPONENT_RE): alphanumeric plus characters
 # common in user IDs (hyphen, underscore, dot, @, +, colon, tilde). Anything
@@ -144,3 +151,83 @@ class UserScopedFilesystemBackend(FilesystemBackend):
         free of filesystem side effects.
         """
         return self._base_root / _sanitize_user(_current_user_identity())
+
+
+class TrackedUserScopedFilesystemBackend(UserScopedFilesystemBackend):
+    """落盘即埋点：write/edit/delete 前后读内容，difflib 计行级差异。
+
+    纯观测（instrumentation），不改任何写入语义：
+    - 路径解析、穿越防护、写入/编辑/删除行为 100% 来自 ``super()``；
+    - super() 返回 ``error`` 时原样透传、不记录；
+    - 记录与否由 collector 决定（contextvar 未激活时 ``record_change`` 静默
+      直通），子类本身没有开关分支；
+    - 覆写同步方法即同时覆盖异步路径——deepagents 的 ``awrite/aedit/adelete``
+      全部是 ``await asyncio.to_thread(self.write/...)``（工具层永远走 async
+      变体，to_thread 传播 contextvar，见 file_change_tracker 模块 docstring）。
+
+    统一"前读 → super → 后读 → diff"而非复用 edit 的 old/new_string 参数：
+    后者在 ``replace_all``、同回合多次 edit、write 覆写场景下要么信息不全要么
+    根本不存在，post-read diff 对所有路径一致且准确。
+    """
+
+    def _try_resolve(self, file_path: str) -> Path | None:
+        """解析路径；失败（穿越/循环等）返回 None 并完全交由 super() 复现原行为。
+
+        父类 ``write/edit/delete`` 对 ``_resolve_path`` 的 ValueError 不捕获、
+        直接向调用方抛出——子类不得吞掉或改变这一行为，故解析失败时零介入。
+        """
+        try:
+            return self._resolve_path(file_path)
+        except Exception:  # noqa: BLE001 - 与父类行为对齐（父类稍后同样失败）
+            return None
+
+    def write(self, file_path: str, content: str):
+        full = self._try_resolve(file_path)
+        old_existed = full is not None and full.exists()
+        old = read_text_if_diffable(full) if full is not None else None
+        result = super().write(file_path, content)
+        if result.error:
+            return result
+        if full is not None:
+            new = read_text_if_diffable(full)
+            if not old_existed:
+                # 新建：旧内容为空，新增行数 = 新文件行数（空文件也记动作本身）
+                added, removed = count_line_diff("", new) if new is not None else (None, None)
+                record_change(FileChangeRecord(file_path, "create", added, removed))
+            elif old is not None and new is not None:
+                added, removed = count_line_diff(old, new)
+                if added or removed:  # 0/0 视为 touch（等价写回），不记
+                    record_change(FileChangeRecord(file_path, "edit", added, removed))
+            else:
+                # 覆写了二进制/超大文件：只记动作，不做行级计数
+                record_change(FileChangeRecord(file_path, "edit", None, None))
+        return result
+
+    def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False):
+        full = self._try_resolve(file_path)
+        before = read_text_if_diffable(full) if full is not None else None
+        result = super().edit(file_path, old_string, new_string, replace_all)
+        if result.error:
+            return result
+        if full is not None:
+            after = read_text_if_diffable(full)
+            if before is not None and after is not None:
+                added, removed = count_line_diff(before, after)
+                record_change(FileChangeRecord(file_path, "edit", added, removed))
+            else:
+                record_change(FileChangeRecord(file_path, "edit", None, None))
+        return result
+
+    def delete(self, file_path: str):
+        full = self._try_resolve(file_path)
+        if full is not None and (full.exists() or full.is_symlink()):
+            # 内容在删除后才消失——必须先读先记；目录/二进制不做行级计数
+            if full.is_dir():
+                record_change(FileChangeRecord(file_path, "delete", None, None))
+            else:
+                old = read_text_if_diffable(full)
+                record_change(FileChangeRecord(
+                    file_path, "delete", None,
+                    len(old.splitlines()) if old is not None else None,
+                ))
+        return super().delete(file_path)

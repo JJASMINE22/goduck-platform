@@ -4,6 +4,7 @@
 import { create } from 'zustand'
 import type {
   ChatStreamStatus,
+  FileChangeRecord,
   InterruptPayload,
   KnowledgeBaseOut,
   TodoItem,
@@ -40,8 +41,17 @@ export interface PendingInterrupt {
   arrivedAt: number
 }
 
+/** file_change 事件落地的一条记录（追加到达时间，供 removeTurn 时间窗过滤与时间线排序）。
+    存储层保持逐条追加（同一文件多回合多次操作各自独立、可精确回撤）；
+    同路径合并累计（create 保留 / delete 终态）在渲染层 useMemo 完成。 */
+export interface FileChangeEntry extends FileChangeRecord {
+  createdAt: number
+}
+
 export interface ChatState {
   // —— 数据 ——
+  /** store 当前绑定的会话（loadHistory 绑定；同会话往返切页时据此保留 live 状态） */
+  sessionId: string | null
   messages: ChatMessage[]
   toolCalls: ToolCallEntry[]
   status: ChatStreamStatus
@@ -51,6 +61,8 @@ export interface ChatState {
   streamError: string | null
   /** 各代理的任务规划清单（todos 事件整表写入，agent_path 键控；跨回合保留——清单存于 graph state） */
   todosByAgent: Record<string, TodoItem[]>
+  /** 本回合的工作区文件变更（file_change 事件追加；pushUser 新回合清空，回撤随时间窗移除） */
+  fileChanges: FileChangeEntry[]
   // 发送框草稿：上提到 store，使回撤可回填原文（受控于 store，非组件局部 state）
   draft: string
 
@@ -70,6 +82,8 @@ export interface ChatState {
   setStreamError: (msg: string | null) => void
   /** todos 事件落地：整表替换该 agent 的清单（后端已按变更去重） */
   setTodos: (agentPath: string, todos: TodoItem[]) => void
+  /** file_change 事件落地：同批记录统一时间戳追加（合并展示在渲染层完成） */
+  applyFileChange: (records: FileChangeRecord[]) => void
   addAttachment: (u: UploadOut) => void
   removeAttachment: (uploadId: string) => void
   clearAttachments: () => void
@@ -82,11 +96,13 @@ export interface ChatState {
   /** 乐观移除一个完整回合（用户消息 + 其后到下一用户消息前的全部 AI/工具消息）
       及同时间窗内的工具调用卡；真值以后端历史重拉兜底（准则 R9） */
   removeTurn: (messageId: string) => void
-  loadHistory: (msgs: ChatMessage[]) => void // 从后端 history 灌入后重置
+  /** 从后端 history 灌入（同时绑定会话标记；仅跨会话进入 / 显式失效时调用） */
+  loadHistory: (sessionId: string, msgs: ChatMessage[]) => void
   reset: () => void
 }
 
 const initialState = {
+  sessionId: null as string | null,
   messages: [] as ChatMessage[],
   toolCalls: [] as ToolCallEntry[],
   status: 'idle' as ChatStreamStatus,
@@ -95,7 +111,8 @@ const initialState = {
   selectedKbs: [] as KnowledgeBaseOut[],
   streamError: null as string | null,
   todosByAgent: {} as Record<string, TodoItem[]>,
-  draft: '' as string,
+  fileChanges: [] as FileChangeEntry[],
+  draft: '',
 }
 
 let idSeq = 0
@@ -110,6 +127,8 @@ export const useChatStore = create<ChatState>((set) => ({
         ...s.messages,
         { id: genId(), role: 'user', agentPath: 'user', content, attachments, createdAt: Date.now() },
       ],
+      // 新回合开始：上一回合的文件变更徽标随之消失（树/卡片同源清空）
+      fileChanges: [],
     })),
 
   pushAgent: (agentPath, content) =>
@@ -186,6 +205,13 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setTodos: (agentPath, todos) => set((s) => ({ todosByAgent: { ...s.todosByAgent, [agentPath]: todos } })),
 
+  applyFileChange: (records) =>
+    set((s) =>
+      records.length
+        ? { fileChanges: [...s.fileChanges, ...records.map((r) => ({ ...r, createdAt: Date.now() }))] }
+        : {},
+    ),
+
   addAttachment: (u) => set((s) => ({ attachments: [...s.attachments, u] })),
 
   removeAttachment: (uploadId) =>
@@ -219,10 +245,22 @@ export const useChatStore = create<ChatState>((set) => ({
         messages: [...s.messages.slice(0, idx), ...s.messages.slice(end)],
         // 同时间窗内的工具调用卡一并移除（timeline 合并视图两处需同步）
         toolCalls: s.toolCalls.filter((t) => t.createdAt < turnStart || t.createdAt >= turnEnd),
+        // 文件变更记录同窗移除：回撤回合时徽标卡片与树徽标随之消失
+        fileChanges: s.fileChanges.filter((c) => c.createdAt < turnStart || c.createdAt >= turnEnd),
       }
     }),
 
-  loadHistory: (msgs) => set({ messages: msgs, toolCalls: [], status: 'idle', pendingInterrupt: null, streamError: null, todosByAgent: {} }),
+  loadHistory: (sessionId, msgs) =>
+    set({
+      sessionId,
+      messages: msgs,
+      toolCalls: [],
+      status: 'idle',
+      pendingInterrupt: null,
+      streamError: null,
+      todosByAgent: {},
+      fileChanges: [],
+    }),
 
   reset: () => set({ ...initialState }),
 }))

@@ -266,20 +266,35 @@ class SessionService:
     async def _load_messages(checkpointer: AsyncPostgresSaver, config: dict) -> list:
         """Resolve the ``messages`` channel for a thread (delta-aware)."""
         # 1) Preferred path: delta channel history (langgraph >= 1.2).
+        #
+        #    返回结构 entry = {writes, seed}：
+        #    - ``seed``：最近一次带版本的完整快照（delta 增量的基线，可能为 None——
+        #      线程尚无版本化 checkpoint 时全量都在 writes 里）；
+        #    ``writes``：seed 之后的增量（含 RemoveMessage 软删）。
+        #    【关键】必须以 seed.value 起步再叠加 writes——若从空表起步，只能得到
+        #    最后一个版本化 checkpoint 之后的增量，历史被截断为最后几轮
+        #    （实测 69 条消息只回出 14 条 = 恰好最后两轮）。
         if hasattr(checkpointer, "aget_delta_channel_history"):
             delta = await checkpointer.aget_delta_channel_history(
                 config=config, channels=["messages"]
             )
             entry = (delta or {}).get("messages")
             writes = None
+            seed = None
             if entry is not None:
                 writes = getattr(entry, "writes", None)
-                if writes is None and isinstance(entry, dict):
-                    writes = entry.get("writes")
+                seed = getattr(entry, "seed", None)
+                if isinstance(entry, dict):
+                    if writes is None:
+                        writes = entry.get("writes")
+                    if seed is None:
+                        seed = entry.get("seed")
             if writes:
                 from langgraph.graph.message import add_messages
 
-                messages = []
+                # seed 兼容 _DeltaSnapshot(.value) / 直接值 / None 三种形态
+                seed_value = getattr(seed, "value", seed)
+                messages = list(seed_value) if seed_value else []
                 for w in writes:
                     # each delta is (checkpoint_id, channel, value); value is the
                     # message list written in that superstep (incl. RemoveMessage).

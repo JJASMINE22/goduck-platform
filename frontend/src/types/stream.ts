@@ -12,6 +12,7 @@ export type SSEEventType =
   | 'thinking'
   | 'agent_message'
   | 'todos'
+  | 'file_change'
   | 'interrupt'
   | 'done'
   | 'error'
@@ -73,6 +74,21 @@ export interface TodoItem {
 /** todos 事件 payload：该 agent_path 的全量清单（增量由前端整表替换） */
 export interface TodosPayload {
   todos: TodoItem[]
+}
+
+// —— file_change payload（core/file_change_tracker.py FileChangeRecord）——
+/** 单个文件的行级差异摘要；added/removed 为 null 表示二进制/超大/目录（只显动作） */
+export interface FileChangeRecord {
+  /** 相对用户工作区根的路径（与 WorkspaceNode.path 同源，可直接匹配树节点） */
+  path: string
+  action: 'create' | 'edit' | 'delete'
+  added: number | null
+  removed: number | null
+}
+
+/** file_change 事件 payload：一批（通常一个工具节点）落盘记录 */
+export interface FileChangePayload {
+  records: FileChangeRecord[]
 }
 
 // —— interrupt payload（hitl_resolver._extract_interrupt）——

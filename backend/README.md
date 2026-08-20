@@ -254,7 +254,21 @@ cd backend
 python -m pytest tests/ -q            # 需安装 pytest
 ```
 
-`tests/test_schema_validation.py`、`tests/test_topology_render.py` 为纯 schema 单测（无需 DB/MCP）。
+`tests/test_file_change_tracker.py` 为纯单测（无需 DB/MCP）：difflib 行级计数边界、
+tracked backend 的前读→super→后读埋点、contextvar 收集器生命周期与并发隔离。
+
+## 工作区文件变更徽标（file_change）
+
+agent 落盘/编辑/删除工作区文件时，后端在写入瞬间（`TrackedUserScopedFilesystemBackend`，
+仅观测、不改写入语义）用 difflib 计行级差异，经 contextvar 收集器（task 级隔离）汇入
+SSE 流（`file_change` 事件，线序恒为 tool_call → tool_result → file_change），前端呈现
+`编辑 · ChatPage.tsx +3 −2` 式徽标（聊天时间线卡片 + 工作区树节点）。
+
+已知限制：
+- `allow_shell` 的 `execute` 命令绕过文件后端，不可拦截：只有回合结束后的树刷新可见
+  增删，无行级计数（shell 是显式高危审批路径，可接受）。
+- 刷新页面后历史回合不回放徽标（MVP 不落库；Phase 2 可按回合存 records 回放）。
+- 二进制/超大（>512KB）文件不做行级计数，仅记动作（added/removed=null）。
 
 ## 目录来源
 

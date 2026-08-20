@@ -18,8 +18,9 @@ import { usePageHeaderStore } from '@/store/pageHeaderStore'
 import { MessageList } from '@/features/chat/MessageList'
 import { HitlCard } from '@/features/chat/HitlCard'
 import { TodoPanel } from '@/features/chat/TodoPanel'
+import { TurnRail } from '@/features/chat/TurnRail'
 import { ChatInput } from '@/features/chat/ChatInput'
-import { WorkspaceView } from '@/features/workspace/WorkspaceView'
+import { WorkspaceView, type WorkspaceSelection } from '@/features/workspace/WorkspaceView'
 import { PageLoading } from '@/components/feedback/states'
 import { sessionsApi } from '@/api/sessions'
 import { ApiError } from '@/api/client'
@@ -91,14 +92,17 @@ export function ChatPage(): ReactNode {
   // display 切换而非卸载：切到工作区时聊天组件保持挂载，流式生成不中断。
   // 状态自带 sessionId 作用域：切换会话时旧值按 scope 在渲染期派生回初始态，
   // 无需 effect 内 setState 重置（避免级联渲染）。
-  const [wsState, setWsState] = useState<{ sessionId: string; view: ChatView; visited: boolean }>({
-    sessionId,
-    view: 'chat',
-    visited: false,
-  })
+  // selected 为工作区选中文件（受控上提：时间线"文件变更卡片"点击行可跨视图跳转选中）。
+  const [wsState, setWsState] = useState<{
+    sessionId: string
+    view: ChatView
+    visited: boolean
+    selected: WorkspaceSelection | null
+  }>({ sessionId, view: 'chat', visited: false, selected: null })
   const wsView: ChatView = wsState.sessionId === sessionId ? wsState.view : 'chat'
   // 工作区懒挂载 + 保活：首次切入才挂载，此后保持挂载（树展开态/预览选中态在会话内持续）
   const wsVisited = wsState.sessionId === sessionId ? wsState.visited : false
+  const wsSelected = wsState.sessionId === sessionId ? wsState.selected : null
   const queryClient = useQueryClient()
   const reset = useChatStore((s) => s.reset)
   const loadHistory = useChatStore((s) => s.loadHistory)
@@ -154,24 +158,57 @@ export function ChatPage(): ReactNode {
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96
   }, [])
 
-  // 记录本会话上次成功灌入的历史条数；用于拒绝"同一会话历史从非空突变为空"的异常快照
-  const lastHistoryLenRef = useRef(0)
+  /** 时间线"文件变更卡片"点击行 → 一步切到工作区 + 选中该文件 + 树失效刷新。 */
+  const openWorkspaceFile = useCallback(
+    (path: string) => {
+      const name = path.split('/').pop() ?? path
+      setWsState({ sessionId, view: 'workspace', visited: true, selected: { path, name } })
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceTree(sessionId) })
+    },
+    [sessionId, queryClient],
+  )
 
-  // 会话切换：重置 store + 历史长度标记（视图状态按 sessionId 作用域自动失效）
+  /** 工作区选中态受控回调（scope 内更新，跨会话丢弃旧值） */
+  const setWsSelected = useCallback(
+    (sel: WorkspaceSelection | null) => {
+      setWsState((cur) => (cur.sessionId === sessionId ? { ...cur, selected: sel } : cur))
+    },
+    [sessionId],
+  )
+
+  // —— 历史灌入与同会话保留 ——
+  // 挂载时判定一次：store 是否已绑定本会话（同会话往返切页）。若是则整个挂载期
+  // 跳过 reset + 历史灌入——store 含 SSE 实时增量与工具卡/todos/文件变更等仅存于
+  // 前端的富视图状态，/history 只有纯文本快照，任何重灌都是不可逆降级
+  // （这正是"切页返回后部分上下文与回合标签消失"的根因）。
+  const retainedRef = useRef(false)
+  // 显式失效灌入（withdraw 后的服务端真值兜底）：true 时放行一次 loadHistory
+  const forcedLoadRef = useRef(false)
+  // 失效发起时刻：只接受此后完成的新快照，防 refetch 失败时把撤回前的旧缓存灌回
+  const forcedAtRef = useRef(0)
+
+  // 会话切换（或首次进入未绑定的会话）：重置 store；同会话往返：保留 live 状态
   useEffect(() => {
-    lastHistoryLenRef.current = 0
-    reset()
+    retainedRef.current = useChatStore.getState().sessionId === sessionId
+    forcedLoadRef.current = false
+    forcedAtRef.current = 0
+    if (!retainedRef.current) reset()
   }, [sessionId, reset])
 
   // 历史灌入：仅在数据就绪（非 fetching）时灌入。配合 useSessionHistory 的
-  // staleTime:0，重开/切会话都会先 refetch 最新；refetch 进行中不灌入，避免用过时
+  // staleTime:0，跨会话进入都会先 refetch 最新；refetch 进行中不灌入，避免用过时
   // 快照覆盖刚被 reset() 清空的 store。
-  // 关键防护：同一会话历史"从非空突变为空"几乎只可能是后端异常快照（中断流收尾瞬间
+  // 关键防护：历史"从非空突变为空"几乎只可能是后端异常快照（中断流收尾瞬间
   // _load_messages 的 delta 重建偶发返回 []），拒绝用它抹白 store——这正是"中止后重进、
-  // 历史全空"的直接诱因。React Query 出错时保留上次 data，故此处仍能灌入兜底历史。
+  // 历史全空"的直接诱因。以 store 现存消息数为准（跨会话首灌时 store 已被 reset 清空，
+  // 空快照照常灌入）。React Query 出错时保留上次 data，故此处仍能灌入兜底历史。
   useEffect(() => {
+    // 同会话往返且未被显式失效：store 即最新真值，跳过一切灌入
+    if (retainedRef.current && !forcedLoadRef.current) return
+    // 显式失效：只接受失效之后完成的新快照（refetch 失败时 dataUpdatedAt 不变）
+    if (forcedLoadRef.current && historyQ.dataUpdatedAt <= forcedAtRef.current) return
     if (!historyQ.data || historyQ.isFetching) return
-    if (historyQ.data.length === 0 && lastHistoryLenRef.current > 0) return
+    if (historyQ.data.length === 0 && useChatStore.getState().messages.length > 0) return
     const mapped = historyQ.data
       .filter((m) => m.role === 'human' || m.role === 'ai')
       .map((m, i) => ({
@@ -186,9 +223,9 @@ export function ChatPage(): ReactNode {
       // 跳过纯工具调用的空 AI 消息：实时流仅在 msg.content 非空时才产出气泡，
       // 历史灌入需保持一致，避免出现空气泡。
       .filter((m) => m.role === 'user' || m.content.trim() !== '')
-    lastHistoryLenRef.current = mapped.length
-    loadHistory(mapped)
-  }, [historyQ.data, historyQ.isFetching, loadHistory])
+    loadHistory(sessionId, mapped)
+    forcedLoadRef.current = false
+  }, [sessionId, historyQ.data, historyQ.dataUpdatedAt, historyQ.isFetching, loadHistory])
 
   // 用户发起新动作（发消息 / resume 进入 streaming）才强制贴底。
   // 仅监听 status 边沿（idle/interrupted → streaming），而非消息/工具卡数量——
@@ -247,11 +284,12 @@ export function ChatPage(): ReactNode {
               value={effView}
               onChange={(v) => {
                 const next = v as ChatView
-                // 切到工作区标记已挂载（此后保活）；scope 内继承 visited，跨会话丢弃旧值
+                // 切到工作区标记已挂载（此后保活）；scope 内继承 visited/selected，跨会话丢弃旧值
                 setWsState((cur) => ({
                   sessionId,
                   view: next,
                   visited: next === 'workspace' || (cur.sessionId === sessionId && cur.visited),
+                  selected: cur.sessionId === sessionId ? cur.selected : null,
                 }))
               }}
               options={[
@@ -315,7 +353,11 @@ export function ChatPage(): ReactNode {
       clearInterrupt()
       setStatus('idle')
       toastSuccess('已回撤该回合，可编辑后重发')
-      // 历史失效重拉：以服务端真值兜底（准则 R9），覆盖乐观删除的边界情况
+      // 历史失效重拉：以服务端真值兜底（准则 R9），覆盖乐观删除的边界情况。
+      // 同会话保留模式下灌入被跳过，必须显式标记"放行一次"，且只接受本次
+      // 请求之后完成的新快照（refetch 失败时不得把撤回前的旧缓存灌回）。
+      forcedAtRef.current = Date.now()
+      forcedLoadRef.current = true
       void historyQ.refetch()
     } catch (e) {
       toastError(e instanceof ApiError ? e.message : '回撤失败，请重试')
@@ -344,30 +386,36 @@ export function ChatPage(): ReactNode {
           消息流与输入框之间的分隔条内化为卡片内部，默认隐形。 */}
       <Flex gap={12} style={{ flex: 1, minHeight: 0 }}>
         <section className="chat-panel" style={{ display: effectiveView === 'chat' ? 'flex' : 'none' }}>
-          <div
-            className="chat-panel__scroll"
-            ref={scrollRef}
-            onScroll={handleScroll}
-            onMouseEnter={() => {
-              hoverRef.current = true
-            }}
-            onMouseLeave={() => {
-              hoverRef.current = false
-              if (pinnedRef.current) scrollToBottom()
-            }}
-          >
-            {/* 阅读列：放宽上限，避免过窄；气泡完整度已由发光边框保证 */}
-            <div className="chat-panel__column">
-              {/* 任务规划清单：仅任一代理有 todos 时出现（task_planning 开关驱动） */}
-              <TodoPanel />
-              <MessageList
-                sessionId={session.id}
-                onWithdraw={handleWithdraw}
-                withdrawingId={withdrawingId}
-                readOnly={archived}
-              />
-              {!archived ? <HitlCard resume={stream.resume} /> : null}
+          {/* body：滚动区 + 回合导航轨的定位上下文（轨不随内容滚、也不伸进 composer） */}
+          <div className="chat-panel__body">
+            <div
+              className="chat-panel__scroll"
+              ref={scrollRef}
+              onScroll={handleScroll}
+              onMouseEnter={() => {
+                hoverRef.current = true
+              }}
+              onMouseLeave={() => {
+                hoverRef.current = false
+                if (pinnedRef.current) scrollToBottom()
+              }}
+            >
+              {/* 阅读列：放宽上限，避免过窄；气泡完整度已由发光边框保证 */}
+              <div className="chat-panel__column">
+                {/* 任务规划清单：仅任一代理有 todos 时出现（task_planning 开关驱动） */}
+                <TodoPanel />
+                <MessageList
+                  sessionId={session.id}
+                  onWithdraw={handleWithdraw}
+                  withdrawingId={withdrawingId}
+                  readOnly={archived}
+                  onOpenFile={allowWorkspace ? openWorkspaceFile : undefined}
+                />
+                {!archived ? <HitlCard resume={stream.resume} /> : null}
+              </div>
             </div>
+            {/* 回合导航轨：≥3 回合才渲染；形态随面板宽度分级（容器查询，见 index.css） */}
+            <TurnRail scrollRef={scrollRef} />
           </div>
 
           {/* 输入：归档会话只读，不可继续对话 */}
@@ -393,7 +441,7 @@ export function ChatPage(): ReactNode {
 
         {wsVisited && allowWorkspace && !archived ? (
           <div className={effectiveView === 'workspace' ? 'ws-page' : 'ws-page ws-page--hidden'}>
-            <WorkspaceView sessionId={session.id} />
+            <WorkspaceView sessionId={session.id} selected={wsSelected} onSelect={setWsSelected} />
           </div>
         ) : null}
       </Flex>

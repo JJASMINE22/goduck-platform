@@ -11,6 +11,7 @@ import type {
   AgentMessagePayload,
   ChatStreamStatus,
   Decision,
+  FileChangePayload,
   InterruptPayload,
   SSEEvent,
   ThinkingPayload,
@@ -35,9 +36,19 @@ export interface UseStreamChat {
 export function useStreamChat(sessionId: UUID | null): UseStreamChat {
   const abortRef = useRef<AbortController | null>(null)
 
-  // 卸载时中止流，防内存泄漏
+  // 卸载时中止流，防内存泄漏；若卸载时仍在流式（切页离开），还需固化半截消息
+  // 并回 idle——chatStore 在同会话往返时被保留（ChatPage 不再 reset），状态机
+  // 卡在"生成中"会让重进后输入框永久锁定（准则 F3：终态必须落定）。
   useEffect(() => {
-    return () => abortRef.current?.abort()
+    return () => {
+      const controller = abortRef.current
+      controller?.abort()
+      const store = useChatStore.getState()
+      if (controller && store.status === 'streaming') {
+        store.finalizeStreaming()
+        store.setStatus('idle')
+      }
+    }
   }, [])
 
   /** 把单个 SSE 事件分发到 chatStore */
@@ -80,6 +91,12 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
         // 任务规划清单：整表替换该代理的 todos（后端按 agent_path 变更去重推送）
         const p = e.payload as unknown as { todos: TodoItem[] }
         store.setTodos(e.agent_path ?? 'root', p.todos ?? [])
+        break
+      }
+      case 'file_change': {
+        // 工作区文件变更徽标：一批落盘记录追加进本回合时间线
+        const p = e.payload as unknown as FileChangePayload
+        store.applyFileChange(Array.isArray(p.records) ? p.records : [])
         break
       }
       case 'interrupt':

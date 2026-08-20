@@ -18,6 +18,12 @@ new event, and content/reasoning now flow through it when the provider streams.
 HITL origins (declarative interrupt_on vs interrupt() primitive) are unified at
 the SSE layer: both surface as `event: interrupt`, front-end does not
 differentiate (plan §5.3).
+
+File-change badges: `_run` activates the per-task collector for the whole
+stream and drains it after each updates chunk (plus final drains before
+done/interrupt/error), emitting `file_change` events whose payload carries
+per-file line-diff records written by the tracked workspace backend at the
+moment of disk mutation (see app/core/file_change_tracker.py).
 """
 from __future__ import annotations
 
@@ -28,6 +34,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
+from app.core import file_change_tracker
 from app.streaming.events import SSEEvent
 
 logger = logging.getLogger(__name__)
@@ -276,65 +283,110 @@ class StreamAdapter:
         # agent_path -> last emitted todos (dedup: node updates may repeat the
         # same todos value; only state CHANGES are pushed as SSE events)
         last_todos: dict[str, list[dict]] = {}
+        # 文件变更收集器引用：activate() yield 出实例，error 路径（with 已退出、
+        # contextvar 已复位）仍可 drain(collector) 取走残留记录。
+        collector = None
+        agent_path = "root"
         try:
-            while True:
-                # Dual mode + subgraphs => each item is (namespace, mode, data):
-                #   mode=="messages": data = (message_chunk, metadata)
-                #   mode=="updates" : data = {node_name: state_update}
-                async for namespace, mode, data in agent.astream(
-                    payload,
-                    config=config,
-                    stream_mode=["messages", "updates"],
-                    subgraphs=True,
-                ):
-                    agent_path = _path(namespace)
-                    if mode == "messages":
-                        for ev in self._token_events(data, agent_path, streamed_ids):
-                            yield ev
-                    elif mode == "updates":
-                        if not isinstance(data, dict):
-                            continue
-                        for _node_name, state in data.items():
-                            if not isinstance(state, dict):
+            # activate 必须包住整个 astream 迭代（含 while 外层）：并行子代理的
+            # 子 task 在迭代中创建，copy_context 快照必须已含 collector。
+            with file_change_tracker.activate() as collector:
+                while True:
+                    # Dual mode + subgraphs => each item is (namespace, mode, data):
+                    #   mode=="messages": data = (message_chunk, metadata)
+                    #   mode=="updates" : data = {node_name: state_update}
+                    async for namespace, mode, data in agent.astream(
+                        payload,
+                        config=config,
+                        stream_mode=["messages", "updates"],
+                        subgraphs=True,
+                    ):
+                        agent_path = _path(namespace)
+                        if mode == "messages":
+                            for ev in self._token_events(data, agent_path, streamed_ids):
+                                yield ev
+                        elif mode == "updates":
+                            if not isinstance(data, dict):
                                 continue
-                            for msg in state.get("messages", []):
-                                for ev in _msg_to_events(msg, agent_path, streamed_ids):
-                                    yield ev
-                            # Task planning: TodoListMiddleware writes the `todos`
-                            # state channel inside the same node update as messages.
-                            # Emit AFTER the messages so the timeline stays causal
-                            # (write_todos tool card precedes its list effect).
-                            todos = _normalize_todos(state.get("todos"))
-                            if todos is not None and todos != last_todos.get(agent_path):
-                                last_todos[agent_path] = todos
-                                yield SSEEvent(
-                                    type="todos",
-                                    agent_path=agent_path,
-                                    payload={"todos": todos},
-                                )
+                            for _node_name, state in data.items():
+                                if not isinstance(state, dict):
+                                    continue
+                                for msg in state.get("messages", []):
+                                    for ev in _msg_to_events(msg, agent_path, streamed_ids):
+                                        yield ev
+                                # Task planning: TodoListMiddleware writes the `todos`
+                                # state channel inside the same node update as messages.
+                                # Emit AFTER the messages so the timeline stays causal
+                                # (write_todos tool card precedes its list effect).
+                                todos = _normalize_todos(state.get("todos"))
+                                if todos is not None and todos != last_todos.get(agent_path):
+                                    last_todos[agent_path] = todos
+                                    yield SSEEvent(
+                                        type="todos",
+                                        agent_path=agent_path,
+                                        payload={"todos": todos},
+                                    )
+                            # 文件变更徽标：backend 在工具落盘瞬间记入 collector，
+                            # 本 updates 块的消息事件发完后 drain——线序恒为
+                            # tool_call → tool_result → file_change，因果正确。
+                            for ev in self._file_change_events(
+                                file_change_tracker.drain(collector), agent_path,
+                            ):
+                                yield ev
 
-                state = await agent.aget_state(config)
+                    state = await agent.aget_state(config)
 
-                if state.next:
-                    if _has_interrupt(state):
-                        # HITL pause — push interrupt event, end stream.
-                        # Front-end POSTs /resume when ready.
-                        yield SSEEvent(
-                            type="interrupt",
-                            payload=_extract_interrupt(state),
-                        )
+                    if state.next:
+                        if _has_interrupt(state):
+                            # 终 drain 兜底"节点完成后、interrupt 前"的最后一批写入
+                            for ev in self._file_change_events(
+                                file_change_tracker.drain(collector), agent_path,
+                            ):
+                                yield ev
+                            # HITL pause — push interrupt event, end stream.
+                            # Front-end POSTs /resume when ready.
+                            yield SSEEvent(
+                                type="interrupt",
+                                payload=_extract_interrupt(state),
+                            )
+                            return
+                        # Non-interrupt suspension (rare): continue streaming.
+                        payload = None
+                        continue
+                    else:
+                        # 终 drain 兜底"节点完成后、done 前"的最后一批写入
+                        for ev in self._file_change_events(
+                            file_change_tracker.drain(collector), agent_path,
+                        ):
+                            yield ev
+                        yield SSEEvent(type="done", payload={})
                         return
-                    # Non-interrupt suspension (rare): continue streaming.
-                    payload = None
-                    continue
-                else:
-                    yield SSEEvent(type="done", payload={})
-                    return
         except Exception as e:
             logger.exception("stream error: %s", e)
             # Error floor: always close the stream with an error event so the
-            # front-end can determine final state (plan §11.2.3).
+            # front-end can determine final state (plan §11.2.3). 先取走已落盘
+            # 但未 drain 的变更（collector 引用仍有效），徽标不因流出错而丢失。
+            for ev in self._file_change_events(
+                file_change_tracker.drain(collector), agent_path,
+            ):
+                yield ev
             yield SSEEvent(type="error", payload={"message": str(e)})
+
+    @staticmethod
+    def _file_change_events(
+        records: list[file_change_tracker.FileChangeRecord],
+        agent_path: str,
+    ) -> list[SSEEvent]:
+        """把一批 FileChangeRecord 包装为单个 file_change SSE 事件（空批→无事件）。"""
+        if not records:
+            return []
+        return [
+            SSEEvent(
+                type="file_change",
+                agent_path=agent_path,
+                payload={"records": [r.to_payload() for r in records]},
+            ),
+        ]
 
     @staticmethod
     def _token_events(

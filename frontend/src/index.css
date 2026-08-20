@@ -244,6 +244,43 @@ pre,
   margin-top: auto;
   padding: 2px 8px;
 }
+/* 发送按钮：底色与发送框同色（融入 composer，仅细描边勾勒轮廓）的胶囊形态，
+   悬停 / 有草稿可发送（--ready）时点亮主色 + 柔光，替代高饱和蓝色实心按钮 */
+.chat-composer__send {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.chat-composer__send:not(:disabled):hover,
+.chat-composer__send--ready {
+  border-color: var(--color-primary);
+  background: var(--color-primary-bg);
+  color: var(--color-primary);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-primary) 16%, transparent),
+    0 0 10px 1px color-mix(in srgb, var(--color-primary) 22%, transparent);
+}
+.chat-composer__send:not(:disabled):active {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-primary) 28%, transparent),
+    0 0 14px 2px color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+.chat-composer__send:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 
 /* ===== Markdown 代码块 / mermaid 块 / 图像（复制 · 下载）===== */
 .md-codeblock {
@@ -964,7 +1001,9 @@ pre,
 .todo-panel {
   position: sticky;
   top: 8px;
-  z-index: 6;
+  /* 必须高于 .msg-in:hover 的提层（z-index:10，悬停回合整体上浮以保操作条命中）：
+     吸顶胶囊/展开浮层否则会被正悬停的消息回合盖住 */
+  z-index: 20;
   width: fit-content;
   max-width: calc(100% - 12px);
   margin: 2px 0 14px;
@@ -1036,17 +1075,31 @@ pre,
 
 /* ===== 会话面板（消息流 + composer 同卡片包装）=====
    模块化外观：白卡浮于画布，圆角 + 细边框 + 软阴影；内部纵向分隔条默认隐形。
-   滚动容器带 scrollbar-gutter:stable，预留滚动条空间避免流式时布局位移。 */
+   滚动容器带 scrollbar-gutter:stable，预留滚动条空间避免流式时布局位移。
+   面板同时是回合导航轨（TurnRail）的容器查询上下文：轨的三级形态按面板实际宽度
+   （非视口宽度）分级，避免应用侧栏开合误伤。 */
 .chat-panel {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  position: relative;            /* TurnRail / 弹层的定位上下文 */
+  container-type: inline-size;   /* 宽度与内容解耦（flex:1 定宽），仅作查询上下文 */
   background: var(--color-surface);
   border: 1px solid var(--color-border-soft);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
+}
+/* body：滚动区 + 回合导航轨共用的弹性区域。
+   轨绝对定位于 body（不放进 scroll —— 绝对定位元素会随滚动容器的内容滚动；
+   也不直接挂 panel —— bottom 会伸进 composer，而 composer 高度可拖拽不定）。 */
+.chat-panel__body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .chat-panel__scroll {
   flex: 1;
@@ -1064,7 +1117,12 @@ pre,
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  padding: 8px 14px 14px;
+  /* 与阅读列（chat-panel__column）同宽限宽 + 居中 + 同水平内边距：
+     发送框左右边缘与消息显示框严格对齐（容器查询档位随列同步为导航轨让位） */
+  width: 100%;
+  max-width: 1560px;
+  margin: 0 auto;
+  padding: 8px 16px 14px;
 }
 /* composer 内嵌面板后去壳：转为浅灰输入字段，避免卡片套卡片的双边框 */
 .chat-panel .chat-composer {
@@ -1072,6 +1130,138 @@ pre,
   border: none;
   border-radius: var(--radius-md);
   box-shadow: none;
+}
+
+/* ===== 回合导航轨（TurnRail）=====
+   每轮对话一个 label：悬停 Popover 预览（portal 到 body，不受 panel overflow 裁剪）、
+   点击平滑滚动到 data-turn-anchor 锚点。
+   三级形态（容器查询，窄→宽）：
+   - <900px   整轨隐藏（移动/分屏窄面板，气泡优先）
+   - 900–1399 仅圆点（14px 轨，悬停仍有预览）
+   - ≥1400    完整 label（160px 轨）
+   阅读列在各档同步右侧让位，轨道永不与气泡/回撤操作条重叠（显示合理性的硬保证）。 */
+.turn-rail {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  right: 8px;
+  width: 16px;                  /* 默认 = 圆点档 */
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 1px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 1;                   /* 低于 .msg-in:hover 的 10：气泡悬浮提层恒压轨道 */
+  scrollbar-width: none;        /* 轨道极窄，隐藏自身滚动条（列表仍可滚） */
+}
+.turn-rail::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+/* 轨道条目：原生 button（可聚焦、语义化）；圆点默认灰、悬停主色微光 */
+.turn-rail__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 16px;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.turn-rail__item:hover,
+.turn-rail__item:focus-visible {
+  background: var(--color-bg);
+  color: var(--color-text);
+  outline: none;
+}
+.turn-rail__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  /* 静息态对比度：--color-border(#d8dde6) 对白卡底仅 ~1.3:1，肉眼难辨；
+     提到 --color-text-tertiary(#80868b，~3.4:1) —— 与底色明确可分，
+     又弱于悬停态的主色，层级不被抢 */
+  background: var(--color-text-tertiary);
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+.turn-rail__item:hover .turn-rail__dot,
+.turn-rail__item:focus-visible .turn-rail__dot {
+  background: var(--color-primary);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary) 50%, transparent);
+}
+/* label：默认（圆点档）隐藏，宽面板档显示；单行截断 */
+.turn-rail__label {
+  display: none;
+  max-width: 118px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 悬停预览卡（Popover portal 渲染，仅悬停时挂载） */
+.turn-rail__preview {
+  max-width: 320px;
+}
+.turn-rail__preview-seq {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  margin-bottom: 4px;
+}
+.turn-rail__preview-query {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text);
+  word-break: break-word;
+}
+.turn-rail__preview-reply {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: 6px;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* 跳转锚点：scrollIntoView(block:'start') 时与容器顶部留呼吸空间 */
+[data-turn-anchor] {
+  scroll-margin-top: 12px;
+}
+/* —— 分级（窄 → 宽）—— */
+/* <900px：整轨隐藏，阅读列恢复默认 padding */
+@container (max-width: 899px) {
+  .turn-rail {
+    display: none;
+  }
+}
+/* ≥900px：圆点档 —— 阅读列与 composer 右侧同步让出轨道宽度（两缘对齐） */
+@container (min-width: 900px) {
+  .chat-panel__column,
+  .chat-panel__composer {
+    padding-right: 34px;
+  }
+}
+/* ≥1400px：label 档 —— 轨道放宽、label 显形，阅读列与 composer 同步让出完整轨道 */
+@container (min-width: 1400px) {
+  .turn-rail {
+    right: 10px;
+    width: 160px;
+  }
+  .turn-rail__label {
+    display: block;
+  }
+  .chat-panel__column,
+  .chat-panel__composer {
+    padding-right: 178px;
+  }
 }
 
 /* ===== 顶栏页面标题区（Topbar 内渲染 pageHeaderStore 注册的内容）===== */
@@ -1251,25 +1441,27 @@ pre,
   display: none;
 }
 
-/* 全页分栏：文件树 | 预览（选中文件后才出现右栏与分隔条） */
+/* 全页双卡分栏：目录树卡 | 预览卡 —— 各自独立成卡（白卡浮于画布，与 chat-panel
+   同一模块卡语言），间隙中的 panel-resizer 兼作拖拽手柄；未选中文件时树卡独占全宽 */
 .ws-view {
   display: flex;
   width: 100%;
   height: 100%;
   min-width: 0;
+}
+/* 两卡共用的模块卡外观 */
+.ws-view__tree,
+.ws-view__preview {
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
   overflow: hidden;
 }
 .ws-view__tree {
   display: flex;
   flex-direction: column;
   min-width: 0;
-}
-/* 仅在右侧预览分栏存在时描边（树独占全宽时不产生双重边框） */
-.ws-view__tree:not(:last-child) {
-  border-right: 1px solid var(--color-border-soft);
 }
 .ws-view__tree-header {
   display: flex;
@@ -1299,7 +1491,7 @@ pre,
   align-items: center;
   justify-content: center;
 }
-/* 右侧预览分栏 */
+/* 右侧预览卡（布局属性；卡壳见上方两卡共用规则） */
 .ws-view__preview {
   flex: 1;
   min-width: 0;
@@ -1346,6 +1538,123 @@ pre,
 .ant-tree-treenode:hover .ws-node__actions,
 .ws-node__actions:focus-within {
   opacity: 1;
+}
+/* 本回合被删除的节点：名称淡化（树刷新前仍可见时的标注） */
+.ws-node--deleted .ws-node__name {
+  color: var(--color-text-tertiary);
+}
+
+/* ===== 文件变更徽标（时间线卡片 + 工作区树共用）===== */
+.diff-badge {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.diff-badge--add {
+  color: var(--color-success);
+}
+.diff-badge--del {
+  color: var(--color-danger);
+}
+.diff-badge--group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* 点形态：新建=绿点 / 删除=红点（无行级计数时的动作标注） */
+.diff-badge--dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+/* 树内紧凑变体（与 .ws-node__size 同行高对齐） */
+.ws-node .diff-badge {
+  font-size: 11px;
+}
+
+/* ===== 聊天时间线：文件变更卡片（FileChangesCard）===== */
+.fc-summary {
+  font-size: 12px;
+}
+.fc-summary--create {
+  color: var(--color-success);
+}
+.fc-summary--edit {
+  color: var(--color-text-secondary);
+}
+.fc-summary--delete {
+  color: var(--color-danger);
+}
+/* 列表限宽：避免行在宽阅读列里被拉满、文件名与数字间留白过大 */
+.fc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 520px;
+}
+/* 行为 5 列网格：图标 | 动作 | 文件名(1fr 截断) | +N | −M。
+   数字列固定宽度右对齐 → 各行 +N/−M 逐列对齐（与 git diff --stat 观感一致）；
+   0/null 时单元格留空占位，不塌列、不错位。 */
+.fc-row {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(0, 1fr) 3.5em 3.5em;
+  column-gap: 6px;
+  align-items: center;
+  padding: 3px 4px;
+  border-radius: 4px;
+  min-width: 0;
+}
+.fc-row--clickable {
+  cursor: pointer;
+}
+.fc-row--clickable:hover {
+  background: var(--color-border-soft);
+}
+.fc-row__icon {
+  flex-shrink: 0;
+}
+.fc-row__icon--create {
+  color: var(--color-success);
+}
+.fc-row__icon--edit {
+  color: var(--color-text-secondary);
+}
+.fc-row__icon--delete {
+  color: var(--color-danger);
+}
+.fc-row__action {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+.fc-row__path {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.fc-row__path--struck {
+  text-decoration: line-through;
+  color: var(--color-text-tertiary);
+}
+.fc-row__num {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: right;
+  white-space: nowrap;
+}
+.fc-row__num--add {
+  color: var(--color-success);
+}
+.fc-row__num--del {
+  color: var(--color-danger);
 }
 
 /* 工作区文件预览（分栏右侧，由 WorkspaceFilePreview 渲染） */

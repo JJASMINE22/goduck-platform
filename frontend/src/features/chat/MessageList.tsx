@@ -5,14 +5,16 @@ import { Button, Collapse, Flex, Tag, Typography } from 'antd'
 import { type CSSProperties, type ReactNode, useMemo } from 'react'
 import { Bot, Brain, Check, Undo2, User, Wrench } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
-import type { ChatMessage, ToolCallEntry } from '@/store/chatStore'
+import type { ChatMessage, FileChangeEntry, ToolCallEntry } from '@/store/chatStore'
 import { Markdown } from '@/components/markdown/Markdown'
 import { MessageAttachments } from './MessageAttachments'
+import { FileChangesCard } from './FileChangesCard'
 import type { UUID } from '@/types'
 
 type TimelineItem =
   | { kind: 'msg'; ts: number; data: ChatMessage }
   | { kind: 'tool'; ts: number; data: ToolCallEntry }
+  | { kind: 'files'; ts: number; data: FileChangeEntry[] }
 
 function agentMeta(path: string): { label: string; color: string } {
   if (path === 'root' || path === 'user') return { label: '主代理', color: 'var(--color-role-agent-main)' }
@@ -33,14 +35,18 @@ export function MessageList({
   onWithdraw,
   withdrawingId,
   readOnly,
+  onOpenFile,
 }: {
   sessionId: UUID
   onWithdraw: (messageId: string) => void
   withdrawingId: string | null
   readOnly: boolean
+  /** 文件变更卡片行点击 → 打开工作区并选中该文件（未开启 workspace 能力时不传，行不可点） */
+  onOpenFile?: (path: string) => void
 }): ReactNode {
   const messages = useChatStore((s) => s.messages)
   const toolCalls = useChatStore((s) => s.toolCalls)
+  const fileChanges = useChatStore((s) => s.fileChanges)
   const status = useChatStore((s) => s.status)
   const streaming = status === 'streaming'
 
@@ -55,6 +61,10 @@ export function MessageList({
   const timeline: TimelineItem[] = [
     ...messages.map((m) => ({ kind: 'msg' as const, ts: m.createdAt, data: m })),
     ...toolCalls.map((t) => ({ kind: 'tool' as const, ts: t.createdAt, data: t })),
+    // 单张本回合聚合卡：ts 取末条记录到达时间，随流式新增记录自然贴近时间线底部
+    ...(fileChanges.length
+      ? [{ kind: 'files' as const, ts: fileChanges[fileChanges.length - 1].createdAt, data: fileChanges }]
+      : []),
   ].sort((a, b) => a.ts - b.ts)
 
   return (
@@ -68,6 +78,8 @@ export function MessageList({
       ) : null}
       {timeline.map((item) => {
         if (item.kind === 'tool') return <ToolCallCard key={`t-${item.data.id}`} entry={item.data} />
+        if (item.kind === 'files')
+          return <FileChangesCard key="file-changes-card" records={item.data} onOpenFile={onOpenFile} />
         if (item.data.reasoning) return <ThinkingBlock key={item.data.id} msg={item.data} />
         return (
           <MessageBubble
@@ -113,8 +125,12 @@ function MessageBubble({
   return (
     <Flex justify={isUser ? 'flex-end' : 'flex-start'} align="flex-start" gap={10} className="msg-in">
       {!isUser ? <Avatar role="agent" color={color} /> : null}
-      {/* msg-turn：气泡 + 悬浮才出现的下方操作条（回撤不放进气泡内） */}
-      <div className={`msg-turn ${isUser ? 'msg-turn--user' : 'msg-turn--agent'}`}>
+      {/* msg-turn：气泡 + 悬浮才出现的下方操作条（回撤不放进气泡内）。
+          用户回合挂 data-turn-anchor：TurnRail 点击跳转锚点（undefined 时 React 省略属性） */}
+      <div
+        className={`msg-turn ${isUser ? 'msg-turn--user' : 'msg-turn--agent'}`}
+        data-turn-anchor={isUser ? msg.id : undefined}
+      >
         <div
           className={`chat-bubble ${isUser ? 'chat-bubble--user' : 'chat-bubble--agent'}`}
           style={{ '--bubble-color': isUser ? 'var(--color-primary)' : color } as CSSProperties}
