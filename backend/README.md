@@ -1,9 +1,8 @@
-# goduck-platform
+# goduck-platform backend
 
-个人智能体搭建 / 迭代 / 会话工具 — 基于 deepagents + LangGraph + MCP。
+个人智能体搭建 / 迭代 / 会话工具的后端服务 —— 基于 **FastAPI + deepagents + LangGraph + MCP**。
 
-> 定位：个人用户搭建自己的智能体，支持新增/更新（更新即替换）、随时增删工具与技能，
-> 重启自动加载已建智能体。更新智能体会级联清除其旧会话，配置历史 append-only 保留可还原。
+> 完整本地 / 容器启动指引见[根 README](../README.md#quickstart)，本文聚焦后端内部设计与 API。
 
 ## 架构
 
@@ -12,42 +11,63 @@
 ```
 backend/
 ├── app/
-│   ├── main.py              # FastAPI 入口 + lifespan 装配 + 启动预热
-│   ├── config.py            # pydantic-settings 集中配置（含派生路径 property）
+│   ├── main.py              # FastAPI 入口 + lifespan 装配（KB/语音按开关挂载）+ 启动预热
+│   ├── config.py            # pydantic-settings 集中配置（含 workspace/memories/skills 派生路径）
 │   ├── deps.py              # 依赖注入：AppState + SimpleUser + FastAPI 访问器
 │   ├── seed.py              # CLI：YAML 模板 → 灌入智能体
 │   │
 │   ├── api/                 # 【API 层】FastAPI 路由 + 边界校验
-│   │   ├── agents.py        #   /agents        智能体 CRUD + 校验 + 拓扑预览 + 历史还原
-│   │   ├── sessions.py      #   /sessions      会话 CRUD + 历史
-│   │   ├── stream.py        #   /sessions/*    SSE 流式对话 + HITL resume
-│   │   ├── skills.py        #   /skills        技能上传/列/删
-│   │   └── mcp.py           #   /mcp           MCP server 注册 + 工具列表 + 健康检查
+│   │   ├── agents.py        #   /agents           智能体 CRUD + 校验 + 拓扑预览 + 历史还原 + 导出
+│   │   ├── sessions.py      #   /sessions         会话 CRUD + 历史
+│   │   ├── stream.py        #   /sessions/*       SSE 流式对话 + HITL resume + 附件/KB/shell 能力查询
+│   │   ├── uploads.py       #   /sessions/*       附件上传（魔数判 mime）+ 附件能力
+│   │   ├── workspace.py     #   /sessions/*       工作区树/预览/下载/删除（用户隔离）
+│   │   ├── voice.py         #   WS /sessions/*    语音输入全管线（voice_enabled 时挂载）
+│   │   ├── models.py        #   /models           模型注册 CRUD + 连通性测试
+│   │   ├── mcp.py           #   /mcp              MCP server 注册 + 工具列表 + 健康检查
+│   │   ├── skills.py        #   /skills           技能上传/列/删
+│   │   └── knowledge.py     #   /knowledge-bases  知识库 CRUD + 文档入库 + 检索（kb_enabled 时挂载）
 │   │
 │   ├── services/            # 【Service 层】业务逻辑（不做边界类型重复校验）
-│   │   ├── agent_service.py #   AgentService   校验/CRUD/mermaid 渲染
-│   │   ├── session_service.py#  SessionService 会话生命周期 + checkpointer 历史
-│   │   ├── agent_registry.py#   AgentRegistry  按 agent_id 缓存编译图（LRU+TTL）
-│   │   ├── mcp_lifecycle.py #   MCPLifecycle   数据驱动 MCP 连接池 + 工具名命名空间
-│   │   ├── stream_adapter.py#   StreamAdapter  astream → SSE 事件
-│   │   └── hitl_resolver.py #   HITLResolver   interrupt 校验 + 决策归一
+│   │   ├── agent_service.py #   校验/CRUD/mermaid 渲染
+│   │   ├── agent_registry.py#   按 agent_id 缓存编译图（LRU+TTL）
+│   │   ├── session_service.py#  会话生命周期 + checkpointer 历史
+│   │   ├── model_service.py / model_store.py     # 模型 CRUD + 缓存 chat 客户端（key 轮换即时生效）
+│   │   ├── mcp_lifecycle.py #   数据驱动 MCP 连接池 + 工具名命名空间
+│   │   ├── stream_adapter.py#   astream → SSE 事件
+│   │   ├── hitl_resolver.py #   interrupt 校验 + 决策归一
+│   │   ├── thinking_patch.py#   思考流事件补丁
+│   │   ├── storage.py       #   MinIO 附件字节持久层
+│   │   ├── content_composer.py / message_content.py / mime_utils.py
+│   │   │                    #   附件/KB 锚点 → HumanMessage.content 组装、多模态消息
+│   │   ├── knowledge_service.py / embedding.py / vector_store.py / ingest_pool.py
+│   │   │                    #   知识库：入库/检索、TEI 向量化、ES 向量库、后台入库池
+│   │   ├── doc_convert.py   #   office 文档 → Markdown 预览（markitdown）
+│   │   └── stt/assemblyai_stt.py                # AssemblyAI Streaming STT 客户端
 │   │
 │   ├── core/                # 【Runtime 层】deepagents 内核（迁移自 DeepAgentsDemos）
 │   │   ├── schema_utils.py  #   AgentConfig/RubricConfig pydantic + YAML/JSON loader
 │   │   ├── graph_utils.py   #   create_agent_recursive（compiled+dicted 混合）
-│   │   ├── core_utils.py    #   middleware + _build_backend（条件挂载）
+│   │   ├── core_utils.py    #   middleware + _build_backend（memory/workspace/skills 条件挂载）
 │   │   ├── topology_utils.py#   委派拓扑 Mermaid 渲染（build_delegation_mermaid）
-│   │   └── hitl_utils.py    #   CLI HITL 决策收集（dev 用）
+│   │   ├── hitl_utils.py    #   CLI HITL 决策收集（dev 用）
+│   │   ├── user_scoped_backend.py / user_scoped_shell_backend.py
+│   │   │                    #   按用户隔离的虚拟文件系统 / shell 后端（u_<hash>/ 隔离）
+│   │   └── file_change_tracker.py               # 工作区文件变更行级统计（difflib + contextvar）
 │   │
+│   ├── streaming/events.py  # SSE 事件契约（后端与前端共同的事件模型）
 │   ├── models/              # 【Persistence 层】
-│   │   ├── db.py            #   psycopg3 直连：DDL + agent/history/session/mcp_server CRUD
+│   │   ├── db.py            #   psycopg3 直连：8 张业务表 DDL + CRUD
 │   │   └── schemas.py       #   pydantic 请求/响应模型（边界校验）
-│   │
 │   ├── tools/rubric_tools.py#   rubric grader 内部取证工具（仅挂 RubricMiddleware）
-│   └── mcps/                #   MCPClientManager + UnifiedGateway mcp_server（本地服务）
+│   └── mcps/                #   内置 UnifiedGateway MCP 网关 + mcp_services/（system_info/music）
 │
-├── agent_confs/             # 智能体 YAML 模板（seed 用）
-└── tests/                   # 纯 schema + 拓扑渲染单测
+├── agent_confs/default.yaml # 种子智能体（网关 + researcher/analyzer/artist 子智能体）
+├── data/skills/             # 技能池种子（6 个内置技能，镜像构建时烘焙进 /data/skills）
+├── scripts/                 # import_kb_json.py（KB 批量导入）/ rag_smoke_test.py（RAG 冒烟）
+├── tests/                   # 纯单测（无需 DB/MCP）
+├── Dockerfile               # uv/uvx/node + MCP 包缓存预热 + 非 root + tini
+└── requirements.txt / pyproject.toml
 ```
 
 **持久化**：业务表（psycopg3 直连）与 LangGraph 原生表（`AsyncPostgresSaver` /
@@ -58,14 +78,18 @@ backend/
 
 ## 数据模型
 
-业务表（4 张，psycopg3 直连，与 LangGraph 原生表共享同一连接池）：
+业务表（8 张，psycopg3 直连，与 LangGraph 原生表共享同一连接池，启动时幂等建表）：
 
 | 表 | 作用 | 关键约束 |
 |---|---|---|
-| `agent` | 智能体当前 active 配置（单行可变）。`id` 全程稳定不变，更新即 in-place 覆写 `config_json`。 | `name` 唯一（创建/更新约束依据）；`status` ∈ draft/active/archived |
-| `agent_config_history` | 配置历史快照（append-only 审计 + 手动还原来源）。更新时不删，仅追加。 | `agent_id` → `agent(id)` ON DELETE CASCADE；按 `(agent_id, created_at DESC)` 索引 |
-| `session` | 会话。绑定 `agent_id`；`thread_id` 是 LangGraph checkpointer 的键。 | `thread_id` 唯一；`agent_id` → `agent(id)` ON DELETE CASCADE；同时索引 `user_id` |
-| `mcp_server` | MCP 服务注册（用户配置的第三方/本地 MCP）。`name` 作为工具名前缀。 | `name` 唯一；`kind` ∈ stdio/http；`config_json` 存 `{command,args,env}` 或 `{url,headers}` |
+| `model` | 注册模型（OpenAI 兼容客户端族 + api_key + base_url + 采样参数）。agent 经 `model_id` 引用。 | `name` 唯一；key 永不回显；被引用时禁止删除 |
+| `agent` | 智能体当前 active 配置（单行可变）。`id` 全程稳定不变，更新即 in-place 覆写 `config_json`。 | `name` 唯一；`status` ∈ draft/active/archived |
+| `agent_config_history` | 配置历史快照（append-only 审计 + 手动还原来源）。更新时不删，仅追加。 | `agent_id` → `agent(id)` ON DELETE CASCADE |
+| `session` | 会话。绑定 `agent_id`；`thread_id` 是 LangGraph checkpointer 的键。 | `thread_id` 唯一；`agent_id` 级联删；索引 `user_id` |
+| `mcp_server` | MCP 服务注册（stdio/http）。`name` 作为工具名前缀。 | `name` 唯一；`config_json` 存 `{command,args,env}` 或 `{url,headers}` |
+| `upload` | 附件元数据（字节在 MinIO）。 | 关联 session/user |
+| `knowledge_base` | 知识库（ES 索引 `kb_<id>` + 可选 MinIO 原文留底）。 | `name` 唯一 |
+| `kb_document` | 知识库文档（状态机 pending/ingesting/ready/failed + 分块数/页数）。 | 级联随 KB 删除 |
 
 两类"历史"区分：**会话历史（session + LangGraph checkpoints）= 更新智能体时删除**；
 **配置历史（agent_config_history）= 保留可还原**。
@@ -79,14 +103,146 @@ backend/
 - **无版本化（方案 B）**：`agent.id` 全程稳定不变；更新 = in-place 覆写 `config_json`
   + 追加 `agent_config_history` 快照。更新即级联删该 agent 的全部会话，并清理 LangGraph
   checkpoints 残留（会话历史删、配置历史留）。重启加载所有 `active` 智能体重建 registry。
-- **工具全 MCP 化**：本地工具脚本移除；HITL 走声明式 `interrupt_on`（与 MCP 工具兼容，
-  已按官方文档验证）。MCP server 由 `mcp_server` 表注册，启动时动态连接，工具按
-  `{server}__{tool}` 命名防跨 server 冲突。
+- **数据驱动运行时**：模型（`model` 表）与 MCP server（`mcp_server` 表）全部经 API 注册、
+  存 DB、重启自动加载；模型变更即时刷新 ModelStore 并使 agent 缓存失效（无需重启）。
+- **能力开关**：`kb_enabled=false` 时不 import RAG 重依赖、不挂 knowledge 路由；
+  `voice_enabled=true` 且 key 齐备才挂 voice WS 路由。`/health.capabilities` 是前端可见性的单一真相源。
+- **工具全 MCP 化**：本地工具脚本移除；HITL 走声明式 `interrupt_on`（与 MCP 工具兼容）。
+  工具按 `{server}__{tool}` 命名防跨 server 冲突。
 - **拓扑可视化**：后端以 `AgentConfig` 为唯一数据源生成 Mermaid 文本（`build_delegation_mermaid`），
   前端 mermaid.js 渲染。创建/校验/更新/详情各接口附带 `mermaid` 字段，零图像/网络依赖。
-- **复用优先**：校验复用 `AgentConfig.model_validate`；agent 构建复用 `create_agent_recursive`；
-  backend 条件挂载（memory/workspace/skills 按配置是否声明决定是否挂路由）。
+- **用户隔离虚拟文件系统**：`/workspace/` `/memories/` `/skills/` 由
+  `UserScopedFilesystemBackend` 落盘到 `workspace/u_<hash>/`（按 user_id 哈希隔离），
+  工作区浏览 API 与写入同源 sanitize（写在哪 = 读在哪）。
 - **HITL 统一**：`interrupt_on` 在 SSE/HTTP 层统一为 `event: interrupt`；SSE 异常兜底转 `event: error`。
+  语音 WS 下行隧道与 SSE 事件同名同构（前端复用 dispatch）。
+
+## 运行
+
+详见[根 README](../README.md#quickstart)。要点：
+
+```powershell
+# 基础设施（只起三个 infra 服务，不 build 应用）
+docker compose up -d postgres minio elasticsearch
+
+# 后端
+cd backend
+copy .env.example .env      # 默认值已与 compose 对齐；KB/语音按需开启
+pip install -e .
+python -m app.main          # 或 uvicorn app.main:app --reload
+```
+
+- LLM 与 MCP server 均不在 `.env` 里 —— 模型通过 `/models`、MCP 通过 `/mcp/servers` 运行时注册。
+- 内置 UnifiedGateway 网关（可选）：`python -m app.mcps.mcp_server`（127.0.0.1:8088/mcp）。
+- 种子智能体（可选）：`python -m app.seed agent_confs/default.yaml --name "Default Gateway" --creator admin`。
+
+## API 速览
+
+接口按模块分组。SSE 流终止事件固定为 `done` / `interrupt` / `error`，前端可据此判定最终状态。
+容器部署时经 nginx 剥 `/api` 前缀（即 `/api/agents` → `/agents`）。
+
+### 智能体管理 `/agents`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| POST | `/agents/validate` | 校验 config + 返回 mermaid 预览（不落库） |
+| POST | `/agents` | 创建（name 唯一，409 冲突）→ 建 registry → 返回 mermaid |
+| PUT | `/agents/{id}` | 更新（必须存在）→ 级联删会话+清 checkpoint → 重建 registry |
+| GET | `/agents` | 列出智能体 |
+| GET | `/agents/{id}` | 详情 + 当前 active mermaid |
+| GET | `/agents/{id}/topology.mmd` | Mermaid 文本（PlainTextResponse） |
+| GET | `/agents/{id}/history` | 配置历史（还原选择） |
+| POST | `/agents/{id}/restore` | 用 `{history_id}` 还原 |
+| GET | `/agents/{id}/export.yaml` | 导出当前配置 YAML |
+| DELETE | `/agents/{id}` | 归档（status=archived） |
+
+### 会话与流式 `/sessions`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| POST | `/sessions` | 创建会话（绑定 agent_id） |
+| GET | `/sessions?user_id=` | 列出用户会话（含 agent_name） |
+| GET | `/sessions/{id}` | 会话详情 |
+| DELETE | `/sessions/{id}` | 归档会话 |
+| GET | `/sessions/{id}/history` | checkpointer 历史消息 |
+| POST | `/sessions/{id}/messages` | 发送消息（可带附件/KB 锚点）→ SSE 流 |
+| POST | `/sessions/{id}/resume` | HITL 决策恢复 → SSE 流 |
+| GET | `/sessions/{id}/attachment-capability` | 附件能力（驱动上传组件可见性/接受类型） |
+| GET | `/sessions/{id}/knowledge-capability` | 知识库能力（会话是否可锚定 KB） |
+| GET | `/sessions/{id}/shell-capability` | shell 能力（agent 是否开 allow_shell） |
+| WS | `/sessions/{id}/voice` | 语音输入全管线（start/audio/flush ⇄ stt_*/agent 事件） |
+
+### 附件 `/sessions/{id}/uploads`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| POST | `/sessions/{id}/uploads` | multipart 上传（服务端魔数判定 mime，存 MinIO + DB） |
+
+### 工作区 `/sessions/{id}/workspace*`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/sessions/{id}/workspace-capability` | 是否启用工作区（驱动面板可见性） |
+| GET | `/sessions/{id}/workspace/tree` | 递归文件树（≤500 条目 / ≤8 层） |
+| GET | `/sessions/{id}/workspace/file` | 读文本文件（256KB 截断；二进制仅元信息） |
+| GET | `/sessions/{id}/workspace/download` | 下载单文件（RFC5987 中文文件名）或目录 zip |
+| GET | `/sessions/{id}/workspace/preview` | office 文档 → Markdown 预览 |
+| DELETE | `/sessions/{id}/workspace` | 删除文件或目录（用户裁剪，递归删） |
+
+### 模型管理 `/models`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/models` | 列出注册模型（api_key 永不回显） |
+| POST | `/models` | 注册（name 唯一）→ 即时刷新 ModelStore |
+| PUT | `/models/{id}` | 更新（key 留空 = 保留旧 key 轮换）→ 失效引用 agent 缓存 |
+| DELETE | `/models/{id}` | 删除（仍被 agent 引用时 409 阻断） |
+| POST | `/models/test` | 连通性测试（不落库，保存前探测） |
+
+### MCP 运维 `/mcp`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/mcp/servers` | 列出已注册 MCP server |
+| POST | `/mcp/servers` | 注册/更新（触发 refresh） |
+| PUT | `/mcp/servers/{id}` | 改 config/enabled |
+| DELETE | `/mcp/servers/{id}` | 删除（触发 refresh） |
+| GET | `/mcp/tools` | 全量 namespaced 工具（下拉多选用） |
+| GET | `/mcp/status` | 连接健康 + 工具数 |
+| POST | `/mcp/refresh` | 强制重连 |
+
+### 技能管理 `/skills`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/skills` | 列出技能（子目录 + 文件数） |
+| POST | `/skills` | multipart 上传技能（name + 文件，防目录穿越） |
+| DELETE | `/skills/{name}` | 删除技能目录 |
+
+### 知识库 `/knowledge-bases`（kb_enabled 时挂载）
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET/POST | `/knowledge-bases` | 列出 / 创建（name 唯一） |
+| PUT/DELETE | `/knowledge-bases/{id}` | 改名描述 / 删除（级联删文档与 ES 索引） |
+| POST | `/knowledge-bases/{id}/documents` | multipart 上传 pdf/docx → 注册 + 后台入库 |
+| GET | `/knowledge-bases/{id}/documents` | 文档列表（状态机 pending/ingesting/ready/failed） |
+| DELETE | `/knowledge-bases/{id}/documents/{doc_id}` | 删除文档（含向量） |
+| POST | `/knowledge-bases/{id}/documents/{doc_id}/reindex` | 重建索引（需 MinIO 留底） |
+| GET | `/knowledge-bases/{id}/search?q=&k=` | 检索（管理面调试） |
+
+### 其他
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/health` | 健康检查 + `capabilities`（kb_enabled / voice_enabled） |
+
+## 技能目录约定
+
+全局 skills 池：`{LOCAL_ROOT}/skills/`（个人用，跨智能体共享）。一个 skill = 一个子目录
+`{LOCAL_ROOT}/skills/<name>/`。`AgentConfig.skills` 引用为 `/skills/<name>/`。
+种子技能在 `backend/data/skills/`（weather / amap-lbs / prd / langgraph-docs /
+cn-patent-claims-review / word-doc-style），镜像构建时烘焙进数据卷。
 
 ## 运行时依赖补齐（allow_shell + JIT 安装）
 
@@ -97,7 +253,7 @@ backend/
 
 ### 工作链路
 1. 智能体通过 `execute` 跑安装命令（逐条 HITL 审批，见下"风险点"）。
-2. 安装完成后，调 `POST /mcp/refresh`（见"API 速览 / MCP 运维"）让新注册的 stdio MCP 重连上线。
+2. 安装完成后，调 `POST /mcp/refresh` 让新注册的 stdio MCP 重连上线。
 3. 目标 agent 在 `tool_names` 引用 `{server}__{tool}` 即可使用。
 
 ### 命令规范（容器以非 root `app`(uid 1001) 运行，无 sudo）
@@ -130,133 +286,6 @@ agent：已确认工具列表出现 arxiv__*，业务 agent 的 tool_names 引�
 ```
 > 生产建议：稳定依赖优先写进 `Dockerfile` 预热（`UVX_MCP_PACKAGES`），JIT 安装仅用于临时 / 补漏 / 一次性场景。
 
-## 运行
-
-### 1. 依赖
-
-conda 环境 `agent`（已有 langchain/langgraph/deepagents 等）。新增文件上传依赖：
-
-```powershell
-pip install python-multipart
-```
-
-### 2. 配置
-
-复制 `backend/.env.example` → `backend/.env`。默认值已与根目录 `docker-compose.yml`
-对齐（PostgreSQL `goduck/changeme`、MinIO `minioadmin/minioadmin123`），用 compose 起基础设施时无需改动。
-LLM 与 MCP server 均不在 `.env` 里 —— 模型通过 `/models`、MCP 通过 `/mcp/servers` 运行时注册（见下）。
-所有路径走配置，**禁止硬编码**。
-
-### 3. 基础设施（PostgreSQL + MinIO）
-
-```powershell
-docker-compose up -d          # 一键起 PostgreSQL(5433) + MinIO(9000)；或使用现有实例
-```
-
-业务表（agent / agent_config_history / session / mcp_server / model / upload）由 app lifespan
-自动建表（幂等）；LangGraph 原生表由 `AsyncPostgresSaver.setup()` / `AsyncPostgresStore.setup()` 创建。
-
-### 4. MCP 网关（可选，本地启动的服务）
-
-```powershell
-python -m app.mcps.mcp_server          # 监听 127.0.0.1:8088/mcp
-```
-
-注册 MCP server（运行时持久化到 `mcp_server` 表）：
-
-```powershell
-# 例：注册上面启动的本地网关
-curl -X POST http://localhost:8000/mcp/servers -H "Content-Type: application/json" \
-  -d '{"name":"UnifiedGateway","kind":"http","config":{"url":"http://127.0.0.1:8088/mcp"},"enabled":true}'
-```
-
-### 5. 启动后端
-
-```powershell
-cd backend
-python -m app.main                     # 或: uvicorn app.main:app --reload
-```
-
-启动会预热所有 `active` 智能体（单个失败不阻塞）。
-
-### 6. 种子智能体（首次）
-
-```powershell
-python -m app.seed agent_confs/default.yaml --name "Default Gateway" --creator admin
-```
-
-## API 速览
-
-接口按模块分组。SSE 流终止事件固定为 `done` / `interrupt` / `error`，前端可据此判定最终状态。
-
-### 智能体管理 `/agents`
-
-| Method | Path | 说明 |
-|--------|------|------|
-| POST | `/agents/validate` | 校验 config + 返回 mermaid 预览（不落库） |
-| POST | `/agents` | 创建（name 唯一，409 冲突）→ 建 registry → 返回 mermaid |
-| PUT | `/agents/{id}` | 更新（必须存在）→ 级联删会话+清 checkpoint → 重建 registry |
-| GET | `/agents` | 列出智能体 |
-| GET | `/agents/{id}` | 详情 + 当前 active mermaid（悬浮预览） |
-| GET | `/agents/{id}/topology.mmd` | Mermaid 文本（PlainTextResponse） |
-| GET | `/agents/{id}/history` | 配置历史（还原选择） |
-| POST | `/agents/{id}/restore` | 用 `{history_id}` 还原 |
-| GET | `/agents/{id}/export.yaml` | 导出当前配置 YAML |
-| DELETE | `/agents/{id}` | 归档（status=archived） |
-
-### 会话管理 `/sessions`
-
-| Method | Path | 说明 |
-|--------|------|------|
-| POST | `/sessions` | 创建会话（绑定 agent_id） |
-| GET | `/sessions?user_id=` | 列出用户会话（含 agent_name） |
-| GET | `/sessions/{id}` | 会话详情 |
-| DELETE | `/sessions/{id}` | 归档会话 |
-| GET | `/sessions/{id}/history` | checkpointer 历史消息 |
-| POST | `/sessions/{id}/messages` | 发送消息 → SSE 流 |
-| POST | `/sessions/{id}/resume` | HITL 决策恢复 → SSE 流 |
-
-### 技能管理 `/skills`
-
-| Method | Path | 说明 |
-|--------|------|------|
-| GET | `/skills` | 列出技能（子目录 + 文件数） |
-| POST | `/skills` | multipart 上传技能（name + 文件，防目录穿越） |
-| DELETE | `/skills/{name}` | 删除技能目录 |
-
-### MCP 运维 `/mcp`
-
-| Method | Path | 说明 |
-|--------|------|------|
-| GET | `/mcp/servers` | 列出已注册 MCP server |
-| POST | `/mcp/servers` | 注册/更新（触发 refresh） |
-| PUT | `/mcp/servers/{id}` | 改 config/enabled |
-| DELETE | `/mcp/servers/{id}` | 删除（触发 refresh） |
-| GET | `/mcp/tools` | 全量 namespaced 工具（下拉多选用） |
-| GET | `/mcp/status` | 连接健康 + 工具数 |
-| POST | `/mcp/refresh` | 强制重连 |
-
-### 其他
-
-| Method | Path | 说明 |
-|--------|------|------|
-| GET | `/health` | 健康检查 |
-
-## 技能目录约定
-
-全局 skills 池：`{LOCAL_ROOT}/skills/`（个人用，跨智能体共享）。一个 skill = 一个子目录
-`{LOCAL_ROOT}/skills/<name>/`。`AgentConfig.skills` 引用为 `/skills/<name>/`。
-
-## 测试
-
-```powershell
-cd backend
-python -m pytest tests/ -q            # 需安装 pytest
-```
-
-`tests/test_file_change_tracker.py` 为纯单测（无需 DB/MCP）：difflib 行级计数边界、
-tracked backend 的前读→super→后读埋点、contextvar 收集器生命周期与并发隔离。
-
 ## 工作区文件变更徽标（file_change）
 
 agent 落盘/编辑/删除工作区文件时，后端在写入瞬间（`TrackedUserScopedFilesystemBackend`，
@@ -269,6 +298,19 @@ SSE 流（`file_change` 事件，线序恒为 tool_call → tool_result → file
   增删，无行级计数（shell 是显式高危审批路径，可接受）。
 - 刷新页面后历史回合不回放徽标（MVP 不落库；Phase 2 可按回合存 records 回放）。
 - 二进制/超大（>512KB）文件不做行级计数，仅记动作（added/removed=null）。
+
+## 测试
+
+```powershell
+cd backend
+python -m pytest tests/ -q
+```
+
+- `tests/test_assemblyai_stt.py`：STT 客户端协议/终稿判定单测（无需网络，供应商连接 mock）。
+- `tests/test_file_change_tracker.py`：difflib 行级计数边界、tracked backend 的前读→super→后读埋点、
+  contextvar 收集器生命周期与并发隔离。
+
+代码风格：`ruff check app/`（line-length 110，见 pyproject.toml）。
 
 ## 目录来源
 
