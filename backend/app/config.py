@@ -124,6 +124,17 @@ class Settings(BaseSettings):
         description="AssemblyAI Streaming STT API key（voice_enabled=true 时必填，启动时校验）。",
     )
     stt_sample_rate: int = Field(default=16000, gt=0, description="STT 采样率（PCM16 mono；前端采麦按此重采样）")
+    stt_speech_model: str = Field(
+        default="universal-3-5-pro",
+        description=(
+            "AssemblyAI Streaming 语音模型（v3 WS speech_model 连接参数，可切换）。"
+            "universal-3-5-pro=旗舰（官方默认，18 语种含中文 ZH 与日语，语种间原生码切换）；"
+            "universal-streaming-english=仅英语（低成本）；"
+            "universal-streaming-multilingual=EN/ES/DE/FR/PT/IT（不含中文）。"
+            "注意：流式 STT 无 language_code 参数（那是预录制音频专用），语言能力由模型决定——"
+            "中文转录必须使用 universal-3-5-pro。"
+        ),
+    )
     stt_flush_timeout: float = Field(
         default=5.0,
         gt=0,

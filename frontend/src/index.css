@@ -184,6 +184,18 @@ pre,
   color: var(--color-text-secondary);
 }
 
+/* 数学公式（KaTeX）。katex-display 自带 margin:1em 0 会撑高气泡，收敛为 0.6em；
+   长公式横向滚动而非溢出裁切；行内公式基线略放大以对齐中文正文。 */
+.gd-md .katex { font-size: 1.05em; }
+.gd-md .katex-display {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+.gd-md .katex-display > .katex { white-space: nowrap; }
+.gd-md .katex-error { color: #cc0000; font-family: var(--font-mono); }
+
 /* 头像圆底 */
 .chat-avatar {
   width: 32px;

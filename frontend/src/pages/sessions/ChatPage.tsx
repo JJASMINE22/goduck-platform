@@ -11,12 +11,14 @@ import { ArrowLeft, FolderOpen, MessageSquare, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
 import { useStreamChat } from '@/hooks/useStreamChat'
 import { useVoiceInput } from '@/hooks/useVoiceInput'
+import { useCapabilities } from '@/hooks/useCapabilities'
 import { useWorkspaceCapability } from '@/hooks/useWorkspace'
 import { queryKeys } from '@/hooks/queryKeys'
 import { useShellCapability } from '@/hooks/useShell'
 import { useChatStore } from '@/store/chatStore'
 import { usePageHeaderStore } from '@/store/pageHeaderStore'
 import { MessageList } from '@/features/chat/MessageList'
+import { buildHistoryReplay } from '@/features/chat/historyReplay'
 import { HitlCard } from '@/features/chat/HitlCard'
 import { TodoPanel } from '@/features/chat/TodoPanel'
 import { TurnRail } from '@/features/chat/TurnRail'
@@ -84,8 +86,19 @@ export function ChatPage(): ReactNode {
   const { modal } = AntApp.useApp()
 
   const stream = useStreamChat(sessionId || null)
-  // 语音输入：会话页挂载即预建 WS（与按键解耦）；推理闸门复用 stream.status
-  const voice = useVoiceInput(sessionId || null)
+  // 语音输入：仅后端能力开启时预建 WS（与按键解耦）；推理闸门复用 stream.status
+  const capabilities = useCapabilities()
+  const voice = useVoiceInput(sessionId || null, capabilities.voice_enabled)
+
+  /** 中止当前流（按来源路由，语音回合无法中止/回撤的冲突修复点）：
+      语音发起 → WS cancel 帧（后端取消 astream、即时释放 withdraw 的 409 闸）；
+      SSE 发起 → abort fetch（FastAPI 取消传播至 event_gen finally）。两条路径
+      随后统一本地固化半截消息并回 idle（SSE abort 本就无终态帧，语义一致）。 */
+  const handleCancel = useCallback(() => {
+    const st = useChatStore.getState()
+    if (st.status === 'streaming' && st.streamSource === 'voice') voice.cancelStream()
+    stream.cancel()
+  }, [voice, stream])
   const wsCapQ = useWorkspaceCapability(sessionId || null)
   const allowWorkspace = wsCapQ.data?.allow_workspace === true
   const shellCapQ = useShellCapability(sessionId || null)
@@ -181,9 +194,10 @@ export function ChatPage(): ReactNode {
 
   // —— 历史灌入与同会话保留 ——
   // 挂载时判定一次：store 是否已绑定本会话（同会话往返切页）。若是则整个挂载期
-  // 跳过 reset + 历史灌入——store 含 SSE 实时增量与工具卡/todos/文件变更等仅存于
-  // 前端的富视图状态，/history 只有纯文本快照，任何重灌都是不可逆降级
-  // （这正是"切页返回后部分上下文与回合标签消失"的根因）。
+  // 跳过 reset + 历史灌入——store 含 SSE 实时增量与 todos/文件变更等 /history
+  // 不含的富视图状态，任何重灌都是不可逆降级（这正是"切页返回后部分上下文与
+  // 回合标签消失"的根因）。工具卡虽可由 history 重建（buildHistoryReplay），
+  // 但保留模式下 live 状态本就完整，同样无需重灌。
   const retainedRef = useRef(false)
   // 显式失效灌入（withdraw 后的服务端真值兜底）：true 时放行一次 loadHistory
   const forcedLoadRef = useRef(false)
@@ -212,21 +226,10 @@ export function ChatPage(): ReactNode {
     if (forcedLoadRef.current && historyQ.dataUpdatedAt <= forcedAtRef.current) return
     if (!historyQ.data || historyQ.isFetching) return
     if (historyQ.data.length === 0 && useChatStore.getState().messages.length > 0) return
-    const mapped = historyQ.data
-      .filter((m) => m.role === 'human' || m.role === 'ai')
-      .map((m, i) => ({
-        id: m.id ?? `h${i}`,
-        role: (m.role === 'human' ? 'user' : 'agent') as 'user' | 'agent',
-        agentPath: 'root',
-        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-        // human 消息的附件缩略（后端从消息 additional_kwargs 查库回填）
-        attachments: m.attachments?.length ? m.attachments : undefined,
-        createdAt: i,
-      }))
-      // 跳过纯工具调用的空 AI 消息：实时流仅在 msg.content 非空时才产出气泡，
-      // 历史灌入需保持一致，避免出现空气泡。
-      .filter((m) => m.role === 'user' || m.content.trim() !== '')
-    loadHistory(sessionId, mapped)
+    // 消息 + 工具卡一次重建：AI 消息的 tool_calls 与 ToolMessage 的结果配对还原，
+    // 刷新 / 重进 / 归档会话均可回看工具调用细节（映射细节见 historyReplay.ts）
+    const { messages, toolCalls } = buildHistoryReplay(historyQ.data)
+    loadHistory(sessionId, messages, toolCalls)
     forcedLoadRef.current = false
   }, [sessionId, historyQ.data, historyQ.dataUpdatedAt, historyQ.isFetching, loadHistory])
 
@@ -340,12 +343,13 @@ export function ChatPage(): ReactNode {
   // 渲染期兜底：能力被关闭 / 会话归档时强制回会话视图，避免停留在无切换入口的死角
   const effectiveView: ChatView = allowWorkspace && !archived ? wsView : 'chat'
 
-  /** 回撤一个完整回合：① 流式中先中止 → ② 解析真实 id → ③ 调回撤（409 退避重试）
-      → ④ 乐观移除 + 回填草稿/附件 + 退出中断态 → ⑤ 历史重拉兜底一致性。 */
+  /** 回撤一个完整回合：① 流式中先中止（SSE abort / 语音 WS cancel，后端随后
+      释放 tracker）→ ② 解析真实 id → ③ 调回撤（409 退避重试）→ ④ 乐观移除 +
+      回填草稿/附件 + 退出中断态 → ⑤ 历史重拉兜底一致性。 */
   const handleWithdraw = async (messageId: string) => {
     if (withdrawingId) return
-    // 场景①：流式中先停止生成（abort SSE + 置 idle），后端 event_gen 的 finally 会释放 tracker
-    if (stream.status === 'streaming') stream.cancel()
+    // 场景①：流式中先停止生成（按来源路由中止 + 置 idle），后端释放 tracker
+    if (stream.status === 'streaming') handleCancel()
     setWithdrawingId(messageId)
     try {
       const realId = await resolveHumanId(session.id, messageId)
@@ -435,7 +439,7 @@ export function ChatPage(): ReactNode {
                   userId={session.user_id}
                   status={stream.status}
                   send={stream.send}
-                  cancel={stream.cancel}
+                  cancel={handleCancel}
                   voice={voice}
                 />
               </div>

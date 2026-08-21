@@ -56,6 +56,11 @@ export interface ChatState {
   messages: ChatMessage[]
   toolCalls: ToolCallEntry[]
   status: ChatStreamStatus
+  /** 当前 streaming 的来源：'sse'=手打（POST /messages|/resume），'voice'=语音 WS 隧道。
+      中止/先停后撤需按来源路由——SSE abort fetch，语音发 WS cancel 帧（否则后端
+      astream 照跑、withdraw 闸不放行，即语音回合无法中止/回撤的冲突根因）。
+      仅 status==='streaming' 时有意义。 */
+  streamSource: 'sse' | 'voice' | null
   pendingInterrupt: PendingInterrupt | null
   attachments: UploadOut[] // 待发附件，发消息后清空
   selectedKbs: KnowledgeBaseOut[] // 本次启用的知识库，发消息后清空
@@ -83,6 +88,7 @@ export interface ChatState {
   upsertToolCall: (tc: Omit<ToolCallEntry, 'hasResult' | 'createdAt'>) => void
   setToolResult: (toolCallId: string, result: string) => void
   setStatus: (s: ChatStreamStatus) => void
+  setStreamSource: (src: 'sse' | 'voice' | null) => void
   setInterrupt: (payload: InterruptPayload) => void
   clearInterrupt: () => void
   setStreamError: (msg: string | null) => void
@@ -106,8 +112,10 @@ export interface ChatState {
   /** 乐观移除一个完整回合（用户消息 + 其后到下一用户消息前的全部 AI/工具消息）
       及同时间窗内的工具调用卡；真值以后端历史重拉兜底（准则 R9） */
   removeTurn: (messageId: string) => void
-  /** 从后端 history 灌入（同时绑定会话标记；仅跨会话进入 / 显式失效时调用） */
-  loadHistory: (sessionId: string, msgs: ChatMessage[]) => void
+  /** 从后端 history 灌入（同时绑定会话标记；仅跨会话进入 / 显式失效时调用）。
+      toolCalls 由 buildHistoryReplay 自同一份 history 重建（刷新后工具卡回显），
+      缺省为空数组以兼容仅灌消息的调用方 */
+  loadHistory: (sessionId: string, msgs: ChatMessage[], toolCalls?: ToolCallEntry[]) => void
   reset: () => void
 }
 
@@ -116,6 +124,7 @@ const initialState = {
   messages: [] as ChatMessage[],
   toolCalls: [] as ToolCallEntry[],
   status: 'idle' as ChatStreamStatus,
+  streamSource: null as 'sse' | 'voice' | null,
   pendingInterrupt: null as PendingInterrupt | null,
   attachments: [] as UploadOut[],
   selectedKbs: [] as KnowledgeBaseOut[],
@@ -208,6 +217,8 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setStatus: (status) => set({ status }),
 
+  setStreamSource: (streamSource) => set({ streamSource }),
+
   setInterrupt: (payload) =>
     set({ pendingInterrupt: { payload, arrivedAt: Date.now() }, status: 'interrupted' }),
 
@@ -266,12 +277,13 @@ export const useChatStore = create<ChatState>((set) => ({
       }
     }),
 
-  loadHistory: (sessionId, msgs) =>
+  loadHistory: (sessionId, msgs, toolCalls = []) =>
     set({
       sessionId,
       messages: msgs,
-      toolCalls: [],
+      toolCalls,
       status: 'idle',
+      streamSource: null,
       pendingInterrupt: null,
       streamError: null,
       todosByAgent: {},

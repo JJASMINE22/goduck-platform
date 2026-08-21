@@ -8,6 +8,8 @@
      （镜像手打 send() 的时点，终稿到推理启动的间隙内输入也已锁定）；
    - agent 事件经共享 dispatchStreamEvent 写入（渲染与 SSE 完全一致）；
    - stt_empty：复位麦克风（无消息无 astream）；error：现有 error 落态 + 复位。
+   - 推理期中止（cancelStream）：cancel 帧 → 后端取消 astream 并释放 withdraw 闸，
+     本地落态由调用方完成（与手打 SSE abort 同语义，无终态帧）。
    采麦：AudioWorklet 直出 Float32 → 主线程降采样 16kHz → Int16 PCM，100ms/帧上行。 */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { asSSEEvent, VoiceConnection } from '@/api/voice'
@@ -31,22 +33,27 @@ class PassthroughProcessor extends AudioWorkletProcessor {
 registerProcessor('voice-passthrough', PassthroughProcessor)
 `
 
-/** 线性降采样 Float32 → Int16 PCM（输入采样率 → 16kHz）。 */
+/** 线性重采样 Float32 → Int16 PCM（任意输入采样率 ⇄ 16kHz，双向插值）。
+
+降采样：48kHz 话筒/系统混音常见；升采样：蓝牙 HFP 麦克风流可能仅 8/16kHz
+（浏览器上下文跟随输入设备时）——单向实现会在升采样时越界读出 NaN→0，变成
+纯静音流，供应商侧表现为"无语音"。 */
 function downsampleToPcm16(input: Float32Array, inputRate: number): ArrayBuffer {
   if (inputRate === TARGET_SAMPLE_RATE) {
     const out = new Int16Array(input.length)
     for (let i = 0; i < input.length; i++) out[i] = floatToInt16(input[i])
     return out.buffer
   }
-  const ratio = inputRate / TARGET_SAMPLE_RATE
-  const outLen = Math.floor(input.length / ratio)
+  const step = inputRate / TARGET_SAMPLE_RATE
+  const outLen = Math.floor((input.length - 1) / step) + 1
   const out = new Int16Array(outLen)
   for (let i = 0; i < outLen; i++) {
-    // 线性插值取目标位置样本
-    const pos = i * ratio
+    // 线性插值取目标位置样本（step<1 时为升采样，idx 恒在界内）
+    const pos = i * step
     const idx = Math.floor(pos)
     const frac = pos - idx
-    const s = input[idx] + (input[idx + 1] - input[idx]) * frac
+    const s =
+      idx + 1 < input.length ? input[idx] + (input[idx + 1] - input[idx]) * frac : input[idx]
     out[i] = floatToInt16(s)
   }
   return out.buffer
@@ -64,9 +71,11 @@ export interface UseVoiceInput {
   press: (rubric?: string) => Promise<void>
   /** 松开麦克风（pointerup/pointercancel/pointerleave）——无论状态一律拆采麦 */
   release: () => void
+  /** 中止语音发起的推理（推理期发 WS cancel 帧；不在回合中则忽略） */
+  cancelStream: () => void
 }
 
-export function useVoiceInput(sessionId: UUID | null): UseVoiceInput {
+export function useVoiceInput(sessionId: UUID | null, enabled: boolean): UseVoiceInput {
   const [ready, setReady] = useState(false)
   const connRef = useRef<VoiceConnection | null>(null)
 
@@ -120,6 +129,7 @@ export function useVoiceInput(sessionId: UUID | null): UseVoiceInput {
           store.clearAttachments()
           store.clearKbs()
           store.setStatus('streaming')
+          store.setStreamSource('voice')
         }
         break
       }
@@ -168,9 +178,10 @@ export function useVoiceInput(sessionId: UUID | null): UseVoiceInput {
     [teardownCapture],
   )
 
-  // —— 预建连：sessionId 就绪即创建，与按键完全解耦；卸载/切换会话即销毁 ——
+  // —— 预建连：sessionId 就绪且语音能力开启才创建（禁用时不发无效连接请求）；
+  //    与按键完全解耦；卸载/切换会话/能力关闭即销毁 ——
   useEffect(() => {
-    if (!sessionId) return
+    if (!sessionId || !enabled) return
     const conn = new VoiceConnection(sessionId, {
       onReadyChange: setReady,
       onFrame: handleFrame,
@@ -183,7 +194,7 @@ export function useVoiceInput(sessionId: UUID | null): UseVoiceInput {
       connRef.current = null
       setReady(false)
     }
-  }, [sessionId, handleFrame, handleTurnAborted])
+  }, [sessionId, enabled, handleFrame, handleTurnAborted])
 
   useEffect(() => teardownCapture, [teardownCapture])
 
@@ -218,8 +229,15 @@ export function useVoiceInput(sessionId: UUID | null): UseVoiceInput {
             autoGainControl: true,
           },
         })
+        if (releasingRef.current) {
+          // 等待授权期间用户已松开（首用弹权限窗时常见）：立即释放，勿泄漏轨道
+          stream.getTracks().forEach((t) => t.stop())
+          return
+        }
         streamRef.current = stream
         const ctx = new AudioContext()
+        // 保险：非严格手势上下文创建的 ctx 可能起点 suspended，显式唤醒
+        if (ctx.state === 'suspended') await ctx.resume()
         ctxRef.current = ctx
         capturingRef.current = true
         frameSamplesRef.current = Math.floor((ctx.sampleRate * FRAME_MS) / 1000)
@@ -285,5 +303,10 @@ export function useVoiceInput(sessionId: UUID | null): UseVoiceInput {
     }
   }, [teardownCapture])
 
-  return { ready, press, release }
+  // —— 中止语音发起的推理：WS cancel 帧（后端取消 astream、释放 withdraw 闸）——
+  const cancelStream = useCallback(() => {
+    connRef.current?.cancelStream()
+  }, [])
+
+  return { ready, press, release, cancelStream }
 }

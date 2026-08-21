@@ -60,6 +60,7 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       store.pushUser(content, attachs)
       store.setStreamError(null)
       store.setStatus('streaming')
+      store.setStreamSource('sse')
 
       const body = {
         content,
@@ -97,6 +98,7 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
 
       store.clearInterrupt()
       store.setStatus('streaming')
+      store.setStreamSource('sse')
 
       abortRef.current?.abort()
       const controller = new AbortController()

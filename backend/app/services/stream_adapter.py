@@ -27,6 +27,8 @@ moment of disk mutation (see app/core/file_change_tracker.py).
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from typing import Any, AsyncIterator, Optional
 
@@ -292,47 +294,58 @@ class StreamAdapter:
             # 子 task 在迭代中创建，copy_context 快照必须已含 collector。
             with file_change_tracker.activate() as collector:
                 while True:
-                    # Dual mode + subgraphs => each item is (namespace, mode, data):
-                    #   mode=="messages": data = (message_chunk, metadata)
-                    #   mode=="updates" : data = {node_name: state_update}
-                    async for namespace, mode, data in agent.astream(
+                    stream = agent.astream(
                         payload,
                         config=config,
                         stream_mode=["messages", "updates"],
                         subgraphs=True,
-                    ):
-                        agent_path = _path(namespace)
-                        if mode == "messages":
-                            for ev in self._token_events(data, agent_path, streamed_ids):
-                                yield ev
-                        elif mode == "updates":
-                            if not isinstance(data, dict):
-                                continue
-                            for _node_name, state in data.items():
-                                if not isinstance(state, dict):
+                    )
+                    try:
+                        # Dual mode + subgraphs => each item is (namespace, mode, data):
+                        #   mode=="messages": data = (message_chunk, metadata)
+                        #   mode=="updates" : data = {node_name: state_update}
+                        async for namespace, mode, data in stream:
+                            agent_path = _path(namespace)
+                            if mode == "messages":
+                                for ev in self._token_events(data, agent_path, streamed_ids):
+                                    yield ev
+                            elif mode == "updates":
+                                if not isinstance(data, dict):
                                     continue
-                                for msg in state.get("messages", []):
-                                    for ev in _msg_to_events(msg, agent_path, streamed_ids):
-                                        yield ev
-                                # Task planning: TodoListMiddleware writes the `todos`
-                                # state channel inside the same node update as messages.
-                                # Emit AFTER the messages so the timeline stays causal
-                                # (write_todos tool card precedes its list effect).
-                                todos = _normalize_todos(state.get("todos"))
-                                if todos is not None and todos != last_todos.get(agent_path):
-                                    last_todos[agent_path] = todos
-                                    yield SSEEvent(
-                                        type="todos",
-                                        agent_path=agent_path,
-                                        payload={"todos": todos},
-                                    )
-                            # 文件变更徽标：backend 在工具落盘瞬间记入 collector，
-                            # 本 updates 块的消息事件发完后 drain——线序恒为
-                            # tool_call → tool_result → file_change，因果正确。
-                            for ev in self._file_change_events(
-                                file_change_tracker.drain(collector), agent_path,
-                            ):
-                                yield ev
+                                for _node_name, state in data.items():
+                                    if not isinstance(state, dict):
+                                        continue
+                                    for msg in state.get("messages", []):
+                                        for ev in _msg_to_events(msg, agent_path, streamed_ids):
+                                            yield ev
+                                    # Task planning: TodoListMiddleware writes the `todos`
+                                    # state channel inside the same node update as messages.
+                                    # Emit AFTER the messages so the timeline stays causal
+                                    # (write_todos tool card precedes its list effect).
+                                    todos = _normalize_todos(state.get("todos"))
+                                    if todos is not None and todos != last_todos.get(agent_path):
+                                        last_todos[agent_path] = todos
+                                        yield SSEEvent(
+                                            type="todos",
+                                            agent_path=agent_path,
+                                            payload={"todos": todos},
+                                        )
+                                # 文件变更徽标：backend 在工具落盘瞬间记入 collector，
+                                # 本 updates 块的消息事件发完后 drain——线序恒为
+                                # tool_call → tool_result → file_change，因果正确。
+                                for ev in self._file_change_events(
+                                    file_change_tracker.drain(collector), agent_path,
+                                ):
+                                    yield ev
+                    finally:
+                        # 确定性关闭 astream 生成器：中止/断连路径若仅弃置（悬挂在
+                        # yield 处），GC 终结器的 athrow 遇 langgraph 内部吞掉
+                        # GeneratorExit 后再 yield 的行为 → "async generator ignored
+                        # GeneratorExit" 以未检索任务异常炸到事件循环日志（语音
+                        # 中止/页面静置 GC 触发时复现）。清理路径就地吞残余异常，
+                        # 不改写正在传播的主异常。
+                        with contextlib.suppress(Exception, asyncio.CancelledError):
+                            await stream.aclose()
 
                     state = await agent.aget_state(config)
 

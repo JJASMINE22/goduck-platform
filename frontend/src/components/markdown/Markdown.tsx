@@ -1,11 +1,29 @@
 /* Markdown 渲染 —— agent 回复 / rubric / 附件清单展示。
-   react-markdown + gfm + 代码高亮。代码块带「复制」；mermaid 块带「下载 SVG / 复制源码」；
+   react-markdown + gfm + 代码高亮 + 数学公式（remark-math → KaTeX）。
+   代码块带「复制」；mermaid 块带「下载 SVG / 复制源码」；
    图像带「下载」（未来 agent 出图即用）。mermaid 走单一渲染入口（准则 F7）。 */
 import { type ReactElement, type ReactNode, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
 import rehypeHighlight from 'rehype-highlight'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
 import { renderMermaidInto } from '@/lib/mermaid'
+
+/** LLM 常把公式写作 \(..\)/\[..\]，remark-math 只认 $..$/$$..$$。
+    先用占位符保护代码围栏与行内代码，再统一替换定界符，避免误伤代码。 */
+function normalizeMathDelimiters(src: string): string {
+  const guarded: string[] = []
+  const masked = src.replace(/```[\s\S]*?(?:```|$)|`[^`\n]*`/g, (m) => {
+    guarded.push(m)
+    return `\uE000${guarded.length - 1}\uE000`
+  })
+  return masked
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_m, body: string) => `$$${body}$$`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, body: string) => `$${body}$`)
+    .replace(/\uE000(\d+)\uE000/g, (_m, i: string) => guarded[Number(i)] ?? '')
+}
 
 /** 递归提取 React 节点的纯文本（代码源码 / mermaid 源码复制用，hljs span 也能拼回原文）。 */
 function extractText(node: unknown): string {
@@ -129,9 +147,13 @@ export function Markdown({ children }: { children: string }): ReactNode {
   return (
     <div className="gd-md" style={{ lineHeight: 1.7, wordBreak: 'break-word' }}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
         // ignoreMissing：mermaid 不是已注册高亮语言，避免 rehype-highlight 抛错
-        rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+        rehypePlugins={[
+          [rehypeHighlight, { ignoreMissing: true }],
+          // 出错不上抛：非法 LaTeX 在原位渲染红色错误提示，不中断整条消息
+          [rehypeKatex, { error: false, strict: 'ignore', output: 'htmlAndMathml' }],
+        ]}
         components={{
           pre: ({ children }) => {
             const codeEl = (Array.isArray(children) ? children[0] : children) as
@@ -162,7 +184,7 @@ export function Markdown({ children }: { children: string }): ReactNode {
           td: (props) => <td {...props} style={{ border: '1px solid var(--color-border)', padding: '4px 8px' }} />,
         }}
       >
-        {children}
+        {normalizeMathDelimiters(children)}
       </ReactMarkdown>
     </div>
   )

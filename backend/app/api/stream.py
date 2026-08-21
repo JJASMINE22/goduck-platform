@@ -9,6 +9,8 @@ Resume validates the graph is actually interrupted, else 409 Conflict.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
@@ -93,18 +95,23 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
         # generator lifetime so /withdraw refuses with 409 until the stream
         # truly finishes (finally runs even on client abort).
         st.stream_tracker.acquire(thread_id)
+        gen = adapter.stream_message(
+            agent,
+            content,
+            config,
+            body.rubric,
+            upload_ids=upload_ids,
+            raw_content=body.content,
+        )
         try:
-            async for ev in adapter.stream_message(
-                agent,
-                content,
-                config,
-                body.rubric,
-                upload_ids=upload_ids,
-                raw_content=body.content,
-            ):
+            async for ev in gen:
                 yield ev.to_sse()
         finally:
             st.stream_tracker.release(thread_id)
+            # 客户端中止（abort fetch → FastAPI 取消本生成器）：确定性关闭 adapter
+            # 生成器链，避免悬挂在 yield 处等 GC 终结器 athrow（与语音 WS 隧道同修）
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await gen.aclose()
             await svc.touch(session["id"])
 
     return EventSourceResponse(event_gen())
@@ -182,11 +189,14 @@ async def resume(session_id: uuid.UUID, body: ResumeRequest, request: Request):
     async def event_gen():
         thread_id = session["thread_id"]
         st.stream_tracker.acquire(thread_id)
+        gen = adapter.stream_resume(agent, decisions, config)
         try:
-            async for ev in adapter.stream_resume(agent, decisions, config):
+            async for ev in gen:
                 yield ev.to_sse()
         finally:
             st.stream_tracker.release(thread_id)
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await gen.aclose()
             await svc.touch(session["id"])
 
     return EventSourceResponse(event_gen())

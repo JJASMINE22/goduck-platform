@@ -5,7 +5,8 @@
    - 断线重连：指数退避（1s→15s cap），重连期间 ready=false（麦克风置灰）；
    - watchdog：ready 后 60s 无任何下行帧 → 主动 close 触发重连；
    - 回合中断恢复：onTurnAborted 回调（推理中掉线按网络异常同款恢复）。
-   按压/松开只发帧，不管连接：press=start 帧、release=flush 帧。 */
+   按压/松开/中止只发帧，不管连接：press=start 帧、release=flush 帧、
+   cancelStream=cancel 帧（推理期中止语音发起的 astream，本地即视为回合结束）。 */
 import type { SSEEvent, UUID, VoiceDownFrame } from '@/types'
 
 export interface VoiceConnectionHandlers {
@@ -113,10 +114,13 @@ export class VoiceConnection {
       this.handlers.onFrame(frame)
     }
 
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       this.clearWatchdog()
       this.handlers.onReadyChange(false)
       if (!this.alive) return
+      // 4404/4409 连接级永久错误（会话不存在/归档、智能体不可构建）：
+      // 重连必得同样结果，停摆（麦克风保持置灰；重新进页会重建）
+      if (e.code === 4404 || e.code === 4409) return
       if (this.turnOpen) {
         this.turnOpen = false
         this.handlers.onTurnAborted('语音连接已断开')
@@ -156,6 +160,16 @@ export class VoiceConnection {
   /** 松开麦克风：flush（即使中途出错也发，保证后端回合正常收口） */
   releaseFlush(): void {
     this.send({ type: 'flush' })
+  }
+
+  /** 中止语音发起的推理回合：发 cancel 帧（后端取消 astream 并释放 withdraw 闸）。
+      仅回合开启（turnOpen）时有意义；发出后本地即视为回合结束（终态帧不会再有，
+      镜像 SSE abort 的"无终态事件"语义，由调用方本地固化落态）。 */
+  cancelStream(): void {
+    if (!this.turnOpen) return
+    if (this.send({ type: 'cancel' })) {
+      this.turnOpen = false
+    }
   }
 
   // ---------------------------------------------------------------- 内部

@@ -8,6 +8,8 @@
 - 上行 start（按下）：附件/KB/rubric 快照 → 镜像 POST 校验（错误在录音前暴露）；
 - 上行 audio（按住期间）：PCM16 帧原样转发供应商（懒连接）；
 - 上行 flush（松开）：Terminate 供应商 → 冲刷终稿；
+- 上行 cancel（推理期）：中止当前 astream（前端"中止/先停后撤"信号；镜像 SSE
+  abort 语义——本地落态由前端完成，后端不再下发任何帧），回合循环保持；
 - 下行 stt_chunk/stt_output/stt_empty：转写事件直通；
 - 终稿非空 → 镜像 POST 组装（附件/KB 锚点）→ agent.astream（同 thread_id 记忆
   续接）→ agent 事件经 WS 下行隧道（与 SSE 事件同名同构，前端复用 dispatch）。
@@ -15,7 +17,7 @@
 守卫：
 - 空转写（未发音/纯呼吸声/flush 超时）→ stt_empty 帧，不进 astream；
 - StreamTracker.acquire/release 包住 astream —— 与 POST/withdraw 同闸防竞态，
-  断连 finally 兜底 release；
+  cancel/断连/自然收口统一经 finally release（withdraw 的 409 闸随中止即时放行）；
 - 空闲 10min 服务端 close(4408) 回收；供应商错误 → error 帧、回合作废、连接保持。
 """
 from __future__ import annotations
@@ -24,10 +26,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from websockets.exceptions import WebSocketException
 
 from app.api.stream import _build_agent_or_409
 from app.deps import SimpleUser, get_ws_appstate
@@ -53,6 +57,31 @@ _CLOSE_IDLE_TIMEOUT = 4408
 
 class _SessionClosed(Exception):
     """浏览器 WS 已断开/发送失败，回合应立即终止。"""
+
+
+# ---------------------------------------------------------------------------
+# 句首语气词清洗
+# ---------------------------------------------------------------------------
+# 长按从按压瞬间即推流，发音前的呼吸/开口音会被 Universal-3.5-Pro 转写为
+# 填充词（"Hmm,"/"嗯，" 等；流式协议无 disfluency 关闭开关，模型侧 VAD 只负责
+# 切 turn、不去除句首填充）。终稿进入 astream 前剥离句首填充词：
+# - 英文：hmm/mmm/um/uh/er/ah/eh/oh（须后随空白/标点或独占整段，避免误伤
+#   "umbrella"/"Ohio" 等正常词首）；
+# - 中文：嗯/呃/唉/诶（保守集合，"啊/哦" 可承载语义故保留）；
+# 循环剥离以清掉连续多个填充；剥离后为空的分句整体丢弃。
+_LEADING_FILLER = re.compile(
+    r"^(?:(?:h{0,2}m{2,}|e?m{2,}|um+|uh+|er+|ah+|eh+|oh+)(?:[,.!?\s]+|$)"
+    r"|[嗯呃唉诶]{1,3}[，。、\s]*)",
+    re.IGNORECASE,
+)
+
+
+def _strip_leading_fillers(text: str) -> str:
+    prev: str | None = None
+    while text != prev:
+        prev = text
+        text = _LEADING_FILLER.sub("", text, count=1)
+    return text.strip()
 
 
 class _VoiceSession:
@@ -223,22 +252,33 @@ async def _run_stt_round(
                     continue
                 try:
                     await stt.send_audio(msg["bytes"])
-                except (STTError, OSError) as e:
+                except (STTError, OSError, WebSocketException) as e:
                     # 供应商连接失败/中断：回合仍由 flush 收口，后续音频丢弃
                     turn_error = True
                     errors.append(f"语音转写服务异常: {e}")
                     await sess.send_error(errors[-1])
 
     async def consume() -> None:
-        """供应商事件 → 下行帧。全部按 stt_chunk 渲染（格式化终句同样是"已确认
-        中间稿"）；完整终稿在 flush 后由端点合并为单条 stt_output 下发——前端据此
-        一次性固化用户消息，多句长按天然合成一条消息。"""
-        async for ev in stt.receive_events():
-            await sess.send_json(
-                SSEEvent(type="stt_chunk", payload={"transcript": ev.transcript})
-            )
-            if ev.type == "stt_output":
-                finals.append(ev.transcript)
+        """供应商事件 → 下行帧。全部按 stt_chunk 渲染（partial 为覆盖语义，前端
+        整段替换渲染；完整终稿在 flush 后由端点合并为单条 stt_output 下发——前端
+        据此一次性固化用户消息，多句长按天然合成一条消息）。"""
+        gen = stt.receive_events()
+        try:
+            async for ev in gen:
+                await sess.send_json(
+                    SSEEvent(type="stt_chunk", payload={"transcript": ev.transcript})
+                )
+                if ev.type == "stt_output":
+                    finals.append(ev.transcript)
+        except STTError as e:
+            # 供应商异常：error 帧已由 pump 路径上报（下次 send_audio 必同步失败），
+            # 此处静默收尾并保留已收集的 finals，避免重复报错
+            logger.warning("stt consumer aborted: %s", e)
+        finally:
+            # 确定性关闭生成器：取消/异常路径若仅弃置（悬挂在 yield 处），GC 终结器
+            # 的 athrow 任务会留 "Task exception was never retrieved" 噪声
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await gen.aclose()
 
     consumer = asyncio.create_task(consume())
     try:
@@ -255,7 +295,10 @@ async def _run_stt_round(
         with contextlib.suppress(asyncio.CancelledError):
             await consumer
         raise
-    return " ".join(part for part in finals if part), errors, None
+    # 句首语气词剥离（"Hmm,"/"嗯，" 等按压瞬间呼吸声被转写的填充词）；
+    # 剥离后为空的分句（纯填充 turn）整体丢弃
+    cleaned = (p for p in (_strip_leading_fillers(part) for part in finals if part) if p)
+    return " ".join(cleaned), errors, None
 
 
 async def _run_agent_round(
@@ -265,8 +308,20 @@ async def _run_agent_round(
     config: dict,
     start: VoiceStartFrame,
     transcript: str,
-) -> None:
-    """镜像 POST /messages：组装 content → astream → WS 下行隧道（tracker 同闸）。"""
+) -> dict | None:
+    """镜像 POST /messages：组装 content → astream → WS 下行隧道（tracker 同闸）。
+
+    推理期并发监视上行帧（此前推理期无人读接收侧，中止信令无处落地——这正是
+    语音 query 无法中止/回撤的操作冲突根因）：
+    - ``cancel``：前端中止/先停后撤信号 → 取消 astream；此后不再下发任何帧
+      （前端已本地落态，镜像 SSE abort 语义），tracker 随 finally 释放；
+    - ``start``：防御性超越（正常前端推理期锁输入不会发）→ 取消本轮，start
+      原样交还回合循环开新回合——按键永不丢失；
+    - 其余帧（pong/二进制）消费后丢弃；断连（receive 抛 WebSocketDisconnect）
+      同样即时取消 astream——静默长推理不再挂住 tracker，withdraw 不被卡。
+
+    返回超越 start 帧或 None；MessageContentError/异常语义与旧实现一致。
+    """
     st = sess.st
     built = await build_message_content(
         st,
@@ -278,21 +333,76 @@ async def _run_agent_round(
 
     svc = SessionService(st.pool)
     thread_id = session["thread_id"]
-    st.stream_tracker.acquire(thread_id)
-    try:
-        async for ev in st.stream_adapter.stream_message(
+    superseded_start: dict | None = None
+
+    async def tunnel() -> None:
+        gen = st.stream_adapter.stream_message(
             agent,
             built.content,
             config,
             start.rubric,
             upload_ids=built.upload_ids,
             raw_content=transcript,
-        ):
-            # done/interrupt/error 终态事件由 adapter 产出，前端据其落态
-            await sess.send_json(ev)
+        )
+        try:
+            async for ev in gen:
+                # done/interrupt/error 终态事件由 adapter 产出，前端据其落态
+                await sess.send_json(ev)
+        finally:
+            # 确定性关闭生成器链（astream → stream_message）：发送失败/取消路径若
+            # 仅弃置（悬挂在 yield 处），GC 终结器的 athrow 遇 langgraph 内部吞掉
+            # GeneratorExit 后再 yield 的行为 → "async generator ignored
+            # GeneratorExit" 以未检索任务异常形式在事件循环日志炸出（页面静置
+            # GC 触发时复现）。清理路径就地吞残余异常，不改写主异常。
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await gen.aclose()
+
+    async def watch() -> None:
+        nonlocal superseded_start
+        while True:
+            msg = await sess.receive()  # 断连抛 WebSocketDisconnect
+            text = msg.get("text")
+            if text is None:
+                continue  # 推理期无录音，二进制帧丢弃
+            try:
+                ctrl = json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(ctrl, dict):
+                continue
+            ctype = ctrl.get("type")
+            if ctype in ("cancel", "start"):
+                if ctype == "start":
+                    superseded_start = ctrl
+                return
+            # pong / 其它控制帧：活性已由 receive 记录，忽略
+
+    st.stream_tracker.acquire(thread_id)
+    tunnel_task = asyncio.create_task(tunnel())
+    watcher = asyncio.create_task(watch())
+    try:
+        done, _pending = await asyncio.wait(
+            {tunnel_task, watcher}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if watcher in done:
+            watcher_exc = watcher.exception() if not watcher.cancelled() else None
+            # cancel / 超越 start / 断连：终止 astream。取消后的残余异常不再
+            # 下发（前端已本地落态或连接已死），仅断连向上传播走统一收尾
+            tunnel_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await tunnel_task
+            if watcher_exc is not None:
+                raise watcher_exc
+        else:
+            # 自然收尾（done/interrupt/error 已下发）：停监视器，透传 tunnel 异常
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
+            await tunnel_task
     finally:
         st.stream_tracker.release(thread_id)
         await svc.touch(session["id"])
+    return superseded_start
 
 
 async def _session_gone(sess: _VoiceSession, code: int, message: str) -> None:
@@ -368,6 +478,7 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
                 api_key=settings.assemblyai_api_key,
                 sample_rate=settings.stt_sample_rate,
                 flush_timeout=settings.stt_flush_timeout,
+                speech_model=settings.stt_speech_model,
             )
             try:
                 transcript, turn_errors, pending_start = await _run_stt_round(sess, stt)
@@ -393,18 +504,22 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
 
             # —— 终稿非空 → 镜像 POST 组装 + astream + WS 隧道 ——
             sess.busy = True  # 推理期心跳不做空闲回收
+            superseded: dict | None = None
             try:
-                await _run_agent_round(sess, session, agent, config, start, transcript)
+                superseded = await _run_agent_round(sess, session, agent, config, start, transcript)
             except MessageContentError as e:
                 # start 校验后配置仍可能变化（附件被删等）——按回合错误处理
                 await sess.send_error(e.detail)
-            except _SessionClosed:
+            except (WebSocketDisconnect, _SessionClosed):
                 raise
             except Exception as e:
                 logger.exception("voice agent stream error: %s", e)
                 await sess.send_error(f"会话推理失败: {e}")
             finally:
                 sess.busy = False
+            if superseded is not None:
+                pending_start = superseded  # 推理被新 start 超越：直接开新回合
+                continue
             # done/error 已下发；循环回到 await_start_frame 等待下一回合
     except (WebSocketDisconnect, _SessionClosed):
         pass  # 正常断开

@@ -73,6 +73,7 @@ export function dispatchStreamEvent(e: SSEEvent): void {
       store.finalizeStreaming()
       store.clearAttachments()
       store.setStatus('idle')
+      store.setStreamSource(null)
       break
     case 'error': {
       const p = e.payload as { message?: string }

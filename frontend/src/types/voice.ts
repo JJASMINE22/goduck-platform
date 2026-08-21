@@ -1,7 +1,8 @@
 /* 语音输入（WS /sessions/{id}/voice）帧协议类型 —— 对应后端 app/api/voice.py
    + VoiceStartFrame（models/schemas.py）+ EventType 扩展（streaming/events.py）。
-   上行：start（按下快照）/ audio（PCM16 二进制）/ flush（松开）/ pong（心跳回包）；
-   下行：ping（心跳探测）/ stt_chunk / stt_output / stt_empty + agent 事件（与 SSE 同名同构）。 */
+   上行：start（按下快照）/ audio（PCM16 二进制）/ flush（松开）/ pong（心跳回包）/
+   cancel（推理期中止语音发起的 astream）；下行：ping（心跳探测）/ stt_chunk /
+   stt_output / stt_empty + agent 事件（与 SSE 同名同构）。 */
 import type { SSEEventType } from './stream'
 import type { UUID } from './common'
 
@@ -36,10 +37,11 @@ export interface VoiceStartFrame {
   rubric?: string | null
 }
 
-/** 上行控制帧（flush / pong） */
+/** 上行控制帧（flush / pong / cancel） */
 export type VoiceUpControlFrame =
   | { type: 'flush' }
   | { type: 'pong' }
+  | { type: 'cancel' }
   | VoiceStartFrame
 
 /** WS 连接状态（驱动麦克风按钮可按压性） */
