@@ -649,10 +649,26 @@ pre,
   50% { opacity: 0.3; }
 }
 
+/* 动态反光（shimmer）：思考过程 / 执行中工具调用的「文字」亮银色呼吸。
+   简化说明：background-clip:text + background-position 扫光需逐帧 CPU 重栅格化，
+   主线程繁忙（流式 token）时肉眼可见掉帧。改用 filter:brightness（GPU 合成器
+   驱动），文字整体亮起→回落，暗色主题呈银白、亮色主题呈银灰，观感等价且恒定 60fps。 */
+.shimmer {
+  display: inline-block;
+  animation: shimmer-breathe 1.6s ease-in-out infinite;
+}
+@keyframes shimmer-breathe {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.9) saturate(0.55); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .msg-in,
   .typing-dot,
   .executing {
+    animation: none !important;
+  }
+  .shimmer {
     animation: none !important;
   }
 }

@@ -186,9 +186,14 @@ function ThinkingBlock({ msg }: { msg: ChatMessage }): ReactNode {
             {
               key: msg.id,
               label: (
+                /* 思考流式进行中（msg.streaming）：仅文字做亮银色流光（.shimmer），
+                   图标以透明度脉动配合——背景保持静止 */
                 <Flex align="center" gap={6}>
-                  <Brain size={13} style={{ color }} />
-                  <span style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}>
+                  <Brain size={13} style={{ color }} className={msg.streaming ? 'executing' : undefined} />
+                  <span
+                    className={msg.streaming ? 'shimmer' : undefined}
+                    style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}
+                  >
                     {label} · 思考过程
                   </span>
                 </Flex>
@@ -202,19 +207,14 @@ function ThinkingBlock({ msg }: { msg: ChatMessage }): ReactNode {
   )
 }
 
-/** 流式生成中：三个波动点（不再显示头像，直接以"运行中"的点表达） */
+/** 流式生成中：三个波动点（裸点呈现，不再包气泡框，也不显示头像） */
 function TypingIndicator(): ReactNode {
   return (
     <Flex justify="flex-start" align="flex-start" className="msg-in">
-      <div
-        className="chat-bubble chat-bubble--agent"
-        style={{ '--bubble-color': 'var(--color-role-agent-main)' } as CSSProperties}
-      >
-        <span className="typing-dots">
-          <span className="typing-dot" />
-          <span className="typing-dot" />
-          <span className="typing-dot" />
-        </span>
+      <div className="typing-dots">
+        <span className="typing-dot" />
+        <span className="typing-dot" />
+        <span className="typing-dot" />
       </div>
     </Flex>
   )
@@ -233,8 +233,11 @@ function ToolCallCard({ entry }: { entry: ToolCallEntry }): ReactNode {
             {
               key: entry.id,
               label: (
+                /* 未返回（执行中）：工具名文字做亮银色流光，与思考标签同一「进行中」语言 */
                 <Flex align="center" gap={6}>
-                  <code style={{ fontSize: 12 }}>{entry.name}</code>
+                  <code className={entry.hasResult ? undefined : 'shimmer'} style={{ fontSize: 12 }}>
+                    {entry.name}
+                  </code>
                   {entry.caller ? (
                     <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                       by {entry.caller}
