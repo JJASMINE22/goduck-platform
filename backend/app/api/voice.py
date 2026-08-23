@@ -5,17 +5,19 @@
 跨回合复用、应用层心跳保活），语音回合按需懒建供应商连接。
 
 回合协议（外层回合循环，done/stt_empty 后不关连接，回到空闲等 start）：
-- 上行 start（按下）：附件/KB/rubric 快照 → 镜像 POST 校验（错误在录音前暴露）；
+- 上行 start（按下）：草稿/附件/KB/rubric 快照 → 镜像 POST 校验（错误在录音前暴露）；
 - 上行 audio（按住期间）：PCM16 帧原样转发供应商（懒连接）；
 - 上行 flush（松开）：Terminate 供应商 → 冲刷终稿；
 - 上行 cancel（推理期）：中止当前 astream（前端"中止/先停后撤"信号；镜像 SSE
   abort 语义——本地落态由前端完成，后端不再下发任何帧），回合循环保持；
 - 下行 stt_chunk/stt_output/stt_empty：转写事件直通；
-- 终稿非空 → 镜像 POST 组装（附件/KB 锚点）→ agent.astream（同 thread_id 记忆
-  续接）→ agent 事件经 WS 下行隧道（与 SSE 事件同名同构，前端复用 dispatch）。
+- 终稿非空 → 草稿+终稿合并为一条消息 → 镜像 POST 组装（附件/KB 锚点）→
+  agent.astream（同 thread_id 记忆续接）→ agent 事件经 WS 下行隧道（与 SSE
+  事件同名同构，前端复用 dispatch）。
 
 守卫：
-- 空转写（未发音/纯呼吸声/flush 超时）→ stt_empty 帧，不进 astream；
+- 空转写（未发音/纯呼吸声/flush 超时）→ stt_empty 帧，不进 astream，草稿
+  保留在前端（合并不发生，用户手打内容不被吞）；
 - StreamTracker.acquire/release 包住 astream —— 与 POST/withdraw 同闸防竞态，
   cancel/断连/自然收口统一经 finally release（withdraw 的 409 闸随中止即时放行）；
 - 空闲 10min 服务端 close(4408) 回收；供应商错误 → error 帧、回合作废、连接保持。
@@ -307,9 +309,13 @@ async def _run_agent_round(
     agent,
     config: dict,
     start: VoiceStartFrame,
-    transcript: str,
+    user_text: str,
 ) -> dict | None:
     """镜像 POST /messages：组装 content → astream → WS 下行隧道（tracker 同闸）。
+
+    user_text 为"草稿+终稿"合并稿（voice_ws 主循环合并后传入），同时作为
+    user_query（content 组装）与 raw_content（历史/回撤回填的原文），与前端
+    固化的用户消息严格一致。
 
     推理期并发监视上行帧（此前推理期无人读接收侧，中止信令无处落地——这正是
     语音 query 无法中止/回撤的操作冲突根因）：
@@ -326,7 +332,7 @@ async def _run_agent_round(
     built = await build_message_content(
         st,
         session,
-        user_query=transcript,
+        user_query=user_text,
         attachments=start.attachments,
         knowledge_base_ids=start.knowledge_base_ids,
     )
@@ -342,7 +348,7 @@ async def _run_agent_round(
             config,
             start.rubric,
             upload_ids=built.upload_ids,
-            raw_content=transcript,
+            raw_content=user_text,
         )
         try:
             async for ev in gen:
@@ -494,19 +500,24 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
                 # 供应商错误已即时下发 error 帧；不进 astream，回空闲
                 continue
 
-            # —— 空转写守卫 ——
+            # —— 空转写守卫（位于草稿合并之前：未发音不吞草稿，前端保留 draft）——
             if not transcript.strip():
                 await sess.send_json(SSEEvent(type="stt_empty", payload={}))
                 continue
 
-            # —— 合并终稿单帧下发（前端固化用户消息 + 锁输入的时点）——
-            await sess.send_json(SSEEvent(type="stt_output", payload={"transcript": transcript}))
+            # —— 草稿 + 终稿合并为一条消息（草稿在前、换行分隔；空草稿即纯终稿）——
+            draft = (start.draft or "").strip()
+            user_text = f"{draft}\n{transcript}" if draft else transcript
 
-            # —— 终稿非空 → 镜像 POST 组装 + astream + WS 隧道 ——
+            # —— 合并稿单帧下发（前端固化用户消息 + 清草稿 + 锁输入的时点；
+            #     帧内文本与发往 agent 的 user_query 严格一致，所见即所发）——
+            await sess.send_json(SSEEvent(type="stt_output", payload={"transcript": user_text}))
+
+            # —— 合并稿 → 镜像 POST 组装 + astream + WS 隧道 ——
             sess.busy = True  # 推理期心跳不做空闲回收
             superseded: dict | None = None
             try:
-                superseded = await _run_agent_round(sess, session, agent, config, start, transcript)
+                superseded = await _run_agent_round(sess, session, agent, config, start, user_text)
             except MessageContentError as e:
                 # start 校验后配置仍可能变化（附件被删等）——按回合错误处理
                 await sess.send_error(e.detail)

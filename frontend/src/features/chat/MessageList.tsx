@@ -1,14 +1,15 @@
 /* 聊天消息流 —— 合并 chatStore.messages + toolCalls 按 createdAt 排序成统一时间线。
    user/agent 气泡（按 agentPath 区分主/子代理，准则 F2 角色色）+ 工具调用折叠卡。
    [Demo] 入场动画 / 头像 / 角色色带 / 流式打字指示 / 工具执行脉动。 */
-import { Button, Collapse, Flex, Tag, Typography } from 'antd'
+import { Button, Collapse, Flex, Tag } from 'antd'
 import { type CSSProperties, type ReactNode, useMemo } from 'react'
-import { Bot, Brain, Check, Undo2, User, Wrench } from 'lucide-react'
+import { Bot, Brain, Undo2, User } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage, FileChangeEntry, ToolCallEntry } from '@/store/chatStore'
 import { Markdown } from '@/components/markdown/Markdown'
 import { MessageAttachments } from './MessageAttachments'
 import { FileChangesCard } from './FileChangesCard'
+import { ToolCallCard } from './ToolCallCard'
 import type { UUID } from '@/types'
 
 type TimelineItem =
@@ -215,62 +216,6 @@ function TypingIndicator(): ReactNode {
         <span className="typing-dot" />
         <span className="typing-dot" />
         <span className="typing-dot" />
-      </div>
-    </Flex>
-  )
-}
-
-function ToolCallCard({ entry }: { entry: ToolCallEntry }): ReactNode {
-  return (
-    <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
-      <div className="chat-avatar" style={{ background: 'var(--color-role-tool)', width: 28, height: 28 }}>
-        {entry.hasResult ? <Check size={14} /> : <Wrench size={14} className="executing" />}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <Collapse
-          size="small"
-          items={[
-            {
-              key: entry.id,
-              label: (
-                /* 未返回（执行中）：工具名文字做亮银色流光，与思考标签同一「进行中」语言 */
-                <Flex align="center" gap={6}>
-                  <code className={entry.hasResult ? undefined : 'shimmer'} style={{ fontSize: 12 }}>
-                    {entry.name}
-                  </code>
-                  {entry.caller ? (
-                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                      by {entry.caller}
-                    </Typography.Text>
-                  ) : null}
-                  {entry.hasResult ? (
-                    <Tag color="green" style={{ marginInlineStart: 4 }}>已返回</Tag>
-                  ) : (
-                    <Tag color="processing" style={{ marginInlineStart: 4 }}>执行中</Tag>
-                  )}
-                </Flex>
-              ),
-              children: (
-                <Flex vertical gap={8}>
-                  <div>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>参数</Typography.Text>
-                    <pre style={{ margin: '4px 0', background: 'var(--color-border-soft)', padding: 8, borderRadius: 6, fontSize: 12, overflow: 'auto' }}>
-                      {JSON.stringify(entry.args, null, 2)}
-                    </pre>
-                  </div>
-                  {entry.hasResult ? (
-                    <div>
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>结果</Typography.Text>
-                      <pre style={{ margin: '4px 0', background: 'var(--color-border-soft)', padding: 8, borderRadius: 6, fontSize: 12, overflow: 'auto', maxHeight: 240 }}>
-                        {entry.result}
-                      </pre>
-                    </div>
-                  ) : null}
-                </Flex>
-              ),
-            },
-          ]}
-        />
       </div>
     </Flex>
   )

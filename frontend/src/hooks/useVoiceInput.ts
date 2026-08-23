@@ -1,16 +1,18 @@
 /* 语音输入交互 hook —— 长按麦克风 → PCM 采集分帧上行 → 松开 flush → 终稿自动成消息。
-   时序联动（plan §3.2）：
-   - press：快照 chatStore 附件/KB/rubric → start 帧 → 采麦；voiceState=recording；
-   - stt_chunk：interimTranscript 实时刷新（composer 流式渲染中间稿）；
-   - release：停采麦 → flush 帧；voiceState=transcribing（即使中途出错也发 flush，
-     保证后端回合正常收口；后端对"错误后新 start"另有超越语义兜底）；
-   - stt_output：pushUser(终稿+附件快照) + clearAttachments/clearKbs + status=streaming
-     （镜像手打 send() 的时点，终稿到推理启动的间隙内输入也已锁定）；
-   - agent 事件经共享 dispatchStreamEvent 写入（渲染与 SSE 完全一致）；
-   - stt_empty：复位麦克风（无消息无 astream）；error：现有 error 落态 + 复位。
-   - 推理期中止（cancelStream）：cancel 帧 → 后端取消 astream 并释放 withdraw 闸，
-     本地落态由调用方完成（与手打 SSE abort 同语义，无终态帧）。
-   采麦：AudioWorklet 直出 Float32 → 主线程降采样 16kHz → Int16 PCM，100ms/帧上行。 */
+    时序联动（plan §3.2）：
+    - press：快照 chatStore 草稿/附件/KB/rubric → start 帧 → 采麦；voiceState=recording；
+    - stt_chunk：interimTranscript 实时刷新（composer 流式渲染"草稿+中间稿"合并预览）；
+    - release：停采麦 → flush 帧；voiceState=transcribing（即使中途出错也发 flush，
+      保证后端回合正常收口；后端对"错误后新 start"另有超越语义兜底）；
+    - stt_output：pushUser(草稿+终稿合并稿+附件快照) + clearAttachments/clearKbs +
+      清空草稿 + status=streaming（镜像手打 send() 的时点，终稿到推理启动的间隙内
+      输入也已锁定；合并稿由后端下发，气泡所见即发往 agent 的内容）；
+    - agent 事件经共享 dispatchStreamEvent 写入（渲染与 SSE 完全一致）；
+    - stt_empty：复位麦克风（无消息无 astream，草稿保留待继续编辑）；error：现有
+      error 落态 + 复位（草稿同样保留）。
+    - 推理期中止（cancelStream）：cancel 帧 → 后端取消 astream 并释放 withdraw 闸，
+      本地落态由调用方完成（与手打 SSE abort 同语义，无终态帧）。
+    采麦：AudioWorklet 直出 Float32 → 主线程降采样 16kHz → Int16 PCM，100ms/帧上行。 */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { asSSEEvent, VoiceConnection } from '@/api/voice'
 import { dispatchStreamEvent } from '@/lib/streamEvents'
@@ -116,8 +118,8 @@ export function useVoiceInput(sessionId: UUID | null, enabled: boolean): UseVoic
         break
       }
       case 'stt_output': {
-        // 合并终稿（后端单帧下发）：固化用户消息并进入 streaming（终稿→推理
-        // 间隙也锁输入）；多句长按已在后端合并为一条消息
+        // 合并稿（后端单帧下发，草稿+终稿）：固化用户消息并进入 streaming（终稿→
+        // 推理间隙也锁输入）；多句长按已在后端合并为一条消息，草稿随发送清空
         const p = frame.payload as unknown as SttTranscriptPayload
         const finalText = (p.transcript ?? '').trim()
         store.setVoiceState('idle')
@@ -128,6 +130,7 @@ export function useVoiceInput(sessionId: UUID | null, enabled: boolean): UseVoic
           store.setStreamError(null)
           store.clearAttachments()
           store.clearKbs()
+          store.setDraft('')
           store.setStatus('streaming')
           store.setStreamSource('voice')
         }
@@ -206,10 +209,12 @@ export function useVoiceInput(sessionId: UUID | null, enabled: boolean): UseVoic
       if (!conn || !conn.ready) return
       if (store.voiceState !== 'idle' || store.status !== 'idle') return
 
-      // 附件/KB/rubric 快照（选完再长按即自然生效；校验错误在录音前由 error 帧暴露）
+      // 草稿/附件/KB/rubric 快照（输完/选完再长按即自然生效；校验错误在录音前由
+      // error 帧暴露；录音期间输入框只读，快照即终值，不会被中途修改）
       const attachs = store.attachments
       const kbIds = store.selectedKbs.map((kb) => kb.id)
       const ok = conn.pressStart({
+        draft: store.draft,
         attachments: attachs.map((a) => ({ upload_id: a.upload_id })),
         knowledge_base_ids: kbIds,
         rubric: rubric?.trim() || undefined,

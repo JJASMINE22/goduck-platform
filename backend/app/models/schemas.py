@@ -173,13 +173,17 @@ class ResumeRequest(BaseModel):
 # 语音输入（WS /sessions/{id}/voice 上行控制帧）
 # ---------------------------------------------------------------------------
 class VoiceStartFrame(BaseModel):
-    """按下麦克风时发送的回合起始帧：附件/KB/rubric 快照，校验错误在录音前暴露。
+    """按下麦克风时发送的回合起始帧：草稿/附件/KB/rubric 快照，校验错误在录音前暴露。
 
     字段语义与 SendMessageRequest 对齐（能力门控/归属校验走同一共享组装器），
-    使语音回合与手打回合的消息组装行为完全一致。
+    使语音回合与手打回合的消息组装行为完全一致；draft 为按压时输入框草稿
+    快照，终稿非空时与之合并为一条消息发送（空转写不吞草稿）。
     """
 
     type: Literal["start"]
+    draft: Optional[str] = Field(
+        default=None, description="按压时输入框草稿快照；与语音终稿合并为一条消息"
+    )
     attachments: list[Attachment] = Field(default_factory=list)
     knowledge_base_ids: list[uuid.UUID] = Field(default_factory=list)
     rubric: Optional[str] = None

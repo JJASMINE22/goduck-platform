@@ -29,9 +29,11 @@ export interface VoiceAttachment {
   upload_id: UUID
 }
 
-/** 上行 start 帧：按下麦克风时的快照（附件/KB/rubric） */
+/** 上行 start 帧：按下麦克风时的快照（草稿/附件/KB/rubric） */
 export interface VoiceStartFrame {
   type: 'start'
+  /** 按压时输入框草稿快照；终稿非空时后端与之合并为一条消息（stt_output 下发合并稿） */
+  draft?: string | null
   attachments: VoiceAttachment[]
   knowledge_base_ids: UUID[]
   rubric?: string | null

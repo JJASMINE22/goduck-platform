@@ -2,7 +2,8 @@
     （Tooltip + 点击打开选择器），已选项以 chip 嵌在容器内。
     发送仅在 status==='idle' 启用；streaming/interrupted 时由消息流/HITL 卡处理。
     附件图标、知识库图标与麦克风（长按说话）各自独立成入口（准则 F2 能力驱动 UI：未开启时不显示）。
-    录音中输入框只读展示流式转写（interimTranscript），与手打输入互斥。 */
+    录音中输入框只读展示"草稿 + 流式转写"合并预览（与后端 stt_output 合并稿同构），
+    松开后草稿与终稿合并为一条消息发送，与手打输入互斥。 */
 import { Button, Checkbox, Flex, Input, Popover, Tooltip, Typography, Upload } from 'antd'
 import { type ReactNode, useState } from 'react'
 import { AudioLines, BookOpen, ChevronDown, ChevronUp, FileText, Paperclip, Send, Square, X } from 'lucide-react'
@@ -59,6 +60,11 @@ export function ChatInput({
   const interimTranscript = useChatStore((s) => s.interimTranscript)
   const recording = voiceState === 'recording'
   const transcribing = voiceState === 'transcribing'
+  // 录音/转写期合并预览：草稿在前 + 流式转写（与后端 stt_output 合并稿同构，
+  // 松开后整段作为一条消息发送）
+  const voicePreview = draft.trim()
+    ? `${draft.trim()}\n${interimTranscript}`
+    : interimTranscript
 
   const idle = status === 'idle'
   const streaming = status === 'streaming'
@@ -206,12 +212,12 @@ export function ChatInput({
         </Flex>
       ) : null}
 
-      {/* 输入区（无边框，融入容器）；录音/转写期间只读展示流式转写 */}
+      {/* 输入区（无边框，融入容器）；录音/转写期间只读展示"草稿+流式转写"合并预览 */}
       <Input.TextArea
         className="chat-composer__input"
         variant="borderless"
         autoSize={{ minRows: 1, maxRows: 6 }}
-        value={recording || transcribing ? interimTranscript : draft}
+        value={recording || transcribing ? voicePreview : draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
         readOnly={recording || transcribing}

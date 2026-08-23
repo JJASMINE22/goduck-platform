@@ -136,12 +136,14 @@ export class VoiceConnection {
   // ---------------------------------------------------------------- 回合帧
   /** 按下麦克风：start 快照帧（标记回合开启，音频随后上行） */
   pressStart(payload: {
+    draft?: string | null
     attachments: { upload_id: string }[]
     knowledge_base_ids: string[]
     rubric?: string | null
   }): boolean {
     const ok = this.send({
       type: 'start',
+      draft: payload.draft ?? null,
       attachments: payload.attachments,
       knowledge_base_ids: payload.knowledge_base_ids,
       rubric: payload.rubric ?? null,

@@ -2,8 +2,9 @@
    数据源：todos SSE 事件（后端 TodoListMiddleware / write_todos，per-node task_planning 开关）。
    形态：吸顶可折叠标签（sticky chip）—— 默认收起为一行胶囊（图标 + 进度 +
    当前执行中任务预览），随消息流滚动常驻顶部，点击展开为浮层清单卡。
-   仅当任一代理存在清单时出现；跨回合保留（清单持久于 graph state），
-   重进会话不回放（历史接口不含 todos，待该代理下次 write_todos 再现）。 */
+   回合作用域：仅当任一代理存在清单时出现；pushUser 新回合 / cancel 手动中止
+   即清空（被中断回合的旧计划不悬挂、不跨回合累计），HITL resume 同回合继续
+   保留；重进会话不回放（历史接口不含 todos，待该代理下次 write_todos 再现）。 */
 import { Flex, Typography } from 'antd'
 import { useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronUp, Circle, CircleCheck, CircleDot, ListChecks } from 'lucide-react'

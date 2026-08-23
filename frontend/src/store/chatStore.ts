@@ -65,7 +65,10 @@ export interface ChatState {
   attachments: UploadOut[] // 待发附件，发消息后清空
   selectedKbs: KnowledgeBaseOut[] // 本次启用的知识库，发消息后清空
   streamError: string | null
-  /** 各代理的任务规划清单（todos 事件整表写入，agent_path 键控；跨回合保留——清单存于 graph state） */
+  /** 各代理的任务规划清单（todos 事件整表写入，agent_path 键控）。
+      回合作用域：pushUser 新回合清空、cancel 中止拆除——清单是对"当前请求"的
+      执行进度，跨回合悬挂会导致旧任务清单累计不清；HITL resume 属同回合继续，
+      保留（后端 graph state 中的 todos 仍跨回合持久，与前端展示生命周期解耦） */
   todosByAgent: Record<string, TodoItem[]>
   /** 本回合的工作区文件变更（file_change 事件追加；pushUser 新回合清空，回撤随时间窗移除） */
   fileChanges: FileChangeEntry[]
@@ -94,6 +97,8 @@ export interface ChatState {
   setStreamError: (msg: string | null) => void
   /** todos 事件落地：整表替换该 agent 的清单（后端已按变更去重） */
   setTodos: (agentPath: string, todos: TodoItem[]) => void
+  /** 清空任务清单浮窗（新回合开始 / 手动中止时调用，防止旧清单跨回合悬挂累计） */
+  clearTodos: () => void
   /** file_change 事件落地：同批记录统一时间戳追加（合并展示在渲染层完成） */
   applyFileChange: (records: FileChangeRecord[]) => void
   addAttachment: (u: UploadOut) => void
@@ -148,8 +153,11 @@ export const useChatStore = create<ChatState>((set) => ({
         ...s.messages,
         { id: genId(), role: 'user', agentPath: 'user', content, attachments, createdAt: Date.now() },
       ],
-      // 新回合开始：上一回合的文件变更徽标随之消失（树/卡片同源清空）
+      // 新回合开始：上一回合的文件变更徽标随之消失（树/卡片同源清空）；
+      // 任务清单浮窗同款清空——上一回合（尤其被中断的）计划不再悬挂，
+      // 待本回合任一代理再次 write_todos 时重新出现
       fileChanges: [],
+      todosByAgent: {},
     })),
 
   pushAgent: (agentPath, content) =>
@@ -227,6 +235,8 @@ export const useChatStore = create<ChatState>((set) => ({
   setStreamError: (msg) => set({ streamError: msg, status: msg ? 'error' : 'idle' }),
 
   setTodos: (agentPath, todos) => set((s) => ({ todosByAgent: { ...s.todosByAgent, [agentPath]: todos } })),
+
+  clearTodos: () => set({ todosByAgent: {} }),
 
   applyFileChange: (records) =>
     set((s) =>

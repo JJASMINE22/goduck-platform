@@ -29,6 +29,7 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
   // 卸载时中止流，防内存泄漏；若卸载时仍在流式（切页离开），还需固化半截消息
   // 并回 idle——chatStore 在同会话往返时被保留（ChatPage 不再 reset），状态机
   // 卡在"生成中"会让重进后输入框永久锁定（准则 F3：终态必须落定）。
+  // 中止语义同 cancel：拆除在途任务清单浮窗，避免重进会话时悬挂旧计划。
   useEffect(() => {
     return () => {
       const controller = abortRef.current
@@ -36,6 +37,7 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       const store = useChatStore.getState()
       if (controller && store.status === 'streaming') {
         store.finalizeStreaming()
+        store.clearTodos()
         store.setStatus('idle')
       }
     }
@@ -123,8 +125,10 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
   const cancel = useCallback(() => {
     abortRef.current?.abort()
     const store = useChatStore.getState()
-    // 中止后固化仍在流式的消息（转 Markdown 渲染，而非停留在纯文本流式态），再回 idle
+    // 中止后固化仍在流式的消息（转 Markdown 渲染，而非停留在纯文本流式态），再回 idle；
+    // 同时拆除本回合的任务清单浮窗——中止后计划已死，悬挂只会误导（旧清单累计的诱因之一）
     store.finalizeStreaming()
+    store.clearTodos()
     store.setStatus('idle')
   }, [])
 
