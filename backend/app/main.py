@@ -71,19 +71,18 @@ async def lifespan(app: FastAPI):
 
     # 8. Knowledge base (RAG) — 仅 kb_enabled=true 时装配（入库/管理写路径）
     if settings.kb_enabled:
-        from app.services.embedding import build_embeddings
         from app.services.ingest_pool import IngestPool
         from app.services.knowledge_service import KnowledgeService
         from app.services.vector_store import VectorStoreFactory
 
-        st.embeddings = build_embeddings(settings)
-        st.vector_factory = VectorStoreFactory(settings, st.embeddings)
+        # 嵌入客户端由工厂按 kb.dims 内部构建+缓存（per-dims），此处不再持单例
+        st.vector_factory = VectorStoreFactory(settings)
         st.knowledge_service = KnowledgeService(
             pool=st.pool, settings=settings,
             minio=st.minio_storage, vector_factory=st.vector_factory,
         )
         st.ingest_pool = IngestPool(st.knowledge_service, settings.kb_ingestion_concurrency)
-        logger.info("knowledge base enabled (embeddings/vector_factory/ingest_pool ready)")
+        logger.info("knowledge base enabled (vector_factory/ingest_pool ready)")
     else:
         logger.info("knowledge base disabled (kb_enabled=false)")
 

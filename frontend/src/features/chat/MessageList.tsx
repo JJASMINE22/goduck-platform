@@ -3,7 +3,7 @@
    [Demo] 入场动画 / 头像 / 角色色带 / 流式打字指示 / 工具执行脉动。 */
 import { Button, Collapse, Flex, Tag } from 'antd'
 import { type CSSProperties, type ReactNode, useMemo } from 'react'
-import { Bot, Brain, Undo2, User } from 'lucide-react'
+import { Bot, Brain, OctagonX, Undo2, User } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage, FileChangeEntry, ToolCallEntry } from '@/store/chatStore'
 import { Markdown } from '@/components/markdown/Markdown'
@@ -81,6 +81,8 @@ export function MessageList({
         if (item.kind === 'tool') return <ToolCallCard key={`t-${item.data.id}`} entry={item.data} />
         if (item.kind === 'files')
           return <FileChangesCard key="file-changes-card" records={item.data} onOpenFile={onOpenFile} />
+        // 手动中断提示条目：渲染为回合末尾的提示行（气泡/工具卡下方），不走 Markdown
+        if (item.data.interrupted) return <InterruptedNotice key={item.data.id} />
         if (item.data.reasoning) return <ThinkingBlock key={item.data.id} msg={item.data} />
         return (
           <MessageBubble
@@ -218,5 +220,16 @@ function TypingIndicator(): ReactNode {
         <span className="typing-dot" />
       </div>
     </Flex>
+  )
+}
+
+/** 手动中断提示行：用户中止流式后落在本回合末尾（agent 输出气泡下方），
+    弱化的虚线左条 + 三级色文字，表达"回合就此截断"而非系统错误 */
+function InterruptedNotice(): ReactNode {
+  return (
+    <div className="msg-in interrupted-notice">
+      <OctagonX size={13} />
+      <span>用户已手动中断</span>
+    </div>
   )
 }

@@ -1,13 +1,14 @@
-/* 文档入库状态标签 —— 统一 pending/indexing/indexed/failed 的配色与文案。
-   knowledge_service.ingest_document 的状态流转映射；indexing 时渲染进度条。 */
+/* 文档状态标签 —— 统一 pending/indexing/indexed/failed 的配色与文案。
+   解析手动触发（parse→ingest）后的状态流转映射；indexing 时渲染进度条。
+   pending 为常驻「待解析」态（上传仅注册，等待用户手动解析）。 */
 import { Progress, Tag } from 'antd'
 import { type ReactNode } from 'react'
 import type { KbDocStatus } from '@/types'
 
 const MAP: Record<string, { color: string; text: string }> = {
-  pending: { color: 'default', text: '待入库' },
-  indexing: { color: 'processing', text: '入库中' },
-  indexed: { color: 'success', text: '已入库' },
+  pending: { color: 'default', text: '待解析' },
+  indexing: { color: 'processing', text: '解析中' },
+  indexed: { color: 'success', text: '已解析' },
   failed: { color: 'error', text: '失败' },
 }
 

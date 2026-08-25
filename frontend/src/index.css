@@ -696,7 +696,10 @@ pre,
   font-size: 12px;
   line-height: 1.6;
   font-family: var(--font-mono);
-  white-space: pre;
+  /* pre-wrap：非 JSON 的纯文本结果（无缩进结构）超长行自动换行，
+     不再整行横向滚动；JSON 已由渲染层美化缩进，折行不破坏可读性 */
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 /* 默认折叠态：截到 CLAMP_LINES 行高 + 底部渐隐，暗示「之下还有」 */
 .tc-payload__pre--clamp {
@@ -728,6 +731,20 @@ pre,
 @keyframes exec-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
+}
+
+/* 手动中断提示行：对齐气泡内容列（头像 32 + gap 10），虚线左条示意"截断"。
+   不占用整行宽（width:fit-content），视觉弱于任何消息气泡 */
+.interrupted-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 0 42px;
+  padding: 2px 10px;
+  border-left: 2px dashed var(--color-border);
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  width: fit-content;
 }
 
 /* 动态反光（shimmer）：思考过程 / 执行中工具调用的「文字」亮银色呼吸。

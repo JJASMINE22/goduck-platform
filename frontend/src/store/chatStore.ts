@@ -21,6 +21,9 @@ export interface ChatMessage {
   reasoning?: string // 思考过程（仅 agent 思考消息，可折叠展示）
   /** true=仍在 token 流式接收中（按纯文本渲染，避免逐 token 重解析 Markdown） */
   streaming?: boolean
+  /** true=该条为「用户已手动中断」提示条目（content 恒空，渲染为气泡下方提示行，
+      不走 Markdown；仅存在于 live 会话，历史回放不重建——刷新后自然消失） */
+  interrupted?: boolean
   /** 用户消息附带的附件（发送时快照；刷新后历史不回显——后端无 message↔upload 关联） */
   attachments?: UploadOut[]
   createdAt: number
@@ -34,6 +37,9 @@ export interface ToolCallEntry {
   agentPath: string
   result?: string // tool_result 回填
   hasResult: boolean
+  /** true=本回合被手动中止时仍在执行（结果永不再到达）；重发后后端重放
+      超步补齐结果时由 setToolResult 复位。展示为「已中断」而非永挂「执行中」 */
+  abandoned?: boolean
   createdAt: number
 }
 
@@ -88,6 +94,9 @@ export interface ChatState {
   appendToken: (agentPath: string, tokenId: string, delta: string, reasoning: boolean) => void
   /** 结束流式：把所有 streaming 消息固化为可 Markdown 渲染 */
   finalizeStreaming: () => void
+  /** 手动中止收尾：在本回合时间线末尾落一条「用户已手动中断」提示条目。
+      空回合（尚无任何 agent 输出/工具卡）不加，避免提示行孤悬在用户消息之后 */
+  markTurnInterrupted: () => void
   upsertToolCall: (tc: Omit<ToolCallEntry, 'hasResult' | 'createdAt'>) => void
   setToolResult: (toolCallId: string, result: string) => void
   setStatus: (s: ChatStreamStatus) => void
@@ -204,22 +213,61 @@ export const useChatStore = create<ChatState>((set) => ({
         : s.messages,
     })),
 
+  markTurnInterrupted: () =>
+    set((s) => {
+      // 定位最近一条用户消息：中断提示属于"该回合的收尾"，须落在本回合全部输出之后
+      let lastUser = -1
+      for (let i = s.messages.length - 1; i >= 0; i--) {
+        if (s.messages[i].role === 'user') {
+          lastUser = i
+          break
+        }
+      }
+      if (lastUser < 0) return {}
+      const turnStart = s.messages[lastUser].createdAt
+      const turnTools = s.toolCalls.filter((t) => t.createdAt >= turnStart)
+      const hasOutput =
+        s.messages.slice(lastUser + 1).some((m) => m.role === 'agent' && (m.content !== '' || !!m.reasoning)) ||
+        turnTools.length > 0
+      if (!hasOutput) return {}
+      return {
+        messages: [
+          ...s.messages,
+          { id: genId(), role: 'agent', agentPath: 'root', content: '', interrupted: true, createdAt: Date.now() },
+        ],
+        // 在途工具卡标记已中断：流已关闭，结果永不再到达，「执行中」不应永挂；
+        // 若重发后后端重放超步补齐结果，setToolResult 会清掉该标记
+        toolCalls: s.toolCalls.map((t) =>
+          !t.hasResult && t.createdAt >= turnStart ? { ...t, abandoned: true } : t,
+        ),
+      }
+    }),
+
   upsertToolCall: (tc) =>
     set((s) => {
       const idx = s.toolCalls.findIndex((t) => t.id === tc.id)
-      const entry: ToolCallEntry = { ...tc, hasResult: false, createdAt: Date.now() }
       if (idx >= 0) {
+        // 同 id 重发（中止打断在超步提交前，重发后后端重放该超步）：保持卡片
+        // 原有时序位置与结果状态，仅刷新调用元数据——若用 Date.now() 覆盖
+        // createdAt，旧回合的工具卡会"传送"到新 query 之下（时序错乱的根因）
         const next = [...s.toolCalls]
-        next[idx] = { ...next[idx], ...entry }
+        next[idx] = {
+          ...next[idx],
+          name: tc.name,
+          args: tc.args,
+          caller: tc.caller,
+          agentPath: tc.agentPath,
+        }
         return { toolCalls: next }
       }
+      const entry: ToolCallEntry = { ...tc, hasResult: false, createdAt: Date.now() }
       return { toolCalls: [...s.toolCalls, entry] }
     }),
 
   setToolResult: (toolCallId, result) =>
     set((s) => ({
       toolCalls: s.toolCalls.map((t) =>
-        t.id === toolCallId ? { ...t, result, hasResult: true } : t,
+        t.id === toolCallId ? { ...t, result, hasResult: true, abandoned: false } : t,
       ),
     })),
 

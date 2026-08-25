@@ -21,7 +21,6 @@ import routers.image as image_router
 import routers.knowledge as knowledge_router
 from config import SERVER_HOST, SERVER_PORT, load_third_party_mcp_config
 from routers._common import build_minio_client, ensure_tmp_dir
-from services.embedding import build_embeddings
 from services.vector_store import VectorStoreFactory
 
 logger = logging.getLogger(__name__)
@@ -38,10 +37,9 @@ async def lifespan(server: FastMCP):
     minio = build_minio_client()
     tmp_dir = ensure_tmp_dir()
 
-    # 知识库检索：embeddings + ES vector factory（静态配置，一次构建常驻；
-    # store 本身按 index JIT 创建+缓存，见 VectorStoreFactory.get_for_index）
-    embeddings = build_embeddings()
-    vector_factory = VectorStoreFactory(embeddings)
+    # 知识库检索：ES vector factory（静态配置一次构建常驻；内部按 mapping dims
+    # 分组懒构建 store 与嵌入客户端，见 VectorStoreFactory.get_dims/get_for_index）
+    vector_factory = VectorStoreFactory()
 
     # 第三方 MCP 工具池（连接复用，一次加载常驻）
     tools: dict = {}

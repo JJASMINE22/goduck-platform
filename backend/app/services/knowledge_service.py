@@ -2,7 +2,12 @@
 
 职责：
 - KB/文档 CRUD（PG 状态卡）+ 入库（parse→split→embed→ES）+ 检索（ES kNN）。
-- chunk 文本/向量真值入 Elasticsearch；PG 仅状态/元数据；MinIO 可选留底原始字节。
+- chunk 文本/向量真值入 Elasticsearch；PG 仅状态/元数据；MinIO 留底原始字节。
+- 维度 per-KB（kb.dims 为取值来源）：创建可设（默认全局）；变更须 force 确认——
+  ES mapping 维度不可变 ⇒ drop 索引 + 文档状态重置（UPDATE，不删数据，留底保留，
+  用户手动重新解析）。
+- 解析手动触发（parse→ingest）：chunk_size/overlap 随解析持久化到 doc 行（生效值），
+  reindex 沿用 → 重建可复现。
 
 一致性模型（回应「杜绝 PG 持久化但 MinIO/ES 报错悬挂」）：
 - 注册文档（register_document）：MinIO 上传在 PG 写入之前 → MinIO 失败即中止
@@ -12,12 +17,14 @@
 - 删除（delete_document/delete_kb）：ES→MinIO→PG 顺序，ES/MinIO 失败尽力而为
   （记日志），PG 为「该文档是否存在」的真相源。
 
-显式预检抛类型化异常（FileExistsError→409 / KeyError→404），由路由层映射。
+显式预检抛类型化异常（FileExistsError→409 / KeyError→404 / ValueError→400 /
+KbDocsExistError→409 / DocumentBusyError→409），由路由层映射。
 """
 from __future__ import annotations
 
 import io
 import logging
+import math
 import uuid
 from typing import Optional
 
@@ -35,7 +42,22 @@ logger = logging.getLogger(__name__)
 
 
 class DimensionMismatchError(Exception):
-    """维度漂移：目标 KB 记录的 dims != 全局 EMBEDDING_DIMS → 拦截检索。"""
+    """维度漂移：目标 KB 记录的 dims != ES mapping 真值 → 拦截检索。"""
+
+
+class KbDocsExistError(Exception):
+    """维度变更守卫：库内仍有文档且未 force 确认（路由映射 → 409）。"""
+
+    def __init__(self, doc_count: int):
+        self.doc_count = doc_count
+        super().__init__(
+            f"该库下有 {doc_count} 个文档：修改维度将清空全部索引块并把文档重置为"
+            f"待解析（原始文件保留，需重新解析）。确认请携带 force=true 重试"
+        )
+
+
+class DocumentBusyError(Exception):
+    """文档正在解析中，拒绝重复投递（路由映射 → 409）。"""
 
 
 def _embed_progress(done: int, total: int) -> int:
@@ -61,14 +83,16 @@ class KnowledgeService:
         self.settings = settings
         self.minio = minio
         self.vector_factory = vector_factory
-        self._splitter = RecursiveCharacterTextSplitter(
-            chunk_size=settings.kb_chunk_size,
-            chunk_overlap=settings.kb_chunk_overlap,
-        )
 
     # ============================ KB CRUD ====================================
 
-    async def create_kb(self, name: str, description: Optional[str], creator: str) -> dict:
+    async def create_kb(
+        self,
+        name: str,
+        description: Optional[str],
+        creator: str,
+        dims: Optional[int] = None,
+    ) -> dict:
         if await dbmod.get_kb_by_name(self.pool, name) is not None:
             raise FileExistsError(name)  # -> 409
         new_id = uuid.uuid4()
@@ -77,14 +101,32 @@ class KnowledgeService:
             name=name,
             description=description,
             es_index_name=f"kb_{new_id}",
-            dims=self.settings.embedding_dims,  # 记录全局 dim，仅漂移检测
+            dims=dims if dims is not None else self.settings.embedding_dims,
             creator=creator,
             kb_id=new_id,
         )
 
     async def update_kb(
-        self, kb_id: uuid.UUID, name: str, description: Optional[str]
+        self,
+        kb_id: uuid.UUID,
+        name: str,
+        description: Optional[str],
+        dims: Optional[int] = None,
+        force: bool = False,
     ) -> dict:
+        """更新 KB 元数据；维度变更走守卫（破坏性变更）。
+
+        名称排重镜像模型/智能体更新（排除自身）。维度变更时：
+        1. 有文档且未 force → KbDocsExistError（409，前端弹确认）。
+        2. 确认变更 → drop_index（mapping 维度不可变，旧向量作废）+
+           reset_kb_documents（仅 UPDATE：全部文档→待解析，原始字节与 PG 行保留，
+           不删除任何数据）+ 落库新 dims。用户随后按新维度逐个重新解析。
+        3. 空库 → 直接改（drop_index 幂等，清可能的残留索引）。
+
+        已知边界：若变更时有该库文档正在解析中（in-flight ingest），旧维度客户端
+        可能把 chunk 写入重建后的索引造成维度错位——属管理面并发操作，重新解析
+        该文档即可修复（ingest 幂等删旧）。
+        """
         existing = await dbmod.get_kb(self.pool, kb_id)
         if existing is None:
             raise KeyError(f"kb {kb_id} not found")  # -> 404
@@ -93,7 +135,26 @@ class KnowledgeService:
             clash = await dbmod.get_kb_by_name(self.pool, name)
             if clash is not None:
                 raise FileExistsError(name)  # -> 409
-        return await dbmod.update_kb(self.pool, kb_id, name, description)
+
+        effective_dims = dims if dims is not None else existing["dims"]
+        dims_changed = effective_dims != existing["dims"]
+        if dims_changed:
+            docs = await dbmod.list_kb_documents(self.pool, kb_id)
+            if docs and not force:
+                raise KbDocsExistError(len(docs))  # -> 409（前端二次确认）
+            # 旧维度向量全部作废：drop 索引（幂等）+ 文档重置为待解析（UPDATE 保留数据）
+            self.vector_factory.drop_index(str(kb_id))
+            if docs:
+                reset = await dbmod.reset_kb_documents(self.pool, kb_id)
+                logger.info(
+                    "kb=%s dims %s→%s：索引已重建基底，%d 个文档重置为待解析",
+                    kb_id, existing["dims"], effective_dims, reset,
+                )
+
+        return await dbmod.update_kb(
+            self.pool, kb_id, name, description,
+            dims=effective_dims if dims_changed else None,  # 未变更传 None 保持原值
+        )
 
     async def get_kb(self, kb_id: uuid.UUID) -> Optional[dict]:
         return await dbmod.get_kb(self.pool, kb_id)
@@ -118,15 +179,12 @@ class KnowledgeService:
     async def register_document(
         self, kb_id: uuid.UUID, filename: str, mime: str, raw: bytes
     ) -> dict:
-        """注册文档（pending）：MinIO 在前、PG 在后（一致性，杜绝悬挂）。
+        """注册文档（pending=待解析）：MinIO 在前、PG 在后（一致性，杜绝悬挂）。
 
-        KB 仅收 pdf/docx；返回状态卡行。原始字节留底与否取决于 KB_STORE_MINIO：
-        - true：存 MinIO（bucket_key=kb/<kb_id>/<doc_id>），后续 ingest 从 MinIO 取。
-        - false：bucket_key=None，调用方须把 raw 透传给 ingest（内存路径）。
-
-        同名拦截：同 (kb_id, filename) 已有文档则直接拒绝（FileExistsError -> 409），
-        不执行 MinIO 上传（避免无效字节落对象存储）。更新内容需用户先删除再上传。
-        并发竞态（check 与 insert 之间）由 DB 唯一索引兜住，仍归一为同名冲突。
+        KB 仅收 pdf/docx；原始字节必须留底 MinIO（延迟手动解析依赖留底取字节，
+        KB_STORE_MINIO=false 由路由层门控拒绝）。同名拦截：同 (kb_id, filename)
+        已有文档则直接拒绝（FileExistsError -> 409），不执行 MinIO 上传。并发竞态
+        （check 与 insert 之间）由 DB 唯一索引兜住，仍归一为同名冲突。
         """
         if await dbmod.get_kb(self.pool, kb_id) is None:
             raise KeyError(f"kb {kb_id} not found")  # -> 404
@@ -151,7 +209,7 @@ class KnowledgeService:
                 logger.exception("MinIO 存储失败 (kb=%s)", kb_id)
                 raise RuntimeError(f"MinIO 存储失败: {e}") from e
 
-        # ② PG 状态卡（pending）；失败则回滚清 MinIO，避免悬挂字节
+        # ② PG 状态卡（pending=待解析）；失败则回滚清 MinIO，避免悬挂字节
         try:
             return await dbmod.create_kb_document(
                 self.pool,
@@ -184,8 +242,42 @@ class KnowledgeService:
             self.minio.remove_object(doc["bucket_key"])
         await dbmod.delete_kb_document(self.pool, doc_id)
 
+    async def parse_document(
+        self,
+        kb_id: uuid.UUID,
+        doc_id: uuid.UUID,
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
+    ) -> dict:
+        """手动解析触发（前置校验 + 参数持久化；投递入库由路由层 ingest_pool）。
+
+        参数解析优先级：显式传入 > doc 行已存值（重新解析沿用）> 全局默认。
+        首次解析时 doc 行尚无参数（NULL），显式传入或默认值即生效值并落库。
+        """
+        doc = await dbmod.get_kb_document(self.pool, doc_id)
+        if doc is None or str(doc["kb_id"]) != str(kb_id):
+            raise KeyError(f"doc {doc_id} not found in kb {kb_id}")  # -> 404
+        if doc["status"] == "indexing":
+            raise DocumentBusyError(f"文档「{doc['filename']}」正在解析中")  # -> 409
+        if not doc.get("bucket_key"):
+            raise ValueError("无 MinIO 留底（历史文档），无法解析；请删除后重新上传")  # -> 400
+
+        eff_size = chunk_size if chunk_size is not None else (
+            doc.get("chunk_size") or self.settings.kb_chunk_size
+        )
+        eff_overlap = chunk_overlap if chunk_overlap is not None else (
+            doc.get("chunk_overlap") or self.settings.kb_chunk_overlap
+        )
+        if not (0 <= eff_overlap < eff_size):
+            raise ValueError(
+                f"切块参数非法：需 0 ≤ overlap({eff_overlap}) < chunk_size({eff_size})"
+            )  # -> 400
+        return await dbmod.update_kb_document_parse_params(
+            self.pool, doc_id, eff_size, eff_overlap
+        )
+
     async def reindex_document(self, kb_id: uuid.UUID, doc_id: uuid.UUID) -> None:
-        """重建索引：从 MinIO 留底重新 ingest（ingest_document 自带删旧 chunk 幂等）。"""
+        """重建索引：从 MinIO 留底重新 ingest（沿用已存解析参数；幂等删旧 chunk）。"""
         doc = await dbmod.get_kb_document(self.pool, doc_id)
         if doc is None or str(doc["kb_id"]) != str(kb_id):
             raise KeyError(f"doc {doc_id} not found in kb {kb_id}")  # -> 404
@@ -198,10 +290,11 @@ class KnowledgeService:
     ) -> None:
         """入库：pending→indexing→indexed|failed（幂等：先删旧 chunk）。
 
-        raw_bytes：KB_STORE_MINIO=false 时由调用方透传内存字节；否则从 MinIO 取。
-        嵌入维度 = 全局 EMBEDDING_DIMS（由嵌入客户端携带 dimensions）。
-        进度：按 embedding_batch_size 分批嵌入，每批后回写 progress（0..100），
-        前端经文档列表轮询渲染进度条。
+        - 嵌入维度 = kb.dims（随库行走；None=全局默认）→ store/嵌入客户端按维度构建。
+        - 切块参数 = doc 行生效值（解析时持久化；NULL 历史行回落全局默认并回写）。
+        - raw_bytes：兼容旧内存路径；手动解析流程恒为 None（从 MinIO 取）。
+        - 进度：按 embedding_batch_size 分批嵌入，每批后回写 progress（0..100），
+          前端经文档列表轮询渲染进度条。
         """
         await dbmod.update_kb_document_status(
             self.pool, doc_id, status="indexing", progress=0
@@ -210,6 +303,10 @@ class KnowledgeService:
             doc = await dbmod.get_kb_document(self.pool, doc_id)
             if doc is None:
                 raise KeyError(f"doc {doc_id} vanished during ingest")
+            kb = await dbmod.get_kb(self.pool, kb_id)
+            if kb is None:
+                raise KeyError(f"kb {kb_id} vanished during ingest")
+            dims = kb.get("dims")
 
             raw = raw_bytes
             if raw is None:
@@ -217,11 +314,22 @@ class KnowledgeService:
                     raise ValueError("无原始字节可入库（既未透传内存，也无 MinIO 留底）")
                 raw = await self._read_bytes_async(doc["bucket_key"])
 
-            chunks = self._build_chunks(raw, doc["mime"], str(kb_id), str(doc_id), doc["filename"])
+            # 生效参数：doc 行优先，NULL（历史行）回落全局默认并回写（保证可复现）
+            eff_size = doc.get("chunk_size") or self.settings.kb_chunk_size
+            eff_overlap = doc.get("chunk_overlap") or self.settings.kb_chunk_overlap
+            if doc.get("chunk_size") is None:
+                await dbmod.update_kb_document_parse_params(
+                    self.pool, doc_id, eff_size, eff_overlap
+                )
+
+            chunks = self._build_chunks(
+                raw, doc["mime"], str(kb_id), str(doc_id), doc["filename"],
+                chunk_size=eff_size, chunk_overlap=eff_overlap,
+            )
             if not chunks:
                 raise ValueError("解析后无可索引文本（空文档或解析失败）")
 
-            store = self.vector_factory.get(str(kb_id))
+            store = self.vector_factory.get(str(kb_id), dims)
             # 幂等：先删该文档旧 chunk（应对重传/重试/重建；新块数少于旧块时清残留）
             self.vector_factory.delete_by_doc_id(str(kb_id), str(doc_id))
 
@@ -242,7 +350,10 @@ class KnowledgeService:
                 self.pool, doc_id, status="indexed", chunk_count=total,
                 page_count=doc.get("page_count"), progress=100,
             )
-            logger.info("ingested doc=%s chunks=%d kb=%s", doc_id, total, kb_id)
+            logger.info(
+                "ingested doc=%s chunks=%d kb=%s dims=%s chunk=%d/%d",
+                doc_id, total, kb_id, dims, eff_size, eff_overlap,
+            )
         except Exception as e:  # noqa: BLE001
             logger.exception("ingest failed doc=%s kb=%s", doc_id, kb_id)
             await dbmod.update_kb_document_status(
@@ -260,39 +371,71 @@ class KnowledgeService:
     ) -> list[dict]:
         """检索 top-k：[{content,score,filename,doc_id,page,chunk_index,kb_id}]。
 
-        - kb_ids=None → 全部 KB（index='kb_*'）；否则逗号拼接。
+        - kb_ids 必填（`kb_*` 通配已在多维度下移除：各库维度不再恒等，通配查询
+          无法确定查询向量维度）；空列表直接返回 []。
+        - 按 kb.dims 分组：同组一次 kNN（查询向量与组内 mapping 同维）；跨组分数
+          不可比 → 轮转归并（round-robin），禁止裸分数排序。
+        - 维度漂移检测：kb.dims vs ES mapping 真值（get_dims）→ DimensionMismatchError。
         - doc_ids 非空 → 叠加 metadata.doc_id.keyword terms 过滤。
-        - 维度漂移检测：目标 KB 记录 dims != 全局 EMBEDDING_DIMS → 抛 DimensionMismatchError。
         """
         k = k or self.settings.kb_top_k
+        if not kb_ids:
+            return []
 
-        # 漂移检测（仅对显式指定的 KB；通配查询无法预知各库 dims，由全局单一 dim 保证一致）
-        if kb_ids:
-            kbs = await dbmod.get_kbs_by_ids(self.pool, kb_ids)
-            if not kbs:
-                return []
-            for kb in kbs:
-                if (
-                    self.settings.embedding_dims is not None
-                    and kb.get("dims") is not None
-                    and kb["dims"] != self.settings.embedding_dims
-                ):
-                    raise DimensionMismatchError(
-                        f"知识库 '{kb['name']}' 维度 {kb['dims']} 与当前全局维度 "
-                        f"{self.settings.embedding_dims} 不一致，请重建该库"
-                    )
-            index = ",".join(f"kb_{i}" for i in kb_ids)
-        else:
-            index = "kb_*"
+        kbs = await dbmod.get_kbs_by_ids(self.pool, kb_ids)
+        if not kbs:
+            return []
 
-        store = self.vector_factory.get_for_index(index)
+        # 维度真值探测（一次一库；结果复用于漂移检测 + 空库过滤 + 分组）。
+        # 未建索引（上传未解析/空库）→ 无 chunk 无命中，跳过而非报错：
+        # 未解析属用户未执行操作，非检索链路故障。
+        mapping_dims_by_kb: dict[str, Optional[int]] = {}
+        for kb in kbs:
+            md = self.vector_factory.get_dims(str(kb["id"]))
+            mapping_dims_by_kb[str(kb["id"])] = md
+            # 漂移检测：PG 记录 vs ES mapping 真值（任一为 None 则无法比对，跳过）
+            if (
+                md is not None
+                and kb.get("dims") is not None
+                and md != kb["dims"]
+            ):
+                raise DimensionMismatchError(
+                    f"知识库 '{kb['name']}' 维度 {kb['dims']} 与索引实际维度 "
+                    f"{md} 不一致，请重新解析该库文档"
+                )
+
+        indexable = [kb for kb in kbs if mapping_dims_by_kb[str(kb["id"])] is not None]
+        if not indexable:
+            return []
+
+        # 按 mapping 真值分组（查询向量维度必须匹配索引；漂移检测已保证 == kb.dims）
+        groups: dict[Optional[int], list[dict]] = {}
+        for kb in indexable:
+            groups.setdefault(mapping_dims_by_kb[str(kb["id"])], []).append(kb)
+
         flt: list[dict] = []
         if doc_ids:
             flt.append({"terms": {"metadata.doc_id.keyword": [str(d) for d in doc_ids]}})
 
-        hits = store.similarity_search_with_score(query, k=k, filter=flt or None)
+        k_per_group = max(1, math.ceil(k / len(groups)))
+        group_hits: list[list[tuple[Document, float]]] = []
+        for dims, group in groups.items():
+            index = ",".join(f"kb_{kb['id']}" for kb in group)
+            store = self.vector_factory.get_for_index(index, dims)
+            group_hits.append(
+                store.similarity_search_with_score(query, k=k_per_group, filter=flt or None)
+            )
+
+        # 轮转归并：各组按分数降序，逐位交错取用后截断到 k（跨组分数不可比）
+        merged: list[tuple[Document, float]] = []
+        for i in range(k_per_group):
+            for hits in group_hits:
+                if i < len(hits):
+                    merged.append(hits[i])
+        merged = merged[:k]
+
         results: list[dict] = []
-        for d, score in hits:
+        for d, score in merged:
             md = d.metadata or {}
             results.append(
                 {
@@ -310,15 +453,28 @@ class KnowledgeService:
     # ============================ Parsing helpers ===========================
 
     def _build_chunks(
-        self, raw: bytes, mime: str, kb_id: str, doc_id: str, filename: str
+        self,
+        raw: bytes,
+        mime: str,
+        kb_id: str,
+        doc_id: str,
+        filename: str,
+        chunk_size: int,
+        chunk_overlap: int,
     ) -> list[Document]:
-        """解析（pdf 逐页 / docx 逐段）→ 分块 → 带 chunk metadata。"""
+        """解析（pdf 逐页 / docx 逐段）→ 分块（按文档生效参数构造 splitter）→ 带 metadata。
+
+        RecursiveCharacterTextSplitter 无状态且构造廉价，按参即时构造不缓存。
+        """
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
         pages = self._extract_pages(raw, mime)
         chunks: list[Document] = []
         for page_no, text in pages:
             if not text.strip():
                 continue
-            for ci, piece in enumerate(self._splitter.split_text(text)):
+            for ci, piece in enumerate(splitter.split_text(text)):
                 chunks.append(
                     Document(
                         page_content=piece,

@@ -1,7 +1,8 @@
 /* 知识库文档管理抽屉 —— 选中某库后管理其文档：
-   - 上传（拖拽/点击，仅 pdf/docx，服务端魔数判定）
-   - 文档列表（状态卡 + 入库轮询 + 失败原因 tooltip）
-   - 重建索引（需 MinIO 留底，否则后端 400）
+   - 上传（拖拽/点击，仅 pdf/docx，服务端魔数判定）—— 仅注册，不解析
+   - 待解析文件面板（上传后出现）：统一参数栏（可一键应用到全部）+ 每文件独立
+     chunk size / overlap 配置与单独解析 + 批量「全部解析」
+   - 文档表（解析中/已解析/失败）：状态卡 + 轮询 + 失败原因 tooltip + 重新解析
    - 检索调试（管理面用，生产检索走 mcp-servers 的 kb_search） */
 import {
   App as AntApp,
@@ -10,6 +11,7 @@ import {
   Flex,
   InputNumber,
   Popconfirm,
+  Popover,
   Space,
   Table,
   Tag,
@@ -18,32 +20,46 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import { FileText, RotateCw, Search, Trash2, Upload as UploadIcon } from 'lucide-react'
+import { FileText, Play, Search, Trash2, Upload as UploadIcon } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import {
   useDeleteDocument,
   useKbDocuments,
   useKbSearch,
-  useReindexDocument,
+  useParseDocument,
   useUploadDocument,
 } from '@/hooks/useKnowledge'
 import { useDragResize } from '@/hooks/useDragResize'
 import { formatBytes, formatDateTime } from '@/lib/format'
 import { toastError, toastSuccess } from '@/lib/antdStatic'
 import { KbDocStatusTag } from './KbDocStatusTag'
-import type { KbDocumentOut, KbSearchResult, KnowledgeBaseOut } from '@/types'
+import type { KbDocumentOut, KbSearchResult, KnowledgeBaseOut, UUID } from '@/types'
 
 const ACCEPT = '.pdf,.docx'
 const ACCEPT_RE = /\.(pdf|docx)$/i
+/** 全局默认切块参数（与后端 kb_chunk_size/kb_chunk_overlap 一致，仅作占位提示） */
+const DEFAULT_CHUNK_SIZE = 800
+const DEFAULT_CHUNK_OVERLAP = 120
 
 /** KB 仅收 pdf/docx —— 前端预筛减少无效上传（准则 F6：服务端魔数仍为最终判定） */
 function isAcceptable(file: File): boolean {
   return ACCEPT_RE.test(file.name)
 }
 
+function fileExtTag(filename: string): string {
+  const m = /\.(\w+)$/.exec(filename)
+  return (m?.[1] ?? 'FILE').toUpperCase()
+}
+
 function scorePct(score: number): string {
   // ES kNN 余弦相似度通常落在 -1..1，转百分比仅供直观，非精确语义
   return `${Math.max(0, Math.min(100, Math.round(score * 100)))}%`
+}
+
+/** 每文件参数覆盖值（panel 内 state）：键存在=用户已干预；null=清空回默认 */
+interface ChunkParams {
+  size: number | null
+  overlap: number | null
 }
 
 export function KbDocumentsDrawer({
@@ -59,7 +75,7 @@ export function KbDocumentsDrawer({
   const { data, isLoading, isError, refetch } = useKbDocuments(open ? kbId : null)
   const uploadDoc = useUploadDocument(kbId)
   const deleteDoc = useDeleteDocument(kbId)
-  const reindexDoc = useReindexDocument(kbId)
+  const parseDoc = useParseDocument(kbId)
   const search = useKbSearch(kbId)
   const { modal } = AntApp.useApp()
 
@@ -76,6 +92,10 @@ export function KbDocumentsDrawer({
   const [query, setQuery] = useState('')
   const [topK, setTopK] = useState(5)
   const [results, setResults] = useState<KbSearchResult[]>([])
+
+  // 待解析（pending）进配置面板；其余（indexing/indexed/failed）进文档表
+  const pendingDocs = (data ?? []).filter((d) => d.status === 'pending')
+  const parsedDocs = (data ?? []).filter((d) => d.status !== 'pending')
 
   /** 顺序上传多文件：并发上传会挤占入库池（kb_ingestion_concurrency），且失败定位困难 */
   const uploadFiles = async (files: FileList | File[]) => {
@@ -116,13 +136,24 @@ export function KbDocumentsDrawer({
     })
   }
 
-  const handleReindex = async (doc: KbDocumentOut) => {
+  /** 单文档解析（面板单行 / 表内重新解析共用；null=沿用已存值/全局默认）。
+   *  返回是否投递成功（批量计数用；错误提示已在此处理）。 */
+  const handleParse = async (
+    doc: KbDocumentOut,
+    chunkSize?: number | null,
+    chunkOverlap?: number | null
+  ): Promise<boolean> => {
     try {
-      await reindexDoc.mutateAsync(doc.id)
-      toastSuccess('已重新投递入库')
+      await parseDoc.mutateAsync({
+        docId: doc.id,
+        body: { chunk_size: chunkSize ?? null, chunk_overlap: chunkOverlap ?? null },
+      })
+      toastSuccess(doc.status === 'pending' ? '已开始解析' : '已重新投递解析')
+      return true
     } catch (e) {
-      // 未保留原始字节等 400：detail 已由全局弹窗展示，这里兜底静默
-      if (!(e instanceof ApiError)) toastError('重建索引失败，请重试')
+      // 解析中重复投递（409）/ 无留底（400）等：detail 已由全局弹窗展示
+      if (!(e instanceof ApiError)) toastError('解析失败，请重试')
+      return false
     }
   }
 
@@ -147,17 +178,32 @@ export function KbDocumentsDrawer({
       dataIndex: 'filename',
       key: 'filename',
       ellipsis: true,
-      render: (v: string, r) => (
+      render: (v: string) => (
         <Tooltip title={v}>
           <Space size={6}>
             <FileText size={14} style={{ flexShrink: 0, color: 'var(--color-text-tertiary)' }} />
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {v}
             </span>
-            <Tag style={{ marginInlineStart: 0 }}>{r.mime.split('/').pop()?.toUpperCase()}</Tag>
+            <Tag style={{ marginInlineStart: 0 }}>{fileExtTag(v)}</Tag>
           </Space>
         </Tooltip>
       ),
+    },
+    {
+      title: '切块参数',
+      key: 'chunk_params',
+      width: 130,
+      render: (_, r) =>
+        r.chunk_size != null ? (
+          <Tooltip title="chunk size / overlap（解析生效值，重建沿用）">
+            <Tag style={{ marginInlineEnd: 0 }}>
+              {r.chunk_size} / {r.chunk_overlap ?? 0}
+            </Tag>
+          </Tooltip>
+        ) : (
+          <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>
+        ),
     },
     {
       title: '大小',
@@ -209,15 +255,13 @@ export function KbDocumentsDrawer({
       width: 96,
       render: (_, r) => (
         <Flex gap={4}>
-          <Tooltip title="重建索引（需 MinIO 留底）">
-            <Button
-              type="link"
-              size="small"
-              icon={<RotateCw size={14} />}
-              loading={reindexDoc.isPending}
-              onClick={() => handleReindex(r)}
-            />
-          </Tooltip>
+          <ParsePopover
+            loading={parseDoc.isPending}
+            disabled={r.status === 'indexing'}
+            storedSize={r.chunk_size ?? DEFAULT_CHUNK_SIZE}
+            storedOverlap={r.chunk_overlap ?? DEFAULT_CHUNK_OVERLAP}
+            onParse={(size, overlap) => void handleParse(r, size, overlap)}
+          />
           <Popconfirm
             title="删除该文档？"
             onConfirm={() => handleDelete(r)}
@@ -256,7 +300,7 @@ export function KbDocumentsDrawer({
             {kb.description ? ` · ${kb.description}` : ''}
           </Typography.Text>
 
-          {/* 上传区 */}
+          {/* 上传区（仅注册；参数配置与解析在下方「待解析文件」面板） */}
           <div
             onDragOver={(e) => {
               e.preventDefault()
@@ -280,7 +324,7 @@ export function KbDocumentsDrawer({
             </p>
             <p style={{ margin: '6px 0 2px' }}>拖拽 PDF / DOCX 到此，或点击选择</p>
             <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-              支持多文件；仅 pdf/docx，入库在后台异步进行
+              支持多文件；仅 pdf/docx，上传后在下方「待解析文件」中为各文件设置切块参数并解析
             </p>
             <input
               ref={fileInputRef}
@@ -292,17 +336,31 @@ export function KbDocumentsDrawer({
             />
           </div>
 
-          {/* 文档表 */}
+          {/* 待解析文件配置面板（存在 pending 文档时出现；解析开始后自动移出） */}
+          {pendingDocs.length > 0 ? (
+            <PendingParsePanel
+              docs={pendingDocs}
+              busy={parseDoc.isPending}
+              onParse={(doc, size, overlap) => handleParse(doc, size, overlap)}
+              onDelete={(doc) => deleteDoc.mutate(doc.id)}
+            />
+          ) : null}
+
+          {/* 文档表（解析中/已解析/失败） */}
           <Table<KbDocumentOut>
             rowKey="id"
             size="small"
             loading={isLoading}
             columns={columns}
-            dataSource={data}
+            dataSource={parsedDocs}
             pagination={false}
-            scroll={{ x: 920 }}
+            scroll={{ x: 1000 }}
             locale={{
-              emptyText: isError ? '加载失败' : '暂无文档，上传第一个吧',
+              emptyText: isError
+                ? '加载失败'
+                : pendingDocs.length
+                  ? '暂无已解析文档；待解析文件见上方'
+                  : '暂无文档，上传第一个吧',
             }}
           />
 
@@ -371,6 +429,269 @@ export function KbDocumentsDrawer({
         </Flex>
       ) : null}
     </Drawer>
+  )
+}
+
+/** 待解析文件配置面板：
+ *  - 头部「统一参数」（chunk size / overlap）+「应用到全部」+「全部解析」（按各行当前值顺序投递）
+ *  - 每文件一行：文件信息 + 独立参数输入（优先级：行输入 > 已存值 > 统一参数 > 全局默认）+ 单独解析/删除
+ *  - 维度重置的文档（status=pending 且带已存参数）回面板时会预填其历史参数 */
+function PendingParsePanel({
+  docs,
+  busy,
+  onParse,
+  onDelete,
+}: {
+  docs: KbDocumentOut[]
+  busy: boolean
+  onParse: (doc: KbDocumentOut, size?: number | null, overlap?: number | null) => Promise<boolean>
+  onDelete: (doc: KbDocumentOut) => void
+}): ReactNode {
+  // 统一参数（null=未设置；作为各行占位与「应用」来源）
+  const [unifiedSize, setUnifiedSize] = useState<number | null>(null)
+  const [unifiedOverlap, setUnifiedOverlap] = useState<number | null>(null)
+  // 每文件覆盖（键存在=用户已干预该行；值为 null 表示清空→回退占位默认）
+  const [overrides, setOverrides] = useState<Record<UUID, ChunkParams>>({})
+
+  const sizeHint = unifiedSize ?? DEFAULT_CHUNK_SIZE
+  const overlapHint = unifiedOverlap ?? DEFAULT_CHUNK_OVERLAP
+
+  const rowValues = (d: KbDocumentOut): ChunkParams => {
+    const ov = overrides[d.id]
+    return {
+      size: ov ? ov.size : (d.chunk_size ?? null),
+      overlap: ov ? ov.overlap : (d.chunk_overlap ?? null),
+    }
+  }
+
+  const setRow = (id: UUID, patch: Partial<ChunkParams>) => {
+    setOverrides((prev) => {
+      const cur: ChunkParams = prev[id] ?? { size: null, overlap: null }
+      return { ...prev, [id]: { ...cur, ...patch } }
+    })
+  }
+
+  const applyToAll = () => {
+    setOverrides(
+      Object.fromEntries(
+        docs.map((d) => [d.id, { size: unifiedSize, overlap: unifiedOverlap }])
+      ) as Record<UUID, ChunkParams>
+    )
+  }
+
+  const parseAll = async () => {
+    // 顺序投递各行（按行当前值；空=后端沿用已存/全局默认），避免挤占解析并发
+    let ok = 0
+    for (const d of docs) {
+      const { size, overlap } = rowValues(d)
+      if (await onParse(d, size, overlap)) ok += 1
+    }
+    if (ok) toastSuccess(`已投递 ${ok}/${docs.length} 个文件解析`)
+  }
+
+  return (
+    <div
+      style={{
+        border: '1px solid var(--color-border)',
+        borderRadius: 8,
+        padding: '12px 14px 4px',
+        background: 'var(--color-bg-hover, rgba(0,0,0,0.02))',
+      }}
+    >
+      {/* 头部：说明 + 统一参数 + 批量操作 */}
+      <Flex justify="space-between" align="flex-start" gap={12} wrap style={{ paddingBottom: 10 }}>
+        <Flex vertical>
+          <Typography.Text strong>
+            待解析文件（{docs.length}）
+          </Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            逐个确认切块参数后解析；留空使用默认 {sizeHint} / {overlapHint}
+          </Typography.Text>
+        </Flex>
+        <Flex gap={8} align="center" wrap>
+          <InputNumber
+            min={200}
+            max={8000}
+            precision={0}
+            value={unifiedSize ?? undefined}
+            placeholder={`统一切块 ${sizeHint}`}
+            onChange={(v) => setUnifiedSize(typeof v === 'number' ? v : null)}
+            style={{ width: 130 }}
+            disabled={busy}
+          />
+          <InputNumber
+            min={0}
+            max={2000}
+            precision={0}
+            value={unifiedOverlap ?? undefined}
+            placeholder={`统一重叠 ${overlapHint}`}
+            onChange={(v) => setUnifiedOverlap(typeof v === 'number' ? v : null)}
+            style={{ width: 130 }}
+            disabled={busy}
+          />
+          <Button size="small" onClick={applyToAll} disabled={busy}>
+            应用到全部
+          </Button>
+          <Button
+            type="primary"
+            size="small"
+            icon={<Play size={14} />}
+            loading={busy}
+            onClick={() => void parseAll()}
+          >
+            全部解析
+          </Button>
+        </Flex>
+      </Flex>
+
+      {/* 文件行：信息 + 独立参数 + 操作 */}
+      {docs.map((d) => {
+        const { size, overlap } = rowValues(d)
+        return (
+          <Flex
+            key={d.id}
+            align="center"
+            gap={12}
+            wrap
+            style={{
+              padding: '10px 0',
+              borderTop: '1px solid var(--color-border)',
+            }}
+          >
+            <Flex vertical gap={2} style={{ flex: '1 1 260px', minWidth: 0 }}>
+              <Space size={6}>
+                <FileText size={14} style={{ flexShrink: 0, color: 'var(--color-text-tertiary)' }} />
+                <Tooltip title={d.filename}>
+                  <span
+                    style={{
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      maxWidth: 320,
+                      fontWeight: 500,
+                    }}
+                  >
+                    {d.filename}
+                  </span>
+                </Tooltip>
+                <Tag style={{ marginInlineStart: 0 }}>{fileExtTag(d.filename)}</Tag>
+              </Space>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {formatBytes(d.size)} · {d.page_count != null ? `${d.page_count} 页/段` : '页数未知'}
+              </Typography.Text>
+            </Flex>
+            <InputNumber
+              min={200}
+              max={8000}
+              precision={0}
+              value={size ?? undefined}
+              placeholder={`切块 ${sizeHint}`}
+              onChange={(v) => setRow(d.id, { size: typeof v === 'number' ? v : null })}
+              style={{ width: 110 }}
+              disabled={busy}
+            />
+            <InputNumber
+              min={0}
+              max={2000}
+              precision={0}
+              value={overlap ?? undefined}
+              placeholder={`重叠 ${overlapHint}`}
+              onChange={(v) => setRow(d.id, { overlap: typeof v === 'number' ? v : null })}
+              style={{ width: 110 }}
+              disabled={busy}
+            />
+            <Tooltip title="按当前参数解析此文件">
+              <Button
+                type="link"
+                size="small"
+                icon={<Play size={14} />}
+                disabled={busy}
+                onClick={() => void onParse(d, size, overlap)}
+              />
+            </Tooltip>
+            <Popconfirm
+              title="删除该文档？"
+              onConfirm={() => onDelete(d)}
+              okText="删除"
+              cancelText="取消"
+            >
+              <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
+            </Popconfirm>
+          </Flex>
+        )
+      })}
+    </div>
+  )
+}
+
+/** 重新解析按钮 + 参数 Popover（文档表内，indexed/failed 用；空=沿用已存值） */
+function ParsePopover({
+  loading,
+  disabled,
+  storedSize,
+  storedOverlap,
+  onParse,
+}: {
+  loading: boolean
+  disabled: boolean
+  storedSize: number
+  storedOverlap: number
+  onParse: (chunkSize?: number | null, chunkOverlap?: number | null) => void
+}): ReactNode {
+  const [open, setOpen] = useState(false)
+  const [size, setSize] = useState<number | null>(null)
+  const [overlap, setOverlap] = useState<number | null>(null)
+
+  const submit = () => {
+    setOpen(false)
+    onParse(size, overlap)
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      trigger="click"
+      title="重新解析"
+      content={
+        <Flex vertical gap={8} style={{ width: 240 }}>
+          <label style={{ fontSize: 12 }}>
+            切块大小（chunk size，当前 {storedSize}）
+            <InputNumber
+              min={200}
+              max={8000}
+              precision={0}
+              value={size ?? undefined}
+              placeholder={`沿用 ${storedSize}`}
+              onChange={(v) => setSize(typeof v === 'number' ? v : null)}
+              style={{ width: '100%', marginTop: 2 }}
+            />
+          </label>
+          <label style={{ fontSize: 12 }}>
+            重叠（overlap，当前 {storedOverlap}）
+            <InputNumber
+              min={0}
+              max={2000}
+              precision={0}
+              value={overlap ?? undefined}
+              placeholder={`沿用 ${storedOverlap}`}
+              onChange={(v) => setOverlap(typeof v === 'number' ? v : null)}
+              style={{ width: '100%', marginTop: 2 }}
+            />
+          </label>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            重新解析将替换该文档全部索引块；留空沿用当前参数
+          </Typography.Text>
+          <Button type="primary" size="small" loading={loading} onClick={submit}>
+            重新解析
+          </Button>
+        </Flex>
+      }
+    >
+      <Tooltip title={disabled ? '解析中' : '重新解析（可调切块参数）'}>
+        <Button type="link" size="small" icon={<Play size={14} />} disabled={disabled} />
+      </Tooltip>
+    </Popover>
   )
 }
 

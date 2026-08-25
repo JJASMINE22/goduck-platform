@@ -430,11 +430,24 @@ class KnowledgeBaseCreate(BaseModel):
     name: str = Field(min_length=1, description="唯一知识库名")
     description: Optional[str] = None
     creator: str = Field(min_length=1)
+    dims: Optional[int] = Field(
+        default=None, ge=2, le=4096,
+        description="库级嵌入维度（ES dense_vector 上限 4096）；缺省=全局 EMBEDDING_DIMS",
+    )
 
 
 class KnowledgeBaseUpdate(BaseModel):
     name: str = Field(min_length=1)
     description: Optional[str] = None
+    dims: Optional[int] = Field(
+        default=None, ge=2, le=4096,
+        description="新维度；与库当前维度不同时触发守卫（见 force）",
+    )
+    force: bool = Field(
+        default=False,
+        description="维度变更确认位：库内有文档时须 true——索引块清空、全部文档重置为"
+                    "待解析（原始文件保留，需手动重新解析），不删除任何文档数据",
+    )
 
 
 class KnowledgeBaseOut(BaseModel):
@@ -460,9 +473,17 @@ class KbDocumentOut(BaseModel):
     status: str
     chunk_count: Optional[int] = None
     progress: Optional[int] = None
+    chunk_size: Optional[int] = None
+    chunk_overlap: Optional[int] = None
     error: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+
+class KbParseRequest(BaseModel):
+    """手动解析触发参数：均缺省时用全局默认（kb_chunk_size/kb_chunk_overlap）。"""
+    chunk_size: Optional[int] = Field(default=None, ge=200, le=8000)
+    chunk_overlap: Optional[int] = Field(default=None, ge=0, le=2000)
 
 
 class KbSearchResult(BaseModel):

@@ -1,13 +1,15 @@
 """知识库管理接口（plan §5.8）。
 
-- POST/GET/PUT/DELETE /knowledge-bases
-- POST /knowledge-bases/{id}/documents (multipart) → 注册 + 后台入库
+- POST/GET/PUT/DELETE /knowledge-bases（创建/更新可带 dims；维度变更守卫见 service）
+- POST /knowledge-bases/{id}/documents (multipart) → 仅注册（pending=待解析）
+- POST /knowledge-bases/{id}/documents/{doc_id}/parse → 手动解析（切块参数随请求）
 - GET  /knowledge-bases/{id}/documents
 - DELETE /knowledge-bases/{id}/documents/{doc_id}
-- POST /knowledge-bases/{id}/documents/{doc_id}/reindex
+- POST /knowledge-bases/{id}/documents/{doc_id}/reindex（沿用已存参数重建）
 - GET  /knowledge-bases/{id}/search?q=&k= （管理面调试）
 
-kb_enabled=false 时全部返回 503。仅收 pdf/docx。
+kb_enabled=false 时全部返回 503。仅收 pdf/docx。上传不自动解析（延迟手动触发），
+故要求 KB_STORE_MINIO=true（解析时从留底取字节）。
 """
 from __future__ import annotations
 
@@ -19,12 +21,17 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from app.deps import get_appstate
 from app.models.schemas import (
     KbDocumentOut,
+    KbParseRequest,
     KbSearchResult,
     KnowledgeBaseCreate,
     KnowledgeBaseOut,
     KnowledgeBaseUpdate,
 )
-from app.services.knowledge_service import DimensionMismatchError
+from app.services.knowledge_service import (
+    DimensionMismatchError,
+    DocumentBusyError,
+    KbDocsExistError,
+)
 from app.services.mime_utils import detect_mime, is_docx, is_pdf
 
 logger = logging.getLogger(__name__)
@@ -54,7 +61,9 @@ async def list_kbs(request: Request):
 async def create_kb(body: KnowledgeBaseCreate, request: Request):
     svc = _service(request)
     try:
-        row = await svc.create_kb(body.name, body.description, body.creator)
+        row = await svc.create_kb(
+            body.name, body.description, body.creator, dims=body.dims
+        )
     except FileExistsError:
         raise HTTPException(status_code=409, detail=f"知识库名 '{body.name}' 已存在")
     return row
@@ -64,11 +73,19 @@ async def create_kb(body: KnowledgeBaseCreate, request: Request):
 async def update_kb(kb_id: uuid.UUID, body: KnowledgeBaseUpdate, request: Request):
     svc = _service(request)
     try:
-        row = await svc.update_kb(kb_id, body.name, body.description)
+        row = await svc.update_kb(
+            kb_id, body.name, body.description, dims=body.dims, force=body.force
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="knowledge base not found")
     except FileExistsError:
         raise HTTPException(status_code=409, detail=f"知识库名 '{body.name}' 已被占用")
+    except KbDocsExistError as e:
+        # 维度变更守卫：前端据此弹二次确认（确认后 force=true 重试）
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(e), "doc_count": e.doc_count, "needs_force": True},
+        )
     return row
 
 
@@ -95,9 +112,18 @@ async def upload_document(
     request: Request,
     file: UploadFile = File(...),
 ):
-    """注册文档并投递后台入库。前端只传文件流，mime 服务端魔数判定。"""
+    """注册文档（仅上传留底，不解析）：前端只传文件流，mime 服务端魔数判定。
+
+    解析由用户显式触发（POST .../parse，可带切块参数）；故要求 KB_STORE_MINIO=true
+    （延迟解析依赖留底取字节）。
+    """
     st = _appstate(request)
     svc = st.knowledge_service
+    if not st.settings.kb_store_minio:
+        raise HTTPException(
+            status_code=400,
+            detail="手动解析模式要求 KB_STORE_MINIO=true（上传即留底）；当前配置不支持",
+        )
 
     raw = await file.read()
     max_bytes = st.settings.attachment_max_size_mb * 1024 * 1024
@@ -111,7 +137,7 @@ async def upload_document(
     if not (is_pdf(real_mime) or is_docx(real_mime)):
         raise HTTPException(status_code=415, detail=f"知识库仅支持 pdf/docx，收到 {real_mime}")
 
-    # 注册（MinIO 先行 → PG pending）；随后 fire-and-forget 入库
+    # 注册（MinIO 先行 → PG pending=待解析）；解析由用户手动触发
     try:
         doc = await svc.register_document(
             kb_id=kb_id,
@@ -130,10 +156,34 @@ async def upload_document(
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
+    return doc
 
-    # KB_STORE_MINIO=false → 透传内存字节；否则 ingest 从 MinIO 取
-    raw_for_ingest = raw if not st.settings.kb_store_minio else None
-    st.ingest_pool.submit(kb_id, doc["id"], raw_for_ingest)
+
+@router.post("/{kb_id}/documents/{doc_id}/parse", response_model=KbDocumentOut)
+async def parse_document(
+    kb_id: uuid.UUID,
+    doc_id: uuid.UUID,
+    body: KbParseRequest,
+    request: Request,
+):
+    """手动解析：校验 + 持久化切块参数 → 后台入库（幂等，重建场景同样适用）。
+
+    参数缺省时沿用文档已存参数（首次解析则用全局默认）。
+    """
+    st = _appstate(request)
+    svc = st.knowledge_service
+    try:
+        doc = await svc.parse_document(
+            kb_id, doc_id,
+            chunk_size=body.chunk_size, chunk_overlap=body.chunk_overlap,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="document not found")
+    except DocumentBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    st.ingest_pool.submit(kb_id, doc_id, None)
     return doc
 
 
@@ -149,7 +199,7 @@ async def delete_document(kb_id: uuid.UUID, doc_id: uuid.UUID, request: Request)
 
 @router.post("/{kb_id}/documents/{doc_id}/reindex", response_model=KbDocumentOut)
 async def reindex_document(kb_id: uuid.UUID, doc_id: uuid.UUID, request: Request):
-    """重建文档索引（需 MinIO 留底）：删旧 chunk 后重新入库。"""
+    """重建文档索引（沿用已存解析参数；需 MinIO 留底）：删旧 chunk 后重新入库。"""
     st = _appstate(request)
     svc = st.knowledge_service
     try:

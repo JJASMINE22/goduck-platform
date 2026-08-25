@@ -103,7 +103,7 @@ class AppState:
         self.content_composer = None
         self.stream_tracker = StreamTracker()
         # knowledge base (RAG) — None when kb_enabled=false (lazy, 503-gated)
-        self.embeddings = None
+        # embeddings 由 vector_factory 按 kb.dims 内部构建+缓存，不再单例持有
         self.vector_factory = None
         self.knowledge_service = None
         self.ingest_pool = None

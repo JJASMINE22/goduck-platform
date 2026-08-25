@@ -65,14 +65,16 @@ ES_USER = get_env("ES_USER", "")
 ES_PASSWORD = get_env("ES_PASSWORD", "")
 
 # ---- 向量化（TEI OpenAI 兼容端点）----
-# 与 backend 读同一份值：EMBEDDING_DIMS 两边必须严格一致（ingest/query 维度对称）。
+# 与 backend 读同一份值：EMBEDDING_DIMS 为「默认/兜底维度」——各库实际维度以
+# ES index mapping 真值为准（kb 建库时可自定义 dims，见 get_dims 探测），
+# ingest(backend 按 kb.dims) 与 query(此处按 mapping 分组) 维度对称。
 # 本地 TEI：model 任意（TEI 忽略）、check_embedding_ctx_length 必须 False（避免 tiktoken 报错）。
 EMBEDDING_BASE_URL = get_env("EMBEDDING_BASE_URL", "http://localhost:8082/v1")
 EMBEDDING_API_KEY = get_env("EMBEDDING_API_KEY", "-")
 EMBEDDING_MODEL = get_env("EMBEDDING_MODEL", "text-embeddings-inference")
 EMBEDDING_CHECK_CTX_LENGTH = get_env("EMBEDDING_CHECK_CTX_LENGTH", "false").lower() == "true"
 _dims_raw = get_env("EMBEDDING_DIMS", "").strip()
-EMBEDDING_DIMS = int(_dims_raw) if _dims_raw else None
+EMBEDDING_DIMS = int(_dims_raw) if _dims_raw else None  # 默认/兜底维度（None=模型原生）
 EMBEDDING_TIMEOUT = int(get_env("EMBEDDING_TIMEOUT", "30"))
 EMBEDDING_BATCH_SIZE = int(get_env("EMBEDDING_BATCH_SIZE", "24"))
 

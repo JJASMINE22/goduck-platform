@@ -224,6 +224,19 @@ export function ChatPage(): ReactNode {
     if (retainedRef.current && !forcedLoadRef.current) return
     // 显式失效：只接受失效之后完成的新快照（refetch 失败时 dataUpdatedAt 不变）
     if (forcedLoadRef.current && historyQ.dataUpdatedAt <= forcedAtRef.current) return
+    // 流式进行中禁止灌入：服务端快照在节点完成前不含 token 级部分输出，
+    // 此时 loadHistory 会抹掉正在增长的流式气泡并把 status 强置回 idle
+    if (useChatStore.getState().status === 'streaming') return
+    // 回撤兜底快照只对"回撤发起时刻之前"的本地状态负责：若用户已编辑重发
+    // （forcedAt 之后又出现新消息），迟到的快照会整体抹掉新回合——正是
+    // "回撤后重发、query 不在会话末尾"的诱因。放弃本次兜底（乐观删除已生效）。
+    if (forcedLoadRef.current) {
+      const st = useChatStore.getState()
+      if (st.messages.some((m) => m.createdAt > forcedAtRef.current)) {
+        forcedLoadRef.current = false
+        return
+      }
+    }
     if (!historyQ.data || historyQ.isFetching) return
     if (historyQ.data.length === 0 && useChatStore.getState().messages.length > 0) return
     // 消息 + 工具卡一次重建：AI 消息的 tool_calls 与 ToolMessage 的结果配对还原，

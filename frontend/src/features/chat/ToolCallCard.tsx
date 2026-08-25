@@ -119,7 +119,12 @@ export function ToolCallCard({ entry }: { entry: ToolCallEntry }): ReactNode {
   return (
     <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
       <div className="chat-avatar" style={{ background: 'var(--color-role-tool)', width: 28, height: 28 }}>
-        {entry.hasResult ? <Check size={14} /> : <Wrench size={14} className="executing" />}
+        {entry.hasResult ? (
+          <Check size={14} />
+        ) : (
+          /* 已中断：静态图标（不脉动）；执行中：脉动 */
+          <Wrench size={14} className={entry.abandoned ? undefined : 'executing'} />
+        )}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <Collapse
@@ -140,6 +145,8 @@ export function ToolCallCard({ entry }: { entry: ToolCallEntry }): ReactNode {
                   ) : null}
                   {entry.hasResult ? (
                     <Tag color="green" style={{ marginInlineStart: 4 }}>已返回</Tag>
+                  ) : entry.abandoned ? (
+                    <Tag style={{ marginInlineStart: 4 }}>已中断</Tag>
                   ) : (
                     <Tag color="processing" style={{ marginInlineStart: 4 }}>执行中</Tag>
                   )}

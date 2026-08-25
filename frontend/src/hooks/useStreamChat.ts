@@ -126,9 +126,11 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
     abortRef.current?.abort()
     const store = useChatStore.getState()
     // 中止后固化仍在流式的消息（转 Markdown 渲染，而非停留在纯文本流式态），再回 idle；
-    // 同时拆除本回合的任务清单浮窗——中止后计划已死，悬挂只会误导（旧清单累计的诱因之一）
+    // 同时拆除本回合的任务清单浮窗——中止后计划已死，悬挂只会误导（旧清单累计的诱因之一）；
+    // 时间线末尾落「用户已手动中断」提示条目（agent 输出气泡下方，见 MessageList）
     store.finalizeStreaming()
     store.clearTodos()
+    store.markTurnInterrupted()
     store.setStatus('idle')
   }, [])
 

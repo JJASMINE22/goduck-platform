@@ -123,7 +123,9 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
     name          VARCHAR NOT NULL UNIQUE,
     description   TEXT,
     es_index_name VARCHAR NOT NULL,          -- 'kb_<uuid>'，创建时写定
-    dims          INT,                        -- 建库时记录全局 EMBEDDING_DIMS（仅漂移检测，非取值来源）
+    dims          INT,                        -- 库级嵌入维度：创建时可传（默认=全局 EMBEDDING_DIMS），
+                                               -- 是入库/检索嵌入客户端的取值来源（修改=破坏性变更，见
+                                               -- KnowledgeService.update_kb 守卫）
     status        VARCHAR NOT NULL DEFAULT 'active',
     creator       VARCHAR NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -141,6 +143,8 @@ CREATE TABLE IF NOT EXISTS kb_document (
     status       VARCHAR NOT NULL DEFAULT 'pending',  -- pending|indexing|indexed|failed
     chunk_count  INT,
     progress     INT,                                  -- 入库进度 0..100（indexing 期间随批推进；indexed=100）
+    chunk_size   INT,                                  -- 解析切块参数（生效值，解析触发时写入；NULL=未解析/历史行→用全局默认）
+    chunk_overlap INT,                                 -- 同上
     error        TEXT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -158,6 +162,8 @@ _MIGRATIONS = [
     "ALTER TABLE model ADD COLUMN IF NOT EXISTS top_p REAL",
     "ALTER TABLE model ADD COLUMN IF NOT EXISTS enable_thinking BOOLEAN NOT NULL DEFAULT false",
     "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS progress INT",
+    "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS chunk_size INT",
+    "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS chunk_overlap INT",
 ]
 
 
@@ -799,7 +805,8 @@ _KB_COLUMNS = (
 _KB_COLUMNS_QUALIFIED = ", ".join(f"kb.{c}" for c in _KB_COLUMNS.split(", "))
 _KBDOC_COLUMNS = (
     "id, kb_id, bucket_key, filename, mime, size, page_count, "
-    "status, chunk_count, progress, error, created_at, updated_at"
+    "status, chunk_count, progress, chunk_size, chunk_overlap, error, "
+    "created_at, updated_at"
 )
 
 
@@ -893,14 +900,17 @@ async def update_kb(
     kb_id: uuid.UUID,
     name: str,
     description: Optional[str],
+    dims: Optional[int] = None,
 ) -> Optional[dict]:
+    """dims 用 COALESCE：传 None 保持原值（服务层守卫后才会传入新维度）。"""
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"UPDATE knowledge_base SET name = %s, "
-                f"description = COALESCE(%s, description), updated_at = now() "
+                f"description = COALESCE(%s, description), "
+                f"dims = COALESCE(%s, dims), updated_at = now() "
                 f"WHERE id = %s RETURNING {_KB_COLUMNS}",
-                (name, description, kb_id),
+                (name, description, dims, kb_id),
             )
             return await cur.fetchone()
 
@@ -1015,6 +1025,42 @@ async def update_kb_document_status(
                 (status, chunk_count, error, page_count, progress, doc_id),
             )
             return await cur.fetchone()
+
+
+async def update_kb_document_parse_params(
+    pool: AsyncConnectionPool,
+    doc_id: uuid.UUID,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> Optional[dict]:
+    """解析触发时持久化切块参数（实际生效值，reindex 沿用 → 重建可复现）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"UPDATE kb_document SET chunk_size = %s, chunk_overlap = %s, "
+                f"updated_at = now() WHERE id = %s RETURNING {_KBDOC_COLUMNS}",
+                (chunk_size, chunk_overlap, doc_id),
+            )
+            return await cur.fetchone()
+
+
+async def reset_kb_documents(
+    pool: AsyncConnectionPool, kb_id: uuid.UUID
+) -> int:
+    """维度变更后重置该库全部文档状态卡：status→pending、清 chunk_count/progress/error。
+
+    只 UPDATE 不删除：PG 行与 MinIO 原始留底全部保留，用户可按新维度手动重新解析
+    （保证后续可用）。ES 索引已由调用方整体 drop（旧维度向量不可复用）。返回受影响行数。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE kb_document SET status = 'pending', chunk_count = NULL, "
+                "progress = NULL, error = NULL, updated_at = now() "
+                "WHERE kb_id = %s",
+                (kb_id,),
+            )
+            return cur.rowcount
 
 
 async def delete_kb_document(pool: AsyncConnectionPool, doc_id: uuid.UUID) -> bool:
