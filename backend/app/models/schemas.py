@@ -19,12 +19,21 @@ class AgentCreate(BaseModel):
     description: Optional[str] = None
     config: dict[str, Any] = Field(..., description="Full AgentConfig tree")
     model_id: uuid.UUID = Field(..., description="引用已注册模型 id（model 表主键，必填）")
+    vision_model_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="下挂视觉模型 id（基座无视觉时用于图像预消费描述）。"
+        "基座模型 supports_vision=true 时禁止设置（保存时 400）。",
+    )
     creator: str = Field(min_length=1)
 
 
 class AgentUpdate(BaseModel):
     config: dict[str, Any]
     model_id: uuid.UUID = Field(..., description="引用已注册模型 id（可更换模型）")
+    vision_model_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="下挂视觉模型 id；null=解除下挂（基座自带视觉时同样禁止设置）",
+    )
     name: Optional[str] = Field(
         default=None,
         min_length=1,
@@ -47,6 +56,11 @@ class AgentOut(BaseModel):
     id: uuid.UUID
     name: str
     description: Optional[str]
+    model_id: Optional[uuid.UUID] = None
+    # 绑定模型名称（LEFT JOIN model 表；create/update 的 RETURNING 无法跨表，为 None）
+    model_name: Optional[str] = None
+    vision_model_id: Optional[uuid.UUID] = None
+    vision_model_name: Optional[str] = None
     status: str
     creator: str
     updater: Optional[str]
@@ -105,20 +119,6 @@ class SessionOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     agent_name: Optional[str] = None
-
-
-class AgentOut(BaseModel):
-    id: uuid.UUID
-    name: str
-    description: Optional[str]
-    model_id: Optional[uuid.UUID] = None
-    # 绑定模型名称（LEFT JOIN model 表；create/update 的 RETURNING 无法跨表，为 None）
-    model_name: Optional[str] = None
-    status: str
-    creator: str
-    updater: Optional[str]
-    created_at: datetime
-    updated_at: datetime
 
 
 class MessageOut(BaseModel):
@@ -382,7 +382,11 @@ class ModelCreate(BaseModel):
     supports_vision: bool = Field(default=False)
     temperature: Optional[float] = Field(default=None, ge=0, le=2, description="可空=None 用默认")
     top_p: Optional[float] = Field(default=None, ge=0, le=1, description="可空=None 用默认")
-    enable_thinking: bool = Field(default=False, description="思考模式开关（仅思考模型有效）")
+    enable_thinking: Optional[bool] = Field(
+        default=None,
+        description="思考模式三态：null=不注入（用 provider 默认）/ true=显式开启 / "
+        "false=显式关闭。注：GLM V 系列等服务端默认开启思考，关闭须显式 false。",
+    )
     enabled: bool = True
 
 
@@ -397,7 +401,7 @@ class ModelUpdate(BaseModel):
     supports_vision: bool = False
     temperature: Optional[float] = Field(default=None, ge=0, le=2)
     top_p: Optional[float] = Field(default=None, ge=0, le=1)
-    enable_thinking: bool = False
+    enable_thinking: Optional[bool] = None
     enabled: bool = True
 
 
@@ -410,7 +414,7 @@ class ModelOut(BaseModel):
     supports_vision: bool
     temperature: Optional[float] = None
     top_p: Optional[float] = None
-    enable_thinking: bool
+    enable_thinking: Optional[bool] = None
     enabled: bool
     created_at: datetime
     updated_at: datetime

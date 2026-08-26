@@ -16,6 +16,8 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
+from app.streaming.events import SSEEvent
+
 from app.core.schema_utils import AgentConfig
 from app.deps import SimpleUser, get_appstate
 from app.models import db as dbmod
@@ -26,7 +28,12 @@ from app.models.schemas import (
     ShellCapability,
 )
 from app.services.hitl_resolver import HITLResolver
-from app.services.message_content import MessageContentError, build_message_content
+from app.services.message_content import (
+    BuiltMessage,
+    MessageContentError,
+    assemble_message_content_stream,
+    validate_message_content,
+)
 
 router = APIRouter(prefix="/sessions", tags=["流式对话"])
 
@@ -73,45 +80,59 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
     config = _config_for(session)
     agent = await _build_agent_or_409(st, session["agent_id"])
 
-    # 附件校验 + KB 锚点注入 + content 组装（plan §6.5）—— 与语音 WS 共享同一
-    # 组装器，行为完全一致（能力门控 422 / 附件归属 403 / KB 不存在 404 / 503）。
+    # 附件/KB 校验（流外，plan §6.5）—— 与语音 WS 共享同一校验器：能力门控 422 /
+    # 附件归属 403 / KB 不存在 404 / 503 以 HTTP 状态码尽早暴露；组装（含图像
+    # 预消费与 status 事件）移入 event_gen，withdraw 竞态由 tracker 全程覆盖。
     try:
-        built = await build_message_content(
+        await validate_message_content(
             st,
             session,
-            user_query=body.content,
             attachments=body.attachments,
             knowledge_base_ids=body.knowledge_base_ids,
         )
     except MessageContentError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
-    content, upload_ids = built.content, built.upload_ids
 
     adapter = st.stream_adapter
 
     async def event_gen():
         thread_id = session["thread_id"]
-        # Withdraw race guard (plan R3): mark this thread active for the whole
-        # generator lifetime so /withdraw refuses with 409 until the stream
-        # truly finishes (finally runs even on client abort).
+        # Withdraw race guard (plan R3)：从预消费（附件解析）开始即占用，
+        # 解析期间的 withdraw 同样被 409 拒绝。
         st.stream_tracker.acquire(thread_id)
-        gen = adapter.stream_message(
-            agent,
-            content,
-            config,
-            body.rubric,
-            upload_ids=upload_ids,
-            raw_content=body.content,
-        )
         try:
-            async for ev in gen:
-                yield ev.to_sse()
+            built: BuiltMessage | None = None
+            async for item in assemble_message_content_stream(
+                st,
+                session,
+                user_query=body.content,
+                attachments=body.attachments,
+                knowledge_base_ids=body.knowledge_base_ids,
+            ):
+                if isinstance(item, SSEEvent):
+                    yield item.to_sse()  # status: 正在解析附件… / 已跳过…
+                else:
+                    built = item
+            assert built is not None  # assemble 生成器必以 BuiltMessage 收尾
+
+            gen = adapter.stream_message(
+                agent,
+                built.content,
+                config,
+                body.rubric,
+                upload_ids=built.upload_ids,
+                raw_content=body.content,
+            )
+            try:
+                async for ev in gen:
+                    yield ev.to_sse()
+            finally:
+                # 客户端中止（abort fetch → FastAPI 取消本生成器）：确定性关闭 adapter
+                # 生成器链，避免悬挂在 yield 处等 GC 终结器 athrow（与语音 WS 隧道同修）
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await gen.aclose()
         finally:
             st.stream_tracker.release(thread_id)
-            # 客户端中止（abort fetch → FastAPI 取消本生成器）：确定性关闭 adapter
-            # 生成器链，避免悬挂在 yield 处等 GC 终结器 athrow（与语音 WS 隧道同修）
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await gen.aclose()
             await svc.touch(session["id"])
 
     return EventSourceResponse(event_gen())

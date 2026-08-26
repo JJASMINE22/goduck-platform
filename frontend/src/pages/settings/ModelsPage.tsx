@@ -28,7 +28,7 @@ interface FormValues {
   supports_vision: boolean
   temperature?: number | null
   top_p?: number | null
-  enable_thinking: boolean
+  enable_thinking: boolean | null
   enabled: boolean
 }
 
@@ -41,7 +41,7 @@ const emptyForm: FormValues = {
   supports_vision: false,
   temperature: null,
   top_p: null,
-  enable_thinking: false,
+  enable_thinking: null,
   enabled: true,
 }
 
@@ -173,8 +173,15 @@ export function ModelsPage(): ReactNode {
       title: '思考',
       dataIndex: 'enable_thinking',
       key: 'enable_thinking',
-      width: 70,
-      render: (v: boolean) => (v ? <Tag color="purple">开</Tag> : <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>),
+      width: 90,
+      render: (v: boolean | null) =>
+        v === true ? (
+          <Tag color="purple">开</Tag>
+        ) : v === false ? (
+          <Tag color="purple">关</Tag>
+        ) : (
+          <span style={{ color: 'var(--color-text-tertiary)' }}>默认</span>
+        ),
     },
     {
       title: '状态',
@@ -310,13 +317,24 @@ export function ModelsPage(): ReactNode {
           <Form.Item
             name="enable_thinking"
             label="思考模式"
-            valuePropName="checked"
-            extra="开启后注入 thinking 请求体（仅思考模型有效）"
+            extra="三态：默认=不注入（服务端默认）；开启/关闭显式注入 thinking 请求体。注：GLM V 系列等服务端默认开启思考，需关闭请选「显式关闭」；被用作视觉下挂描述器时系统将强制关闭"
           >
-            <Switch />
+            <Select
+              style={{ width: 200 }}
+              options={[
+                { value: null, label: '默认（不注入）' },
+                { value: true, label: '显式开启' },
+                { value: false, label: '显式关闭' },
+              ]}
+            />
           </Form.Item>
           <Flex gap={24}>
-            <Form.Item name="supports_vision" label="多模态（视觉）" valuePropName="checked">
+            <Form.Item
+              name="supports_vision"
+              label="多模态（视觉）"
+              valuePropName="checked"
+              extra="开启后可直传图像，或被下挂为视觉描述器（下挂须将思考模式设为「显式关闭」——描述任务开思考徒增延迟与成本）"
+            >
               <Switch />
             </Form.Item>
             <Form.Item name="enabled" label="启用" valuePropName="checked">

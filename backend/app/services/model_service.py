@@ -35,7 +35,7 @@ def _ensure_buildable(
     *,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
-    enable_thinking: bool = False,
+    enable_thinking: Optional[bool] = None,
 ) -> None:
     """Construction-level pre-check (no network). Guarantees persisted ⟹ instantiable.
 
@@ -69,7 +69,7 @@ class ModelService:
         supports_vision: bool,
         temperature: Optional[float],
         top_p: Optional[float],
-        enable_thinking: bool,
+        enable_thinking: Optional[bool],
         enabled: bool,
     ) -> dict:
         _ensure_buildable(
@@ -104,7 +104,7 @@ class ModelService:
         supports_vision: bool,
         temperature: Optional[float],
         top_p: Optional[float],
-        enable_thinking: bool,
+        enable_thinking: Optional[bool],
         enabled: bool,
     ) -> dict:
         existing = await dbmod.get_model_public(self.pool, model_id)
@@ -145,5 +145,10 @@ class ModelService:
             raise ModelInUseError(referencing)  # router maps -> 409
         await dbmod.delete_model(self.pool, model_id)
 
-    async def list_models(self) -> list[dict]:
-        return await dbmod.list_models(self.pool)
+    async def list_models(
+        self,
+        supports_vision: Optional[bool] = None,
+        enable_thinking: Optional[bool] = None,
+    ) -> list[dict]:
+        """全部（或按能力/思考配置过滤）模型。api_key 永不返回。"""
+        return await dbmod.list_models(self.pool, supports_vision, enable_thinking)

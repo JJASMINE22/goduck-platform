@@ -49,6 +49,7 @@ export function MessageList({
   const toolCalls = useChatStore((s) => s.toolCalls)
   const fileChanges = useChatStore((s) => s.fileChanges)
   const status = useChatStore((s) => s.status)
+  const parseStatus = useChatStore((s) => s.parseStatus)
   const streaming = status === 'streaming'
 
   // 最近一条用户消息 id：流式生成中仅它可"停止并回撤"，其余历史回合禁用
@@ -97,7 +98,7 @@ export function MessageList({
           />
         )
       })}
-      {streaming ? <TypingIndicator /> : null}
+      {streaming ? <TypingIndicator label={parseStatus ?? undefined} /> : null}
     </Flex>
   )
 }
@@ -210,14 +211,17 @@ function ThinkingBlock({ msg }: { msg: ChatMessage }): ReactNode {
   )
 }
 
-/** 流式生成中：三个波动点（裸点呈现，不再包气泡框，也不显示头像） */
-function TypingIndicator(): ReactNode {
+/** 流式生成中：三个波动点 + 可选进度文案（附件解析徽标，裸点呈现，不包气泡框/头像） */
+function TypingIndicator({ label }: { label?: string }): ReactNode {
   return (
     <Flex justify="flex-start" align="flex-start" className="msg-in">
       <div className="typing-dots">
         <span className="typing-dot" />
         <span className="typing-dot" />
         <span className="typing-dot" />
+        {label ? (
+          <span style={{ marginLeft: 6, fontSize: 12, color: 'var(--color-text-tertiary)' }}>{label}</span>
+        ) : null}
       </div>
     </Flex>
   )

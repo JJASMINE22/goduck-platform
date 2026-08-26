@@ -9,11 +9,12 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.deps import get_appstate
 from app.models.schemas import ModelCreate, ModelOut, ModelTestRequest, ModelUpdate
 from app.services.model_service import ModelInUseError, ModelService
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,19 @@ def _invalidate_agents(st) -> None:
 
 
 @router.get("", response_model=list[ModelOut])
-async def list_models(request: Request):
+async def list_models(
+    request: Request,
+    supports_vision: Optional[bool] = Query(
+        default=None,
+        description="按视觉能力过滤（true=仅已启用的视觉模型，供视觉下挂选择器消费）",
+    ),
+    enable_thinking: Optional[bool] = Query(
+        default=None,
+        description="按思考配置三态精确过滤（false=显式关闭；视觉下挂候选组合使用）",
+    ),
+):
     """List registered models (api_key never returned)."""
-    return await _service(request).list_models()
+    return await _service(request).list_models(supports_vision, enable_thinking)
 
 
 @router.post("", response_model=ModelOut)

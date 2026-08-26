@@ -28,6 +28,28 @@ _ALLOWED_MIME = {
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _PDF_MIME = "application/pdf"
 
+# 白名单内"文档类" mime → 扩展名（image/* 之外的可上传类型）。
+# allowed_file_extensions() 的单一来源：新增文档类型只需同时加 _ALLOWED_MIME
+# 与本表，上传门/能力查询/前端 accept 三处自动跟随。
+_FILE_EXT_BY_MIME = {
+    _DOCX_MIME: "docx",
+    _PDF_MIME: "pdf",
+}
+
+
+def allowed_file_extensions() -> list[str]:
+    """白名单派生的可上传文档扩展名（如 ['docx', 'pdf']）。
+
+    供 attachment-capability 下发前端渲染 accept；与 is_allowed_mime 同源，
+    消灭各处硬编码的文档类型清单。
+    """
+    return sorted(ext for mime, ext in _FILE_EXT_BY_MIME.items() if mime in _ALLOWED_MIME)
+
+
+def file_ext_of(mime: str) -> Optional[str]:
+    """文档 mime → markitdown 扩展名（StreamInfo 分派用）；非文档返回 None。"""
+    return _FILE_EXT_BY_MIME.get(mime)
+
 
 def detect_mime(raw: bytes, filename: Optional[str], client_mime: Optional[str]) -> str:
     """三重优先级判定真实 MIME：魔数 > 扩展名 > 客户端。"""

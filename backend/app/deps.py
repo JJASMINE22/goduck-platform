@@ -101,6 +101,7 @@ class AppState:
         self.minio_storage = None
         self.model_store = None
         self.content_composer = None
+        self.vision_describer = None
         self.stream_tracker = StreamTracker()
         # knowledge base (RAG) — None when kb_enabled=false (lazy, 503-gated)
         # embeddings 由 vector_factory 按 kb.dims 内部构建+缓存，不再单例持有

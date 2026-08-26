@@ -48,33 +48,35 @@ CREATE TABLE IF NOT EXISTS model (
     supports_vision BOOLEAN NOT NULL DEFAULT false,
     temperature     REAL,                                  -- 可空：None=用 provider 默认
     top_p           REAL,                                  -- 可空：None=用 provider 默认
-    enable_thinking BOOLEAN NOT NULL DEFAULT false,        -- 思考模式开关（GLM: 注入 thinking={"type":"enabled"}）
+    enable_thinking BOOLEAN,                               -- 三态：NULL=不注入(provider默认)/true=enabled/false=disabled
     enabled         BOOLEAN NOT NULL DEFAULT true,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS agent (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name         VARCHAR NOT NULL UNIQUE,
-    description  TEXT,
-    config_json  JSONB   NOT NULL,
-    model_id     UUID,
-    status       VARCHAR NOT NULL DEFAULT 'active',
-    creator      VARCHAR NOT NULL,
-    updater      VARCHAR,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            VARCHAR NOT NULL UNIQUE,
+    description     TEXT,
+    config_json     JSONB   NOT NULL,
+    model_id        UUID,
+    vision_model_id UUID,                                  -- 下挂视觉模型（基座无视觉时的图像预消费）
+    status          VARCHAR NOT NULL DEFAULT 'active',
+    creator         VARCHAR NOT NULL,
+    updater         VARCHAR,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS agent_config_history (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_id     UUID NOT NULL REFERENCES agent(id) ON DELETE CASCADE,
-    config_json  JSONB   NOT NULL,
-    model_id     UUID,
-    action       VARCHAR NOT NULL,
-    operator     VARCHAR NOT NULL,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id        UUID NOT NULL REFERENCES agent(id) ON DELETE CASCADE,
+    config_json     JSONB   NOT NULL,
+    model_id        UUID,
+    vision_model_id UUID,
+    action          VARCHAR NOT NULL,
+    operator        VARCHAR NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_ach_agent ON agent_config_history(agent_id, created_at DESC);
 
@@ -111,6 +113,10 @@ CREATE TABLE IF NOT EXISTS upload (
     size          BIGINT NOT NULL,
     page_count    INT,
     preview       TEXT,
+    -- 图像描述缓存（vision_model 预消费结果；固定预 prompt 模板 ⇒ 同图跨轮复用）
+    vision_desc        TEXT,
+    vision_desc_model  TEXT,
+    vision_desc_at     TIMESTAMPTZ,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_upload_session ON upload(session_id);
@@ -157,14 +163,37 @@ CREATE INDEX IF NOT EXISTS idx_kbdoc_kb ON kb_document(kb_id);
 # safe to run repeatedly.
 _MIGRATIONS = [
     "ALTER TABLE agent ADD COLUMN IF NOT EXISTS model_id UUID",
+    "ALTER TABLE agent ADD COLUMN IF NOT EXISTS vision_model_id UUID",
     "ALTER TABLE agent_config_history ADD COLUMN IF NOT EXISTS model_id UUID",
+    "ALTER TABLE agent_config_history ADD COLUMN IF NOT EXISTS vision_model_id UUID",
     "ALTER TABLE model ADD COLUMN IF NOT EXISTS temperature REAL",
     "ALTER TABLE model ADD COLUMN IF NOT EXISTS top_p REAL",
-    "ALTER TABLE model ADD COLUMN IF NOT EXISTS enable_thinking BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE model ADD COLUMN IF NOT EXISTS enable_thinking BOOLEAN",
     "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS progress INT",
     "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS chunk_size INT",
     "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS chunk_overlap INT",
+    "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc TEXT",
+    "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc_model TEXT",
+    "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc_at TIMESTAMPTZ",
 ]
+
+# enable_thinking 三态化一次性迁移：旧 schema 为 NOT NULL 且旧语义 false=不注入；
+# 新语义需要 false=显式关闭（disabled），与旧 false 语义冲突，须把存量 false 归一为
+# NULL。以"列仍为 NOT NULL"作为仅首次执行的探测器（此后列已可空，用户显式写入的
+# false=disabled 不会被再次改写）。
+_THINKING_TRI_STATE_MIGRATION = """
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'model' AND column_name = 'enable_thinking' AND is_nullable = 'NO'
+    ) THEN
+        ALTER TABLE model ALTER COLUMN enable_thinking DROP NOT NULL;
+        UPDATE model SET enable_thinking = NULL WHERE enable_thinking = false;
+    END IF;
+END
+$$;
+"""
 
 
 async def init_business_schema(pool: AsyncConnectionPool) -> None:
@@ -179,6 +208,8 @@ async def init_business_schema(pool: AsyncConnectionPool) -> None:
                     await cur.execute(stmt)
             for stmt in _MIGRATIONS:
                 await cur.execute(stmt)
+            # DO $$..$$ 为单条语句（内部分号在 dollar-quote 内），不走 ';' 拆分
+            await cur.execute(_THINKING_TRI_STATE_MIGRATION)
     logger.info("business schema ready (model / agent / agent_config_history / session / mcp_server / upload / knowledge_base / kb_document)")
 
     # kb_document 同名拦截的并发兜底：加 UNIQUE(kb_id, filename)。先清理历史重复行
@@ -231,6 +262,7 @@ async def create_agent(
     config_json: dict,
     model_id: uuid.UUID,
     creator: str,
+    vision_model_id: Optional[uuid.UUID] = None,
 ) -> dict:
     """Atomically create agent + first history snapshot (action=create)."""
     async with pool.connection() as conn:
@@ -238,20 +270,22 @@ async def create_agent(
             async with conn.cursor(row_factory=dict_row) as cur:
                 try:
                     await cur.execute(
-                        "INSERT INTO agent (name, description, config_json, model_id, creator) "
-                        "VALUES (%s, %s, %s, %s, %s) "
-                        "RETURNING id, name, description, config_json, model_id, status, "
-                        "creator, updater, created_at, updated_at",
-                        (name, description, Json(config_json), model_id, creator),
+                        "INSERT INTO agent (name, description, config_json, model_id, "
+                        "vision_model_id, creator) "
+                        "VALUES (%s, %s, %s, %s, %s, %s) "
+                        "RETURNING id, name, description, config_json, model_id, "
+                        "vision_model_id, status, creator, updater, created_at, updated_at",
+                        (name, description, Json(config_json), model_id, vision_model_id, creator),
                     )
                 except UniqueViolation:
                     # 并发兜底：service 预检通过后、INSERT 落地前的同名竞态 → 归一 409
                     raise FileExistsError(name)
                 agent = await cur.fetchone()
                 await cur.execute(
-                    "INSERT INTO agent_config_history (agent_id, config_json, model_id, action, operator) "
-                    "VALUES (%s, %s, %s, 'create', %s)",
-                    (agent["id"], Json(config_json), model_id, creator),
+                    "INSERT INTO agent_config_history (agent_id, config_json, model_id, "
+                    "vision_model_id, action, operator) "
+                    "VALUES (%s, %s, %s, %s, 'create', %s)",
+                    (agent["id"], Json(config_json), model_id, vision_model_id, creator),
                 )
     return agent
 
@@ -264,8 +298,9 @@ async def update_agent(
     description: Optional[str],
     updater: str,
     name: Optional[str] = None,
+    vision_model_id: Optional[uuid.UUID] = None,
 ) -> Optional[dict]:
-    """Update agent config + model_id in-place + append history snapshot.
+    """Update agent config + model_id + vision_model_id in-place + append history snapshot.
 
     Side effects (same tx): archive this agent's ACTIVE sessions (soft).
     Checkpoints are kept so /history stays browsable (history is read from the
@@ -282,12 +317,13 @@ async def update_agent(
                 try:
                     await cur.execute(
                         "UPDATE agent SET config_json = %s, model_id = %s, "
+                        "vision_model_id = %s, "
                         "description = COALESCE(%s, description), "
                         "name = COALESCE(%s, name), "
                         "updater = %s, updated_at = now() WHERE id = %s "
-                        "RETURNING id, name, description, config_json, model_id, status, "
-                        "creator, updater, created_at, updated_at",
-                        (Json(config_json), model_id, description, name, updater, agent_id),
+                        "RETURNING id, name, description, config_json, model_id, "
+                        "vision_model_id, status, creator, updater, created_at, updated_at",
+                        (Json(config_json), model_id, vision_model_id, description, name, updater, agent_id),
                     )
                 except UniqueViolation:
                     # 并发改名兜底：预检无冲突后、UPDATE 落地前名字被他方占用 → 409。
@@ -298,9 +334,10 @@ async def update_agent(
                     return None
 
                 await cur.execute(
-                    "INSERT INTO agent_config_history (agent_id, config_json, model_id, action, operator) "
-                    "VALUES (%s, %s, %s, 'update', %s)",
-                    (agent_id, Json(config_json), model_id, updater),
+                    "INSERT INTO agent_config_history (agent_id, config_json, model_id, "
+                    "vision_model_id, action, operator) "
+                    "VALUES (%s, %s, %s, %s, 'update', %s)",
+                    (agent_id, Json(config_json), model_id, vision_model_id, updater),
                 )
 
                 # soft-archive this agent's active sessions (checkpoints kept)
@@ -323,11 +360,11 @@ async def get_history_snapshot(
     agent_id: uuid.UUID,
     history_id: uuid.UUID,
 ) -> Optional[dict]:
-    """Return {config_json, model_id} for a history snapshot, or None if absent."""
+    """Return {config_json, model_id, vision_model_id} for a history snapshot, or None."""
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT config_json, model_id FROM agent_config_history "
+                "SELECT config_json, model_id, vision_model_id FROM agent_config_history "
                 "WHERE id = %s AND agent_id = %s",
                 (history_id, agent_id),
             )
@@ -339,6 +376,7 @@ async def restore_agent(
     agent_id: uuid.UUID,
     history_id: uuid.UUID,
     operator: str,
+    vision_model_id: Optional[uuid.UUID] = None,
 ) -> Optional[dict]:
     """Restore an agent's config + model_id from a history snapshot (acts as update).
 
@@ -346,14 +384,17 @@ async def restore_agent(
     get_history_snapshot): history.model_id has no FK, so legacy snapshots may
     be NULL or point to a deleted model; restoring either would leave the agent
     unbuildable (sessions get archived by update_agent, but the agent itself
-    must stay runnable).
+    must stay runnable). vision_model_id 同理无 FK——由调用方裁决后经
+    ``vision_model_id`` 覆盖（快照值不可用时传 None 降级解除下挂）。
     """
     snapshot = await get_history_snapshot(pool, agent_id, history_id)
     if snapshot is None:
         return None
+    effective_vision = vision_model_id if vision_model_id is not None else snapshot.get("vision_model_id")
     return await update_agent(
         pool, agent_id, snapshot["config_json"], snapshot["model_id"],
         description=None, updater=operator,
+        vision_model_id=effective_vision,
     )
 
 
@@ -363,8 +404,10 @@ async def list_agents(pool: AsyncConnectionPool, include_archived: bool = False)
             where = "" if include_archived else " WHERE a.status != 'archived'"
             await cur.execute(
                 f"SELECT a.id, a.name, a.description, a.model_id, m.name AS model_name, "
+                f"a.vision_model_id, vm.name AS vision_model_name, "
                 f"a.status, a.creator, a.updater, a.created_at, a.updated_at "
-                f"FROM agent a LEFT JOIN model m ON m.id = a.model_id{where} "
+                f"FROM agent a LEFT JOIN model m ON m.id = a.model_id "
+                f"LEFT JOIN model vm ON vm.id = a.vision_model_id{where} "
                 f"ORDER BY a.updated_at DESC"
             )
             rows = await cur.fetchall()
@@ -376,9 +419,11 @@ async def get_agent(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> Optional[
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 "SELECT a.id, a.name, a.description, a.config_json, a.model_id, "
-                "m.name AS model_name, a.status, a.creator, a.updater, "
+                "m.name AS model_name, a.vision_model_id, vm.name AS vision_model_name, "
+                "a.status, a.creator, a.updater, "
                 "a.created_at, a.updated_at "
-                "FROM agent a LEFT JOIN model m ON m.id = a.model_id WHERE a.id = %s",
+                "FROM agent a LEFT JOIN model m ON m.id = a.model_id "
+                "LEFT JOIN model vm ON vm.id = a.vision_model_id WHERE a.id = %s",
                 (agent_id,),
             )
             row = await cur.fetchone()
@@ -749,11 +794,41 @@ async def get_upload(pool: AsyncConnectionPool, upload_id: uuid.UUID) -> Optiona
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 "SELECT id, session_id, user_id, bucket_key, filename, mime, kind, size, "
-                "page_count, preview, created_at FROM upload WHERE id = %s",
+                "page_count, preview, vision_desc, vision_desc_model, vision_desc_at, "
+                "created_at FROM upload WHERE id = %s",
                 (upload_id,),
             )
             row = await cur.fetchone()
     return row
+
+
+async def get_upload_vision_desc(
+    pool: AsyncConnectionPool, upload_id: uuid.UUID
+) -> Optional[str]:
+    """读取图像描述缓存（仅 desc 文本；不存在/未解析返回 None）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT vision_desc FROM upload WHERE id = %s", (upload_id,)
+            )
+            row = await cur.fetchone()
+    return row[0] if row else None
+
+
+async def set_upload_vision_desc(
+    pool: AsyncConnectionPool,
+    upload_id: uuid.UUID,
+    desc: str,
+    model_label: str,
+) -> None:
+    """写入图像描述缓存（固定预 prompt 模板 ⇒ 同图跨轮/跨提问复用）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE upload SET vision_desc = %s, vision_desc_model = %s, "
+                "vision_desc_at = now() WHERE id = %s",
+                (desc, model_label, upload_id),
+            )
 
 
 async def list_uploads_by_session(pool: AsyncConnectionPool, session_id: uuid.UUID) -> list[dict]:
@@ -1089,7 +1164,7 @@ async def insert_model(
     supports_vision: bool,
     temperature: Optional[float],
     top_p: Optional[float],
-    enable_thinking: bool,
+    enable_thinking: Optional[bool],
     enabled: bool,
 ) -> dict:
     """Insert a registered model definition. api_key stored at the row level."""
@@ -1123,7 +1198,7 @@ async def update_model(
     supports_vision: bool,
     temperature: Optional[float],
     top_p: Optional[float],
-    enable_thinking: bool,
+    enable_thinking: Optional[bool],
     enabled: bool,
 ) -> Optional[dict]:
     """Update a registered model's mutable fields. model_id (PK) never changes.
@@ -1178,12 +1253,30 @@ async def get_model_public(pool: AsyncConnectionPool, model_id: uuid.UUID) -> Op
     return row
 
 
-async def list_models(pool: AsyncConnectionPool) -> list[dict]:
-    """List WITHOUT api_key (for API responses)."""
+async def list_models(
+    pool: AsyncConnectionPool,
+    supports_vision: Optional[bool] = None,
+    enable_thinking: Optional[bool] = None,
+) -> list[dict]:
+    """List WITHOUT api_key (for API responses). Optional filters (AND-combined).
+
+    supports_vision 过滤附带 enabled=true（能力候选必须可用）；
+    enable_thinking 三态精确匹配（false=显式关闭，供视觉下挂候选过滤）。
+    """
+    clauses: list[str] = []
+    params: list = []
+    if supports_vision is not None:
+        clauses.append("supports_vision = %s AND enabled = true")
+        params.append(supports_vision)
+    if enable_thinking is not None:
+        clauses.append("enable_thinking = %s")
+        params.append(enable_thinking)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                f"SELECT {_MODEL_COLUMNS} FROM model ORDER BY created_at"
+                f"SELECT {_MODEL_COLUMNS} FROM model{where} ORDER BY created_at",
+                tuple(params),
             )
             rows = await cur.fetchall()
     return rows
@@ -1220,12 +1313,13 @@ async def get_model_by_name(pool: AsyncConnectionPool, name: str) -> Optional[di
 
 
 async def list_agents_by_model(pool: AsyncConnectionPool, model_id: uuid.UUID) -> list[dict]:
-    """Agents referencing a model (id + name) — for delete-referenced blocking."""
+    """Agents referencing a model as base OR vision mount (id + name) — delete blocking."""
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, name FROM agent WHERE model_id = %s ORDER BY name",
-                (model_id,),
+                "SELECT id, name FROM agent "
+                "WHERE model_id = %s OR vision_model_id = %s ORDER BY name",
+                (model_id, model_id),
             )
             rows = await cur.fetchall()
     return rows

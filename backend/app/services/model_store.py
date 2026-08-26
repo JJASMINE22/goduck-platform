@@ -33,7 +33,7 @@ def build_chat_model(
     *,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
-    enable_thinking: bool = False,
+    enable_thinking: Optional[bool] = None,
 ) -> BaseChatModel:
     """Construct a chat client by provider family. Single dispatch seam.
 
@@ -41,8 +41,11 @@ def build_chat_model(
     matching langchain-<vendor> package. Schema stays unchanged.
 
     temperature/top_p 可空（None=用 provider 默认）；
-    enable_thinking 注入 thinking 请求体（GLM/openai_compatible 约定：
-    {"thinking":{"type":"enabled"}}），仅思考模型有效，由注册者自行开启。
+    enable_thinking 三态注入 thinking 请求体（GLM/openai_compatible 约定：
+    {"thinking":{"type":"enabled"|"disabled"}}）：
+    - None  = 不注入（用 provider 服务端默认）
+    - True  = 显式开启（思考模型）
+    - False = 显式关闭（GLM V 系列/部分思考模型服务端默认开启，关闭须显式 disabled）
     """
     if provider_kind == "openai_compatible":
         from langchain_openai import ChatOpenAI
@@ -52,11 +55,13 @@ def build_chat_model(
             kwargs["temperature"] = temperature
         if top_p is not None:
             kwargs["top_p"] = top_p
-        if enable_thinking:
+        if enable_thinking is not None:
             # thinking 必须走 extra_body（OpenAI SDK 的"未校验请求体"通道），
             # 不能放进 model_kwargs——后者会被当作 create() 的顶层关键字参数，
             # SDK 校验签名不认 'thinking' → "unexpected keyword argument 'thinking'"。
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["extra_body"] = {
+                "thinking": {"type": "enabled" if enable_thinking else "disabled"}
+            }
         return ChatOpenAI(
             model=model_type,
             api_key=api_key,
@@ -98,14 +103,15 @@ class ModelStore:
                     row.get("base_url"),
                     temperature=row.get("temperature"),
                     top_p=row.get("top_p"),
-                    enable_thinking=row.get("enable_thinking", False),
+                    enable_thinking=row.get("enable_thinking"),
                 )
-                new_models[mid] = {
+                entry = {
                     "client": client,
                     "supports_vision": row["supports_vision"],
                     "model_type": row["model_type"],
                     "name": row["name"],
                 }
+                new_models[mid] = entry
             except Exception as e:  # noqa: BLE001
                 logger.warning("model '%s' (%s) build failed (skipped): %s", row.get("name"), mid, e)
         self._models = new_models

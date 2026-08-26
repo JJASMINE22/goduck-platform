@@ -209,6 +209,7 @@ export function asSSEEvent(frame: VoiceDownFrame): SSEEvent | null {
     'agent_message',
     'todos',
     'file_change',
+    'status',
     'interrupt',
     'done',
     'error',

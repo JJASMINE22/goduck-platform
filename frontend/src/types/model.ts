@@ -1,7 +1,7 @@
 /* 模型注册类型 —— 对应后端 models/schemas.py (ModelCreate/ModelUpdate/ModelOut/
    ModelTestRequest) + api/models.py。
    provider_kind 当前仅 openai_compatible（通吃 OpenAI/DeepSeek/Qwen/本地）。
-   supports_vision 决定附件「图像直送 vs wrapper MCP」路径。 */
+   supports_vision 决定附件「图像直送 vs 下挂视觉模型预消费」路径。 */
 import type { ISODateTime, UUID } from './common'
 
 export type ProviderKind = 'openai_compatible'
@@ -15,7 +15,9 @@ export interface ModelCreate {
   supports_vision: boolean
   temperature?: number | null // 0–2，留空=provider 默认
   top_p?: number | null // 0–1，留空=provider 默认
-  enable_thinking: boolean // 思考模式开关（仅思考模型有效）
+  /** 三态：null=不注入（provider 默认）/ true=显式开启 / false=显式关闭
+      （GLM V 系列等服务端默认开思考，关闭须显式 false） */
+  enable_thinking: boolean | null
   enabled: boolean
 }
 
@@ -28,7 +30,7 @@ export interface ModelUpdate {
   supports_vision: boolean
   temperature?: number | null
   top_p?: number | null
-  enable_thinking: boolean
+  enable_thinking: boolean | null
   enabled: boolean
 }
 
@@ -41,7 +43,7 @@ export interface ModelOut {
   supports_vision: boolean
   temperature?: number | null
   top_p?: number | null
-  enable_thinking: boolean
+  enable_thinking: boolean | null
   enabled: boolean
   created_at: ISODateTime
   updated_at: ISODateTime

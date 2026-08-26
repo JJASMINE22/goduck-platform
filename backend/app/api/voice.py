@@ -39,8 +39,9 @@ from app.api.stream import _build_agent_or_409
 from app.deps import SimpleUser, get_ws_appstate
 from app.models.schemas import VoiceStartFrame
 from app.services.message_content import (
+    BuiltMessage,
     MessageContentError,
-    build_message_content,
+    assemble_message_content_stream,
     validate_message_content,
 )
 from app.services.session_service import SessionService
@@ -329,64 +330,72 @@ async def _run_agent_round(
     返回超越 start 帧或 None；MessageContentError/异常语义与旧实现一致。
     """
     st = sess.st
-    built = await build_message_content(
-        st,
-        session,
-        user_query=user_text,
-        attachments=start.attachments,
-        knowledge_base_ids=start.knowledge_base_ids,
-    )
-
     svc = SessionService(st.pool)
     thread_id = session["thread_id"]
     superseded_start: dict | None = None
 
-    async def tunnel() -> None:
-        gen = st.stream_adapter.stream_message(
-            agent,
-            built.content,
-            config,
-            start.rubric,
-            upload_ids=built.upload_ids,
-            raw_content=user_text,
-        )
-        try:
-            async for ev in gen:
-                # done/interrupt/error 终态事件由 adapter 产出，前端据其落态
-                await sess.send_json(ev)
-        finally:
-            # 确定性关闭生成器链（astream → stream_message）：发送失败/取消路径若
-            # 仅弃置（悬挂在 yield 处），GC 终结器的 athrow 遇 langgraph 内部吞掉
-            # GeneratorExit 后再 yield 的行为 → "async generator ignored
-            # GeneratorExit" 以未检索任务异常形式在事件循环日志炸出（页面静置
-            # GC 触发时复现）。清理路径就地吞残余异常，不改写主异常。
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await gen.aclose()
-
-    async def watch() -> None:
-        nonlocal superseded_start
-        while True:
-            msg = await sess.receive()  # 断连抛 WebSocketDisconnect
-            text = msg.get("text")
-            if text is None:
-                continue  # 推理期无录音，二进制帧丢弃
-            try:
-                ctrl = json.loads(text)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(ctrl, dict):
-                continue
-            ctype = ctrl.get("type")
-            if ctype in ("cancel", "start"):
-                if ctype == "start":
-                    superseded_start = ctrl
-                return
-            # pong / 其它控制帧：活性已由 receive 记录，忽略
-
     st.stream_tracker.acquire(thread_id)
-    tunnel_task = asyncio.create_task(tunnel())
-    watcher = asyncio.create_task(watch())
     try:
+        # 组装（含附件预消费）：与 POST /messages 完全同一生成器；status 事件
+        # 经 WS 下行隧道透传（前端映射"正在解析"徽标，与 SSE 路径同构）。
+        built: BuiltMessage | None = None
+        async for item in assemble_message_content_stream(
+            st,
+            session,
+            user_query=user_text,
+            attachments=start.attachments,
+            knowledge_base_ids=start.knowledge_base_ids,
+        ):
+            if isinstance(item, SSEEvent):
+                await sess.send_json(item)
+            else:
+                built = item
+        assert built is not None  # assemble 生成器必以 BuiltMessage 收尾
+
+        async def tunnel() -> None:
+            gen = st.stream_adapter.stream_message(
+                agent,
+                built.content,
+                config,
+                start.rubric,
+                upload_ids=built.upload_ids,
+                raw_content=user_text,
+            )
+            try:
+                async for ev in gen:
+                    # done/interrupt/error 终态事件由 adapter 产出，前端据其落态
+                    await sess.send_json(ev)
+            finally:
+                # 确定性关闭生成器链（astream → stream_message）：发送失败/取消路径若
+                # 仅弃置（悬挂在 yield 处），GC 终结器的 athrow 遇 langgraph 内部吞掉
+                # GeneratorExit 后再 yield 的行为 → "async generator ignored
+                # GeneratorExit" 以未检索任务异常形式在事件循环日志炸出（页面静置
+                # GC 触发时复现）。清理路径就地吞残余异常，不改写主异常。
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await gen.aclose()
+
+        async def watch() -> None:
+            nonlocal superseded_start
+            while True:
+                msg = await sess.receive()  # 断连抛 WebSocketDisconnect
+                text = msg.get("text")
+                if text is None:
+                    continue  # 推理期无录音，二进制帧丢弃
+                try:
+                    ctrl = json.loads(text)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(ctrl, dict):
+                    continue
+                ctype = ctrl.get("type")
+                if ctype in ("cancel", "start"):
+                    if ctype == "start":
+                        superseded_start = ctrl
+                    return
+                # pong / 其它控制帧：活性已由 receive 记录，忽略
+
+        tunnel_task = asyncio.create_task(tunnel())
+        watcher = asyncio.create_task(watch())
         done, _pending = await asyncio.wait(
             {tunnel_task, watcher}, return_when=asyncio.FIRST_COMPLETED
         )

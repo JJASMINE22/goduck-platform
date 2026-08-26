@@ -42,12 +42,16 @@ export interface AgentCreate {
   description?: string | null
   config: AgentConfig // 后端字段名是 config（dict 语义），前端按 AgentConfig 构造
   model_id: UUID
+  /** 下挂视觉模型（基座无视觉时用于图像预消费）；基座自带视觉时禁止设置（后端 400） */
+  vision_model_id?: UUID | null
   creator: string
 }
 
 export interface AgentUpdate {
   config: AgentConfig
   model_id: UUID
+  /** null=解除下挂；基座自带视觉时禁止设置（后端 400 互斥） */
+  vision_model_id?: UUID | null
   /** 可选改名；省略时后端保持原名，改名时后端排除自身做唯一性校验（409） */
   name?: string
   description?: string | null
@@ -72,6 +76,9 @@ export interface AgentOut {
   description?: string | null
   model_id?: UUID | null
   model_name?: string | null // 绑定模型名称（后端 LEFT JOIN；create/update 响应可能为 null）
+  /** 下挂视觉模型（基座无视觉时的图像预消费描述器） */
+  vision_model_id?: UUID | null
+  vision_model_name?: string | null
   status: AgentStatus
   creator: string
   updater?: string | null

@@ -64,10 +64,22 @@ async def lifespan(app: FastAPI):
 
     st.minio_storage = build_minio_storage(settings)
 
-    # 7. ContentComposer (附件 → HumanMessage.content 组装)
+    # 7. ContentComposer (附件 → HumanMessage.content 组装) + VisionDescriber
+    #    (图像预消费：经已注册视觉模型生成文本描述，thinking 强制 off)
     from app.services.content_composer import ContentComposer
+    from app.services.vision_describer import VisionDescriber
 
-    st.content_composer = ContentComposer(pool=st.pool, minio=st.minio_storage)
+    st.vision_describer = VisionDescriber(
+        st.model_store, timeout_s=settings.attachment_describe_timeout_s
+    )
+    st.content_composer = ContentComposer(
+        pool=st.pool,
+        minio=st.minio_storage,
+        describe_timeout_s=settings.attachment_describe_timeout_s,
+        parse_concurrency=settings.attachment_parse_concurrency,
+        content_max_kb=settings.attachment_content_max_kb,
+        describer=st.vision_describer,
+    )
 
     # 8. Knowledge base (RAG) — 仅 kb_enabled=true 时装配（入库/管理写路径）
     if settings.kb_enabled:

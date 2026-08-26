@@ -55,13 +55,17 @@ class AgentService:
         config: dict,
         model_id: uuid.UUID,
         creator: str,
+        vision_model_id: Optional[uuid.UUID] = None,
     ) -> dict:
         valid, errs = self.validate_config(config)
         if not valid:
             raise ValueError("; ".join(errs))  # router maps ValueError -> 400
         if await dbmod.get_agent_by_name(self.pool, name) is not None:
             raise FileExistsError(name)  # router maps -> 409
-        return await dbmod.create_agent(self.pool, name, description, config, model_id, creator)
+        return await dbmod.create_agent(
+            self.pool, name, description, config, model_id, creator,
+            vision_model_id=vision_model_id,
+        )
 
     async def update(
         self,
@@ -71,6 +75,7 @@ class AgentService:
         description: Optional[str],
         updater: str,
         name: Optional[str] = None,
+        vision_model_id: Optional[uuid.UUID] = None,
     ) -> dict:
         valid, errs = self.validate_config(config)
         if not valid:
@@ -85,11 +90,21 @@ class AgentService:
             if owner is not None and owner["id"] != agent_id:
                 raise FileExistsError(name)
         return await dbmod.update_agent(
-            self.pool, agent_id, config, model_id, description, updater, name
+            self.pool, agent_id, config, model_id, description, updater, name,
+            vision_model_id=vision_model_id,
         )
 
-    async def restore(self, agent_id: uuid.UUID, history_id: uuid.UUID, operator: str) -> Optional[dict]:
-        return await dbmod.restore_agent(self.pool, agent_id, history_id, operator)
+    async def restore(
+        self,
+        agent_id: uuid.UUID,
+        history_id: uuid.UUID,
+        operator: str,
+        vision_model_id: Optional[uuid.UUID] = None,
+    ) -> Optional[dict]:
+        """还原配置快照；vision_model_id 为路由层裁决后的覆盖值（快照值不可用时降级 None）。"""
+        return await dbmod.restore_agent(
+            self.pool, agent_id, history_id, operator, vision_model_id=vision_model_id
+        )
 
     async def history_snapshot(self, agent_id: uuid.UUID, history_id: uuid.UUID) -> Optional[dict]:
         """Peek a history snapshot's {config_json, model_id} without committing.

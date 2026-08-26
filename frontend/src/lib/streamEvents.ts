@@ -10,6 +10,7 @@ import type {
   FileChangePayload,
   InterruptPayload,
   SSEEvent,
+  StatusPayload,
   ThinkingPayload,
   TodoItem,
   TokenPayload,
@@ -21,9 +22,25 @@ export function dispatchStreamEvent(e: SSEEvent): void {
   const store = useChatStore.getState()
   switch (e.type) {
     case 'token': {
-      // 逐 token 增量：聚合进流式消息（content 或 reasoning）
+      // 逐 token 增量：聚合进流式消息（content 或 reasoning）；首个 token 同时
+      // 顶替附件解析进度徽标（"正在解析附件…"使命完成）
       const p = e.payload as unknown as TokenPayload
+      store.setParseStatus(null)
       store.appendToken(e.agent_path ?? 'root', p.id, p.delta, !!p.reasoning)
+      break
+    }
+    case 'status': {
+      // 附件预消费进度（非错误型）：parsing/skipped 映射临时徽标；parsed 不展示
+      //（首个 token 即将到达，避免徽标闪烁）
+      const p = e.payload as unknown as StatusPayload
+      if (p.phase === 'parsing') {
+        const names = (p.files ?? []).join('、')
+        store.setParseStatus(names ? `正在解析附件（${names}）…` : '正在解析附件…')
+      } else if (p.phase === 'skipped') {
+        store.setParseStatus(`「${p.file ?? '附件'}」解析失败已跳过${p.reason ? `：${p.reason}` : ''}`)
+      } else {
+        store.setParseStatus(null)
+      }
       break
     }
     case 'agent_message': {
@@ -67,10 +84,12 @@ export function dispatchStreamEvent(e: SSEEvent): void {
     case 'interrupt':
       // 流式在 HITL 处暂停：固化已到达的部分文本再进入待审批态
       store.finalizeStreaming()
+      store.setParseStatus(null)
       store.setInterrupt(e.payload as unknown as InterruptPayload)
       break
     case 'done':
       store.finalizeStreaming()
+      store.setParseStatus(null)
       store.clearAttachments()
       store.setStatus('idle')
       store.setStreamSource(null)
@@ -78,6 +97,7 @@ export function dispatchStreamEvent(e: SSEEvent): void {
     case 'error': {
       const p = e.payload as { message?: string }
       store.finalizeStreaming()
+      store.setParseStatus(null)
       store.setStreamError(p.message ?? '会话出错')
       break
     }

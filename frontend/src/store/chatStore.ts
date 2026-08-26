@@ -76,6 +76,8 @@ export interface ChatState {
       执行进度，跨回合悬挂会导致旧任务清单累计不清；HITL resume 属同回合继续，
       保留（后端 graph state 中的 todos 仍跨回合持久，与前端展示生命周期解耦） */
   todosByAgent: Record<string, TodoItem[]>
+  /** 附件预消费进度提示（status 事件；null=无）。首个 token / 终态事件清除 */
+  parseStatus: string | null
   /** 本回合的工作区文件变更（file_change 事件追加；pushUser 新回合清空，回撤随时间窗移除） */
   fileChanges: FileChangeEntry[]
   // 发送框草稿：上提到 store，使回撤可回填原文（受控于 store，非组件局部 state）
@@ -106,6 +108,8 @@ export interface ChatState {
   setStreamError: (msg: string | null) => void
   /** todos 事件落地：整表替换该 agent 的清单（后端已按变更去重） */
   setTodos: (agentPath: string, todos: TodoItem[]) => void
+  /** status 事件落地：附件解析进度提示（null=清除；首个 token 自然顶替） */
+  setParseStatus: (msg: string | null) => void
   /** 清空任务清单浮窗（新回合开始 / 手动中止时调用，防止旧清单跨回合悬挂累计） */
   clearTodos: () => void
   /** file_change 事件落地：同批记录统一时间戳追加（合并展示在渲染层完成） */
@@ -144,6 +148,7 @@ const initialState = {
   selectedKbs: [] as KnowledgeBaseOut[],
   streamError: null as string | null,
   todosByAgent: {} as Record<string, TodoItem[]>,
+  parseStatus: null as string | null,
   fileChanges: [] as FileChangeEntry[],
   draft: '',
   voiceState: 'idle' as VoiceState,
@@ -167,6 +172,7 @@ export const useChatStore = create<ChatState>((set) => ({
       // 待本回合任一代理再次 write_todos 时重新出现
       fileChanges: [],
       todosByAgent: {},
+      parseStatus: null,
     })),
 
   pushAgent: (agentPath, content) =>
@@ -284,6 +290,8 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setTodos: (agentPath, todos) => set((s) => ({ todosByAgent: { ...s.todosByAgent, [agentPath]: todos } })),
 
+  setParseStatus: (parseStatus) => set({ parseStatus }),
+
   clearTodos: () => set({ todosByAgent: {} }),
 
   applyFileChange: (records) =>
@@ -345,6 +353,7 @@ export const useChatStore = create<ChatState>((set) => ({
       pendingInterrupt: null,
       streamError: null,
       todosByAgent: {},
+      parseStatus: null,
       fileChanges: [],
     }),
 

@@ -26,6 +26,27 @@ def _service(request: Request) -> AgentService:
     return AgentService(get_appstate(request).pool)
 
 
+def _validate_vision_mount(st, vision_model_id, base_model_id: uuid.UUID) -> None:
+    """vision_model_id 保存门（CRUD 路径强制，router→400）。
+
+    - 必须已注册 + 启用 + supports_vision（经 ModelStore 内存缓存单一真相）；
+    - 互斥：基座模型自带视觉时禁止下挂（冗余引用制造歧义；前端隐藏选择器
+      仅 UX，此处才是本体强制）。
+    """
+    if vision_model_id is None:
+        return
+    if st.model_store.supports_vision(base_model_id):
+        raise HTTPException(
+            status_code=400,
+            detail="基座模型已支持视觉理解，无需下挂视觉模型（冗余配置被拒绝）",
+        )
+    if not st.model_store.has(vision_model_id) or not st.model_store.supports_vision(vision_model_id):
+        raise HTTPException(
+            status_code=400,
+            detail="下挂视觉模型不可用：须为已注册、已启用且 supports_vision=true 的模型",
+        )
+
+
 def _with_mermaid(agent: dict, svc: AgentService) -> dict:
     agent = dict(agent)
     agent["active_mermaid"] = svc.render_mermaid(agent["config_json"])
@@ -51,8 +72,12 @@ async def create_agent(body: AgentCreate, request: Request):
     # 校验 model_id 已注册且可用
     if not st.model_store.has(body.model_id):
         raise HTTPException(status_code=404, detail=f"model {body.model_id} 未注册或已禁用")
+    _validate_vision_mount(st, body.vision_model_id, body.model_id)
     try:
-        agent = await svc.create(body.name, body.description, body.config, body.model_id, body.creator)
+        agent = await svc.create(
+            body.name, body.description, body.config, body.model_id, body.creator,
+            vision_model_id=body.vision_model_id,
+        )
     except FileExistsError:
         raise HTTPException(status_code=409, detail=f"agent '{body.name}' already exists")
     except ValueError as e:
@@ -69,9 +94,11 @@ async def update_agent(agent_id: uuid.UUID, body: AgentUpdate, request: Request)
     # 校验 model_id 已注册且可用（换模型时同样校验）
     if not st.model_store.has(body.model_id):
         raise HTTPException(status_code=404, detail=f"model {body.model_id} 未注册或已禁用")
+    _validate_vision_mount(st, body.vision_model_id, body.model_id)
     try:
         agent = await svc.update(
-            agent_id, body.config, body.model_id, body.description, body.updater, body.name
+            agent_id, body.config, body.model_id, body.description, body.updater, body.name,
+            vision_model_id=body.vision_model_id,
         )
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -132,7 +159,12 @@ async def restore_agent(agent_id: uuid.UUID, body: RestoreRequest, request: Requ
             status_code=409,
             detail="历史快照绑定的模型不可用（未注册/已禁用），请先注册或更换模型后再还原",
         )
-    agent = await svc.restore(agent_id, body.history_id, body.operator)
+    # 快照的 vision_model_id 同样无 FK（可能指向已删除模型）：不可用时降级为
+    # 解除下挂而非拒绝还原——图像能力随之收紧，但不阻断配置回滚。
+    snapshot_vision = snapshot.get("vision_model_id")
+    if snapshot_vision is not None and not st.model_store.supports_vision(snapshot_vision):
+        snapshot_vision = None
+    agent = await svc.restore(agent_id, body.history_id, body.operator, vision_model_id=snapshot_vision)
     if agent is None:
         raise HTTPException(status_code=404, detail="agent or history not found")
     st.agent_registry.invalidate(agent["id"])

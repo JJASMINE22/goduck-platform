@@ -14,7 +14,7 @@ import {
   useUpdateAgent,
   useValidateAgent,
 } from '@/hooks/useAgents'
-import { useModels } from '@/hooks/useModels'
+import { useModels, useVisionModels } from '@/hooks/useModels'
 import { useDragResize } from '@/hooks/useDragResize'
 import { useAgentEditorStore } from '@/store/agentEditorStore'
 import { usePageHeaderStore } from '@/store/pageHeaderStore'
@@ -35,6 +35,7 @@ export function AgentEditorPage(): ReactNode {
 
   const agentQ = useAgent(id ?? null)
   const models = useModels()
+  const visionModels = useVisionModels()
   const validate = useValidateAgent()
   const createAgent = useCreateAgent()
   const updateAgent = useUpdateAgent()
@@ -49,6 +50,7 @@ export function AgentEditorPage(): ReactNode {
   const name = useAgentEditorStore((s) => s.name)
   const description = useAgentEditorStore((s) => s.description)
   const modelId = useAgentEditorStore((s) => s.modelId)
+  const visionModelId = useAgentEditorStore((s) => s.visionModelId)
   const errors = useAgentEditorStore((s) => s.validationErrors)
   const configDirty = useAgentEditorStore((s) => s.configDirty)
   const initNew = useAgentEditorStore((s) => s.initNew)
@@ -56,6 +58,7 @@ export function AgentEditorPage(): ReactNode {
   const setName = useAgentEditorStore((s) => s.setName)
   const setDescription = useAgentEditorStore((s) => s.setDescription)
   const setModelId = useAgentEditorStore((s) => s.setModelId)
+  const setVisionModelId = useAgentEditorStore((s) => s.setVisionModelId)
   const setValidation = useAgentEditorStore((s) => s.setValidation)
 
   const [histOpen, setHistOpen] = useState(false)
@@ -117,6 +120,9 @@ export function AgentEditorPage(): ReactNode {
     }
     if (!name.trim()) return toastError('请填写智能体名称')
     if (!modelId) return toastError('请绑定模型')
+    // 前端互斥防护（后端保存门为本体）：基座自带视觉时强制清空下挂
+    const baseModel = (models.data ?? []).find((m) => m.id === modelId)
+    const effectiveVision = baseModel?.supports_vision ? null : visionModelId
     const user = currentUserId
 
     const doUpdate = () =>
@@ -125,6 +131,7 @@ export function AgentEditorPage(): ReactNode {
         body: {
           config,
           model_id: modelId,
+          vision_model_id: effectiveVision,
           name: name.trim(),
           description: description.trim() || null,
           updater: user,
@@ -138,6 +145,7 @@ export function AgentEditorPage(): ReactNode {
           description: description.trim() || null,
           config,
           model_id: modelId,
+          vision_model_id: effectiveVision,
           creator: user,
         })
         .then((detail) => navigate(`/agents/${detail.id}`))
@@ -219,6 +227,17 @@ export function AgentEditorPage(): ReactNode {
     disabled: !m.enabled,
   }))
 
+  // 视觉下挂选择器：未选基座 → 禁用（placeholder 引导）；基座自带视觉 → 隐藏
+  // （互斥，后端保存门为本体强制）；基座无视觉 → 可选。候选走
+  // GET /models?supports_vision=true&enable_thinking=false（已启用 + 视觉 +
+  // 显式关思考——描述任务约定，注册表单有对应提示）。
+  const baseModel = (models.data ?? []).find((m) => m.id === modelId)
+  const showVisionMount = !modelId || (!!baseModel && !baseModel.supports_vision)
+  const visionModelOptions = (visionModels.data ?? []).map((m) => ({
+    value: m.id,
+    label: `${m.name}（${m.model_type}）`,
+  }))
+
   // 校验状态收敛为工具条上的 Tag：未改动保持中性；未通过时 Popover 展开错误清单
   const validationTag = !configDirty ? (
     <Tag style={{ marginInlineEnd: 0 }}>未校验</Tag>
@@ -286,6 +305,24 @@ export function AgentEditorPage(): ReactNode {
               optionFilterProp="label"
             />
           </div>
+          {showVisionMount ? (
+            <div className="editor-field">
+              <span className="editor-field__label">视觉下挂</span>
+              <Select
+                style={{ width: 208 }}
+                placeholder={modelId ? '无（不能上传图像）' : '请先选择基座模型'}
+                value={visionModelId ?? undefined}
+                onChange={(v) => setVisionModelId(v ?? null)}
+                onClear={() => setVisionModelId(null)}
+                options={visionModelOptions}
+                allowClear
+                disabled={!modelId}
+                loading={visionModels.isLoading}
+                showSearch
+                optionFilterProp="label"
+              />
+            </div>
+          ) : null}
           {validationTag}
         </div>
 

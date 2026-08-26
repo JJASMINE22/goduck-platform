@@ -13,6 +13,7 @@ export type SSEEventType =
   | 'agent_message'
   | 'todos'
   | 'file_change'
+  | 'status'
   | 'interrupt'
   | 'done'
   | 'error'
@@ -62,6 +63,19 @@ export interface ToolResultPayload {
 
 export interface ErrorPayload {
   message: string
+}
+
+// —— status payload（附件预消费进度，非错误型；映射临时徽标，首个 token 顶替）——
+export interface StatusPayload {
+  /** parsing=正在解析附件；skipped=单附件解析失败已跳过（降级发送）；parsed=全部解析完成 */
+  phase: 'parsing' | 'parsed' | 'skipped'
+  /** parsing：本批文件名 */
+  files?: string[]
+  /** skipped：失败文件名 + 原因 */
+  file?: string
+  reason?: string
+  /** parsed：成功数量 */
+  count?: number
 }
 
 // —— todos payload（stream_adapter._normalize_todos：TodoListMiddleware 状态通道）——

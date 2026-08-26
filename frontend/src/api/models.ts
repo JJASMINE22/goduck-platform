@@ -5,7 +5,10 @@ import { del, get, post, put } from './client'
 import type { ModelCreate, ModelOut, ModelTestRequest, ModelTestResult, ModelUpdate, UUID } from '@/types'
 
 export const modelsApi = {
-  list: () => get<ModelOut[]>('/models'),
+  /** 可选过滤：supports_vision=true（仅已启用视觉模型）；enable_thinking 三态精确匹配。
+   *  视觉下挂候选 = supports_vision:true + enable_thinking:false（描述任务须显式关思考） */
+  list: (params?: { supports_vision?: boolean; enable_thinking?: boolean }) =>
+    get<ModelOut[]>('/models', params),
 
   create: (body: ModelCreate) => post<ModelOut>('/models', body),
 

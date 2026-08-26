@@ -8,7 +8,17 @@ import type { ModelCreate, ModelTestRequest, ModelUpdate, UUID } from '@/types'
 import { queryKeys } from './queryKeys'
 
 export function useModels() {
-  return useQuery({ queryKey: queryKeys.models, queryFn: modelsApi.list })
+  return useQuery({ queryKey: queryKeys.models, queryFn: () => modelsApi.list() })
+}
+
+/** 视觉下挂候选：已启用 + supports_vision=true + enable_thinking=false
+ *  （GET /models?supports_vision=true&enable_thinking=false——描述任务须显式关思考）。
+ *  key 为 ['models'] 前缀子键，模型 CRUD 失效 ["models"] 时自动连带失效。 */
+export function useVisionModels() {
+  return useQuery({
+    queryKey: queryKeys.modelsVision,
+    queryFn: () => modelsApi.list({ supports_vision: true, enable_thinking: false }),
+  })
 }
 
 export function useCreateModel() {

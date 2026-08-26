@@ -19,6 +19,7 @@ export const queryKeys = {
   mcpTools: ['mcp', 'tools'] as const,
   mcpStatus: ['mcp', 'status'] as const,
   models: ['models'] as const,
+  modelsVision: ['models', { vision: true }] as const,
   skills: ['skills'] as const,
   knowledgeBases: ['knowledge-bases'] as const,
   kbDocuments: (kbId: string) => ['knowledge-bases', kbId, 'documents'] as const,

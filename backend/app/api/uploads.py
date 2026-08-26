@@ -11,10 +11,10 @@ import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 
-from app.core.schema_utils import AgentConfig
 from app.deps import get_appstate
 from app.models import db as dbmod
 from app.models.schemas import AttachmentCapability, UploadOut
+from app.services.attachment_policy import AttachmentPolicyService
 from app.services.mime_utils import (
     detect_kind,
     detect_mime,
@@ -67,11 +67,23 @@ async def upload_file(
             detail=f"不支持的文件类型: {real_mime}，仅支持 image/*、docx 与 pdf",
         )
 
-    # ④ 判定 kind + 文档轻量元数据（按 mime 分派：docx 段落数 / pdf 页数）
+    # ④ 智能体级策略门（plan §3.2）：附件总开关 + 图像能力（基座视觉 OR 下挂
+    #    视觉模型，动态派生——管理员换模型/禁下挂后立即收紧）。显式 422 而非
+    #    上传后静默丢弃：用户当场知道该智能体收不了这类文件。
+    policy = await AttachmentPolicyService(st).for_session(session)
+    if not policy.allow_attachments:
+        raise HTTPException(status_code=422, detail="该智能体未启用附件能力")
     kind = detect_kind(real_mime)
+    if kind == "image" and not policy.allow_image:
+        raise HTTPException(
+            status_code=422,
+            detail="该智能体不支持图像附件（基座模型无视觉能力且未下挂视觉模型）",
+        )
+
+    # ⑤ 判定文档轻量元数据（按 mime 分派：docx 段落数 / pdf 页数）
     page_count, preview = extract_document_meta(raw, real_mime)
 
-    # ⑤ 存 MinIO（bucket_key == upload id：无 DB 的 wrapper 可凭 upload_id 直取对象）
+    # ⑥ 存 MinIO（bucket_key == upload id：无 DB 的 wrapper 可凭 upload_id 直取对象）
     new_id = uuid.uuid4()
     bucket_key = str(new_id)
     try:
@@ -80,7 +92,7 @@ async def upload_file(
         logger.exception("MinIO 存储失败")
         raise HTTPException(status_code=500, detail=f"存储失败: {e}")
 
-    # ⑥ 存 DB 元数据
+    # ⑦ 存 DB 元数据
     upload = await dbmod.insert_upload(
         st.pool,
         session_id=session_id,
@@ -121,27 +133,24 @@ async def preview_upload(session_id: uuid.UUID, upload_id: uuid.UUID, request: R
 
 @router.get("/{session_id}/attachment-capability", response_model=AttachmentCapability)
 async def get_attachment_capability(session_id: uuid.UUID, request: Request):
-    """前端据此渲染上传组件（支持的文件类型、大小限制）。"""
+    """前端据此渲染上传组件（支持的文件类型、大小限制）。
+
+    策略经 AttachmentPolicyService 动态派生（单一真相）：
+    - allow_attachments：智能体配置开关；
+    - allow_image = 基座 supports_vision OR 下挂视觉模型当前可用
+      （原 `endswith("__image_understand")` 工具名启发式已随 MCP 解析链路退役）；
+    - allow_file：mime 白名单派生（mime_utils 单一来源）。
+    """
     st = _appstate(request)
     svc = SessionService(st.pool)
     session = await svc.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
 
-    agent_row = await dbmod.get_agent(st.pool, session["agent_id"])
-    if agent_row is None:
-        raise HTTPException(status_code=404, detail="agent not found")
-
-    agent_cfg = AgentConfig.model_validate(agent_row["config_json"])
-    supports_vision = st.model_store.supports_vision(agent_row["model_id"])
-
-    tools = await st.mcp_lifecycle.get_tools()
-    has_image_parse_tool = any(t.name.endswith("__image_understand") for t in tools)
-    allow_image = supports_vision or has_image_parse_tool
-
+    policy = await AttachmentPolicyService(st).for_session(session)
     return AttachmentCapability(
-        allow_attachments=agent_cfg.allow_attachments,
-        allow_image=allow_image,
-        allow_file=["docx", "pdf"],
-        max_size_mb=st.settings.attachment_max_size_mb,
+        allow_attachments=policy.allow_attachments,
+        allow_image=policy.allow_image,
+        allow_file=policy.allow_file,
+        max_size_mb=policy.max_size_mb,
     )

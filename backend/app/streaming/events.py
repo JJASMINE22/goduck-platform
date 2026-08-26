@@ -18,6 +18,8 @@ EventType = Literal[
     "agent_message",
     "todos",
     "file_change",
+    # —— 附件解析进度（非错误型；前端映射临时徽标，首个 token 自然顶替）——
+    "status",
     "interrupt",
     "done",
     "error",

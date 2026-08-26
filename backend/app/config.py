@@ -74,6 +74,24 @@ class Settings(BaseSettings):
     attachment_max_size_mb: int = 10
     attachment_max_images_per_message: int = 2
 
+    # ---- 附件解析（发送时预消费：图像视觉描述 + 文档转 Markdown）----
+    attachment_content_max_kb: int = Field(
+        default=24,
+        gt=0,
+        description="单附件注入 content 的内容截断上限（KB）；超出截断并以'已截断'标记收尾。",
+    )
+    attachment_describe_timeout_s: float = Field(
+        default=30.0,
+        gt=0,
+        description="单图视觉描述调用超时秒数；超时/异常降级为无图 content（不中断回合）。",
+    )
+    attachment_parse_concurrency: int = Field(
+        default=3,
+        gt=0,
+        description="附件解析并发上限（信号量）。markitdown 为同步 CPU 密集转换，"
+        "经 to_thread 占用线程池，需限流防打满。",
+    )
+
     # ---- Elasticsearch（知识库向量/全文检索存储）----
     es_url: str = "http://localhost:9200"
     es_api_key: Optional[str] = None
