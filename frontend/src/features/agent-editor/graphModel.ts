@@ -128,3 +128,17 @@ export function descendantIds(nodes: AgentGraphNode[], id: string): Set<string> 
 export function isDescendantOrSelf(nodes: AgentGraphNode[], maybeChild: string, ancestor: string): boolean {
   return descendantIds(nodes, ancestor).has(maybeChild)
 }
+
+/** reparent 前置校验：子节点存在且非根、新父存在、非自身、新父不在子节点的子树内（防环）。
+ *  画布连线高亮与 store.reparent 共用此规则，确保「提示可连」与「真正可连」判定一致。 */
+export function canReparent(
+  nodes: AgentGraphNode[],
+  childId: string,
+  newParentId: string,
+): boolean {
+  const child = nodes.find((n) => n.id === childId)
+  if (!child || child.parentId === null) return false // 根不可换父
+  if (childId === newParentId) return false
+  if (!nodes.some((n) => n.id === newParentId)) return false
+  return !isDescendantOrSelf(nodes, newParentId, childId)
+}

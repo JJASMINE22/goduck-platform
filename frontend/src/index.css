@@ -989,12 +989,93 @@ pre,
   letter-spacing: 0.04em;
   color: var(--color-role-agent-main);
 }
+/* 连接手柄：视觉仍为 8px 圆点，伪元素外扩出 ~24px 透明命中区（Fitts 放大）。
+   注意：xyflow 基础样式用手柄自身 transform 居中（translate(-50%,±50%)），
+   故放大只改 width/height（居中 translate 是百分比，随尺寸自适应），不可用 transform scale。
+   pointer-events 需显式 all：基础 .react-flow__handle 默认 none，命中区要常驻可拖。 */
+.react-flow__handle.agent-handle {
+  pointer-events: all;
+}
 .agent-handle {
   width: 8px;
   height: 8px;
   background: var(--node-color, var(--color-primary));
   border: 2px solid var(--color-bg-elevated);
   border-radius: 50%;
+  opacity: 0.45;
+  cursor: crosshair;
+  transition:
+    opacity 0.15s ease,
+    width 0.15s ease,
+    height 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.agent-handle::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+}
+.agent-node:hover .agent-handle,
+.agent-handle--active {
+  width: 12px;
+  height: 12px;
+  opacity: 1;
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--node-color, var(--color-primary)) 60%, transparent);
+}
+
+/* 连线拖拽进行中的落点反馈：
+   合法 = success 呼吸引导；非法（自身/后代/根）= danger 描边劝阻；
+   起点节点 = 自身角色色强光环 + 下方语义提示气泡。 */
+.agent-node--connect-valid {
+  border-color: var(--color-success);
+  animation: agent-connect-pulse 1.2s ease-in-out infinite;
+}
+.agent-node--connect-invalid {
+  border-color: var(--color-danger);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--color-danger) 60%, transparent),
+    0 0 14px 2px color-mix(in srgb, var(--color-danger) 35%, transparent),
+    var(--shadow-md);
+}
+.agent-node--connect-self {
+  border-color: var(--node-color);
+  box-shadow:
+    0 0 0 2px var(--node-color),
+    0 0 18px 2px color-mix(in srgb, var(--node-color) 50%, transparent),
+    var(--shadow-md);
+}
+@keyframes agent-connect-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--color-success) 75%, transparent),
+      0 0 10px 1px color-mix(in srgb, var(--color-success) 30%, transparent),
+      var(--shadow-sm);
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px var(--color-success),
+      0 0 20px 4px color-mix(in srgb, var(--color-success) 50%, transparent),
+      var(--shadow-md);
+  }
+}
+.agent-node__connect-hint {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-elevated);
+  border: 1px solid color-mix(in srgb, var(--node-color) 45%, var(--color-border));
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+  z-index: 4;
 }
 
 /* ===== xyflow 主题适配 =====

@@ -7,9 +7,9 @@ import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import type { AgentDetail, UUID } from '@/types'
 import {
+  canReparent,
   descendantIds,
   fromConfigTree,
-  isDescendantOrSelf,
   newMainNode,
   newSubagentNode,
   nextOrder,
@@ -148,11 +148,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
 
     reparent: (id, newParentId) => {
       const cur = get().nodes
-      if (!cur) return
-      const node = cur.find((x) => x.id === id)
-      if (!node || node.parentId === null) return // 根不动
-      if (id === newParentId) return
-      if (isDescendantOrSelf(cur, newParentId, id)) return // 防环
+      if (!cur || !canReparent(cur, id, newParentId)) return // 规则统一收敛在 canReparent
       const order = nextOrder(cur, newParentId)
       set((s) => {
         const n = s.nodes?.find((x) => x.id === id)
