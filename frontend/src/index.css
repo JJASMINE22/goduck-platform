@@ -196,6 +196,34 @@ pre,
 .gd-md .katex-display > .katex { white-space: nowrap; }
 .gd-md .katex-error { color: #cc0000; font-family: var(--font-mono); }
 
+/* 用户气泡内 markdown 驯化：气泡窄且右对齐，非技术用户随手打的 #/* 开头
+   不应炸版——标题降为正文字号的加粗分段，列表/引用/代码块边距收敛，
+   任何输入发送后都保持紧凑美观；加粗/行内代码等行内语法不受影响。 */
+.chat-bubble--user .gd-md h1,
+.chat-bubble--user .gd-md h2,
+.chat-bubble--user .gd-md h3,
+.chat-bubble--user .gd-md h4,
+.chat-bubble--user .gd-md h5,
+.chat-bubble--user .gd-md h6 {
+  font-size: inherit;
+  line-height: inherit;
+  margin: 0.5em 0 0.2em;
+}
+.chat-bubble--user .gd-md ul,
+.chat-bubble--user .gd-md ol {
+  margin: 0.3em 0;
+  padding-left: 1.3em;
+}
+.chat-bubble--user .gd-md blockquote {
+  margin: 0.3em 0;
+  padding: 1px 10px;
+}
+.chat-bubble--user .gd-md pre {
+  margin: 0.3em 0;
+  max-width: 100%;
+}
+
+
 /* 头像圆底 */
 .chat-avatar {
   width: 32px;
@@ -256,42 +284,107 @@ pre,
   margin-top: auto;
   padding: 2px 8px;
 }
-/* 发送按钮：底色与发送框同色（融入 composer，仅细描边勾勒轮廓）的胶囊形态，
-   悬停 / 有草稿可发送（--ready）时点亮主色 + 柔光，替代高饱和蓝色实心按钮 */
+/* ===== [试验] 流体玻璃按钮（Liquid Glass · iOS 26 风）=====
+   成像三要素：① 半透薄底 ② backdrop-filter 取景后景（blur + 提饱和），
+   ③ 多道 inset rim 高光模拟玻璃边缘折射；::before 常驻顶部镜面亮斑（厚度感），
+   ::after 悬停流光扫过（overflow:hidden 裁切在胶囊内）。
+   可用性：backdrop-filter 需 Chrome 76+/Edge 79+/Firefox 103+/Safari 9+(-webkit-)，
+   覆盖 ≈97%；@supports 不通过时回退实底胶囊，功能无损。
+   （feDisplacementMap 折射变体仅 Chromium 支持且纯白底上不可感知，暂不引入） */
+.glass-btn {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.34);
+  backdrop-filter: blur(12px) saturate(1.7);
+  -webkit-backdrop-filter: blur(12px) saturate(1.7);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.32),
+    inset 1px 0 0 rgba(255, 255, 255, 0.4),
+    inset -1px 0 0 rgba(255, 255, 255, 0.4),
+    0 1px 2px rgba(60, 64, 67, 0.1),
+    0 6px 16px rgba(60, 64, 67, 0.07);
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.12s ease;
+}
+/* 顶部镜面亮斑：受光面常驻柔和高光 */
+.glass-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(130% 70% at 28% -25%, rgba(255, 255, 255, 0.6), transparent 55%);
+  pointer-events: none;
+}
+/* 悬停流光：斜向亮带从左扫到右（液体滚过玻璃面） */
+.glass-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(105deg, transparent 38%, rgba(255, 255, 255, 0.55) 50%, transparent 62%);
+  transform: translateX(-130%);
+  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+.glass-btn:hover::after { transform: translateX(130%); }
+.glass-btn:active { transform: scale(0.96); }
+/* 不支持 backdrop-filter 的环境：实底回退，视觉降级但可用 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass-btn { background: var(--color-bg-elevated); }
+}
+
+/* 发送（玻璃态）：胶囊布局沿用；悬停 / 有草稿可发送（--ready）时玻璃体染主色 + 辉光 */
 .chat-composer__send {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   height: 32px;
   padding: 0 18px;
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  background: var(--color-bg);
   color: var(--color-text-secondary);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1;
-  cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 .chat-composer__send:not(:disabled):hover,
 .chat-composer__send--ready {
-  border-color: var(--color-primary);
-  background: var(--color-primary-bg);
+  border-color: color-mix(in srgb, var(--color-primary) 40%, #ffffff);
+  background: color-mix(in srgb, var(--color-primary) 14%, rgba(255, 255, 255, 0.42));
   color: var(--color-primary);
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--color-primary) 16%, transparent),
-    0 0 10px 1px color-mix(in srgb, var(--color-primary) 22%, transparent);
-}
-.chat-composer__send:not(:disabled):active {
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--color-primary) 28%, transparent),
-    0 0 14px 2px color-mix(in srgb, var(--color-primary) 30%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.3),
+    0 0 0 1px color-mix(in srgb, var(--color-primary) 18%, transparent),
+    0 4px 14px color-mix(in srgb, var(--color-primary) 26%, transparent);
 }
 .chat-composer__send:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+/* 中止（玻璃态 · 危险染色）：与发送同规格胶囊，红色玻璃 */
+.chat-composer__stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 18px;
+  border-color: color-mix(in srgb, var(--color-danger) 35%, #ffffff);
+  background: color-mix(in srgb, var(--color-danger) 10%, rgba(255, 255, 255, 0.4));
+  color: var(--color-danger);
+}
+.chat-composer__stop:hover {
+  border-color: color-mix(in srgb, var(--color-danger) 55%, #ffffff);
+  background: color-mix(in srgb, var(--color-danger) 18%, rgba(255, 255, 255, 0.42));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.3),
+    0 0 0 1px color-mix(in srgb, var(--color-danger) 20%, transparent),
+    0 4px 14px color-mix(in srgb, var(--color-danger) 24%, transparent);
 }
 
 /* 麦克风按钮：与左下工具栏圆形图标按钮同规格；长按说话（pointer 按下/松起）。
@@ -781,10 +874,16 @@ pre,
   min-height: 280px;
   display: flex;
   flex-direction: column;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border-soft);
+  position: relative;
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.48);
+  backdrop-filter: blur(22px) saturate(1.7);
+  -webkit-backdrop-filter: blur(22px) saturate(1.7);
+  border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    var(--shadow-sm);
   overflow: hidden;
 }
 .editor-workspace__fields {
@@ -1088,7 +1187,9 @@ pre,
   overflow: hidden;
 }
 .react-flow__controls-button {
-  background: var(--color-bg-elevated);
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(10px) saturate(1.5);
+  -webkit-backdrop-filter: blur(10px) saturate(1.5);
   border: none;
   border-bottom: 1px solid var(--color-border);
   color: var(--color-text-secondary);
@@ -1099,7 +1200,7 @@ pre,
   border-bottom: none;
 }
 .react-flow__controls-button:hover {
-  background: var(--color-surface);
+  background: rgba(255, 255, 255, 0.75);
   color: var(--color-text);
 }
 .react-flow__controls-button svg {
@@ -1329,7 +1430,8 @@ pre,
 }
 
 /* ===== 会话面板（消息流 + composer 同卡片包装）=====
-   模块化外观：白卡浮于画布，圆角 + 细边框 + 软阴影；内部纵向分隔条默认隐形。
+   玻璃卡：半透面板让画布环境光斑隐透（composer 玻璃在无消息遮挡时也取景到
+   流动色彩）；气泡自身白底，正文可读性不受影响。
    滚动容器带 scrollbar-gutter:stable，预留滚动条空间避免流式时布局位移。
    面板同时是回合导航轨（TurnRail）的容器查询上下文：轨的三级形态按面板实际宽度
    （非视口宽度）分级，避免应用侧栏开合误伤。 */
@@ -1340,10 +1442,15 @@ pre,
   flex-direction: column;
   position: relative;            /* TurnRail / 弹层的定位上下文 */
   container-type: inline-size;   /* 宽度与内容解耦（flex:1 定宽），仅作查询上下文 */
-  background: var(--color-surface);
-  border: 1px solid var(--color-border-soft);
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(22px) saturate(1.7);
+  -webkit-backdrop-filter: blur(22px) saturate(1.7);
+  border: 1px solid rgba(255, 255, 255, 0.52);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    var(--shadow-sm);
   overflow: hidden;
 }
 /* body：滚动区 + 回合导航轨共用的弹性区域。
@@ -1357,16 +1464,111 @@ pre,
   flex-direction: column;
 }
 .chat-panel__scroll {
+  position: relative; /* 自建层叠上下文：把消息回合的 hover 提层（z-index:10）
+     困在滚动区内部——否则 static 容器内 flex item 的 z-index 直接参与面板级
+     排序，悬停消息时会盖住悬浮 dock（z-index:3），玻璃输入框被"吞" */
+  z-index: 1;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: stable;
 }
+/* 玻璃 dock：composer 的悬浮定位壳（绝对钉在滚动区底部），消息从玻璃下滚过。
+   容器本身不拦截指针——宽屏 1560 阅读列两侧的空白仍是下方消息的命中区；
+   仅拖拽手柄与玻璃体本身恢复指针。 */
+.chat-panel__dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 3;
+  pointer-events: none;
+}
+.chat-panel__dock .row-resizer,
+.chat-panel__dock .chat-composer {
+  pointer-events: auto;
+}
+
+/* ===== 会话时间线非气泡卡：玻璃化（工具调用卡 / HITL 卡 / TodoPanel / 回撤操作条）=====
+   气泡保持白底（正文可读性），其余卡片统一玻璃语言：半透 + 取景后景 + rim 高光。
+   antd Collapse（工具调用卡）：默认白底 → 玻璃；ghost 变体（思考过程/文件变更）
+   刻意无壳，不套玻璃。展开内容区（.ant-collapse-content）同样透。 */
+.chat-panel .ant-collapse:not(.ant-collapse-ghost) {
+  background: rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(16px) saturate(1.6);
+  -webkit-backdrop-filter: blur(16px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    var(--shadow-sm);
+  overflow: hidden;
+}
+.chat-panel .ant-collapse:not(.ant-collapse-ghost) > .ant-collapse-item {
+  border-bottom: 1px solid var(--color-border-soft);
+}
+.chat-panel .ant-collapse:not(.ant-collapse-ghost) .ant-collapse-content {
+  background: transparent;
+  border-top: 1px solid var(--color-border-soft);
+}
+/* HITL 审批卡：警示橙描边玻璃（替换原实白底） */
+.hitl-card {
+  position: relative;
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(16px) saturate(1.6);
+  -webkit-backdrop-filter: blur(16px) saturate(1.6);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, rgba(255, 255, 255, 0.5));
+  border-radius: 12px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 0 0 1px color-mix(in srgb, var(--color-warning) 14%, transparent),
+    var(--shadow-sm);
+}
+/* TodoPanel：chip 胶囊 + 展开体均玻璃 */
+.todo-panel__chip {
+  background: rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(12px) saturate(1.5);
+  -webkit-backdrop-filter: blur(12px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    var(--shadow-sm);
+}
+.todo-panel__body {
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(18px) saturate(1.6);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    var(--shadow-md);
+}
+/* 回撤操作条：悬浮玻璃（原实白底） */
+.msg-turn__action {
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(14px) saturate(1.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .chat-panel,
+  .chat-panel .ant-collapse:not(.ant-collapse-ghost),
+  .hitl-card,
+  .todo-panel__chip,
+  .todo-panel__body,
+  .msg-turn__action {
+    background: rgba(255, 255, 255, 0.94);
+  }
+}
 .chat-panel__column {
   max-width: 1560px;
   margin: 0 auto;
-  padding: 8px 16px 6px;
+  /* 底部让位于悬浮玻璃 dock：--composer-h 由 ChatPage 的 ResizeObserver 实时
+     写入 body（chips/textarea 自动增高/拖拽均跟随），消息末条停在玻璃上缘之上 */
+  padding: 8px 16px calc(var(--composer-h, 120px) + 14px);
 }
 .chat-panel__composer {
   flex-shrink: 0;
@@ -1379,12 +1581,67 @@ pre,
   margin: 0 auto;
   padding: 8px 16px 14px;
 }
-/* composer 内嵌面板后去壳：转为浅灰输入字段，避免卡片套卡片的双边框 */
+/* composer 内嵌面板后去壳 + 流体玻璃化（Liquid Glass · 试验）：
+   composer 悬浮于滚动区上方，backdrop-filter 取景滚过的消息流——
+   透明度确认：元素自身背景的 rgba α 与 backdrop-filter 正交，α 控制透出
+   多少"已模糊后景"，blur/saturate 只处理后景，可独立调节。
+   三态：浏览（默认，α≈0.38 透看模糊消息）→ hover（微亮）→ 聚焦
+   （:focus-within，磨砂加深 α≈0.74 + blur 增强 + 主色描边辉光）。
+   注意：::before 顶部镜面亮斑依赖 .chat-composer 基类 overflow:hidden 裁切。 */
 .chat-panel .chat-composer {
-  background: var(--color-bg);
-  border: none;
-  border-radius: var(--radius-md);
-  box-shadow: none;
+  position: relative;
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.28);
+  backdrop-filter: blur(14px) saturate(1.6);
+  -webkit-backdrop-filter: blur(14px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.28),
+    0 2px 8px rgba(60, 64, 67, 0.06),
+    0 12px 32px rgba(60, 64, 67, 0.08);
+  transition:
+    background 0.28s ease,
+    backdrop-filter 0.28s ease,
+    border-color 0.28s ease,
+    box-shadow 0.28s ease;
+}
+/* 顶部受光镜面亮斑（玻璃厚度感） */
+.chat-panel .chat-composer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(120% 60% at 30% -20%, rgba(255, 255, 255, 0.5), transparent 60%);
+  pointer-events: none;
+}
+.chat-panel .chat-composer:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+/* 聚焦态：点击玻璃任意空白处（ChatInput focusComposer）或直接点输入框触发。
+   磨砂骤密 + 折射增强 + 主色 rim 辉光——"玻璃从液体凝结为实体"的观感 */
+.chat-panel .chat-composer:focus-within {
+  background: rgba(255, 255, 255, 0.66);
+  backdrop-filter: blur(26px) saturate(1.7) brightness(1.03);
+  -webkit-backdrop-filter: blur(26px) saturate(1.7) brightness(1.03);
+  border-color: color-mix(in srgb, var(--color-primary) 32%, #ffffff);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.34),
+    0 0 0 1px color-mix(in srgb, var(--color-primary) 22%, transparent),
+    0 4px 18px color-mix(in srgb, var(--color-primary) 16%, transparent),
+    0 12px 36px rgba(60, 64, 67, 0.1);
+}
+/* 不支持 backdrop-filter 的环境：近实底回退（聚焦仍以边框/辉光区分） */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .chat-panel .chat-composer {
+    background: rgba(255, 255, 255, 0.92);
+  }
+}
+/* 附件 chip 融入玻璃面：实底白改半透 */
+.chat-panel .chat-composer .attach-chip {
+  background: rgba(255, 255, 255, 0.55);
 }
 
 /* ===== 回合导航轨（TurnRail）=====
@@ -1497,8 +1754,12 @@ pre,
     display: none;
   }
 }
-/* ≥900px：圆点档 —— 阅读列与 composer 右侧同步让出轨道宽度（两缘对齐） */
+/* ≥900px：圆点档 —— 阅读列与 composer 右侧同步让出轨道宽度（两缘对齐）；
+   轨道底部抬升到玻璃 dock 上缘之上，末位圆点不被磨砂面板盖住 */
 @container (min-width: 900px) {
+  .turn-rail {
+    bottom: calc(var(--composer-h, 120px) + 18px);
+  }
   .chat-panel__column,
   .chat-panel__composer {
     padding-right: 34px;
@@ -1562,24 +1823,260 @@ pre,
   gap: 20px;
 }
 
-/* 通用页面内容卡：纯内容（标题已上提 Header），白卡浮于画布 */
+/* 通用页面内容卡：纯内容（标题已上提 Header），玻璃卡浮于画布（智能体列表/
+   模型列表/MCP/技能/知识库/会话列表等所有 PageContainer 页面共用）。
+   α=0.48：透出画布环境光斑（"更透"的玻璃观感），深灰正文对比仍充分。
+   注意不能加 ::before 镜面亮斑——本元素是滚动容器，绝对定位伪元素会随内容滚走。 */
 .page-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border-soft);
+  position: relative;
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.48);
+  backdrop-filter: blur(22px) saturate(1.7);
+  -webkit-backdrop-filter: blur(22px) saturate(1.7);
+  border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    var(--shadow-sm);
   padding: 16px 20px;
+}
+/* antd 表面融入玻璃：Table/Segmented/Card 默认白底（colorBgContainer），
+   透明化后透出卡片玻璃与画布光斑；表头区分改靠底部分隔线。
+   选择器带 .ant-table-wrapper 前缀：antd 表头样式为 (0,3,0)，不带则平手落败 */
+.page-body .ant-table,
+.page-body .ant-table-container,
+.page-body .ant-table-wrapper .ant-table-thead > tr > th,
+.page-body .ant-card,
+.page-body .ant-empty {
+  background: transparent;
+}
+.page-body .ant-table-wrapper .ant-table-thead > tr > th {
+  border-bottom: 1px solid var(--color-border-soft);
+}
+.page-body .ant-segmented {
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.page-body .ant-pagination {
+  background: transparent;
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .page-body { background: rgba(255, 255, 255, 0.94); }
 }
 
 /* 浮层模块外壳下的 Sider 折叠触发器：antd 默认 position:fixed 会脱离圆角卡片，
-   改回绝对定位（Sider 自身 relative）并补底部圆角 + 顶部分隔线，与卡片轮廓吻合 */
-.app-sider .ant-layout-sider-trigger {
+   改回绝对定位（Sider 自身 relative）并补底部圆角 + 顶部分隔线，与卡片轮廓吻合；
+   白底改玻璃延续（卡片本体已玻璃化，触发器实白会露馅） */
+.app-shell .app-sider .ant-layout-sider-trigger {
   position: absolute;
   border-radius: 0 0 13px 13px;
   box-shadow: 0 -1px 0 var(--color-border-soft);
+  background: rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(12px) saturate(1.5);
+  -webkit-backdrop-filter: blur(12px) saturate(1.5);
+}
+
+/* ===== [试验] 流体玻璃外壳 + 环境光层 =====
+   玻璃"无景可取则无形"：backdrop-filter 对纯色画布不可感知（这正是玻璃仅在
+   被消息遮挡时才明显的原因）。在画布上铺缓慢漂移的彩色光斑（蓝/紫/青，
+   双伪元素 × 双渐变 = 4 光斑，transform 动画走合成器不触发重绘），
+   Sider / Topbar / composer 等玻璃面取景后任何状态下都有流动折射感。
+   光斑纯装饰：absolute + pointer-events:none，不参与布局与交互。 */
+.app-shell { position: relative; }
+.app-ambient {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.app-ambient::before {
+  content: '';
+  position: absolute;
+  left: -12vmax;
+  top: -18vmax;
+  width: 64vmax;
+  height: 64vmax;
+  background:
+    radial-gradient(closest-side at 30% 30%, rgba(26, 115, 232, 0.2), transparent 72%),
+    radial-gradient(closest-side at 75% 70%, rgba(0, 137, 123, 0.14), transparent 70%);
+  animation: ambient-drift-a 44s ease-in-out infinite alternate;
+}
+.app-ambient::after {
+  content: '';
+  position: absolute;
+  right: -16vmax;
+  bottom: -20vmax;
+  width: 60vmax;
+  height: 60vmax;
+  background:
+    radial-gradient(closest-side at 35% 65%, rgba(132, 48, 206, 0.17), transparent 70%),
+    radial-gradient(closest-side at 70% 25%, rgba(26, 115, 232, 0.12), transparent 70%);
+  animation: ambient-drift-b 56s ease-in-out infinite alternate;
+}
+@keyframes ambient-drift-a {
+  to { transform: translate3d(5vw, 4vh, 0) rotate(6deg); }
+}
+@keyframes ambient-drift-b {
+  to { transform: translate3d(-4vw, -5vh, 0) rotate(-5deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-ambient::before,
+  .app-ambient::after { animation: none; }
+}
+
+/* 玻璃外壳通用（Sider / Header）：半透薄底 + 取景后景 + rim 高光 + 顶部镜面亮斑。
+   ⚠ 选择器必须带 .app-shell 前缀（0,2,0）：antd v5 运行时样式给 .ant-layout-sider /
+   .ant-layout-header 自带 background:#fff，且注入顺序晚于本样式表——单类 .app-glass
+   (0,1,0) 与之同优先级会被覆盖，玻璃底变实白、只剩 rim（"玻璃贴在白底上"的根因）。
+   α=0.4 在浅画布 + 彩色光斑上保住深灰文字对比（可用性优先）；
+   @supports 回退近实底。内部实底面（Menu/芯片）由各自规则透明化融入。 */
+.app-shell .app-glass {
+  position: relative;
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.4) !important;
+  backdrop-filter: blur(22px) saturate(1.8);
+  -webkit-backdrop-filter: blur(22px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.3),
+    var(--shadow-sm);
+}
+.app-shell .app-glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(120% 55% at 28% -18%, rgba(255, 255, 255, 0.5), transparent 58%);
+  pointer-events: none;
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .app-shell .app-glass { background: rgba(255, 255, 255, 0.92) !important; }
+}
+/* 菜单融入玻璃面：antd Menu 默认白底，透出后景光斑 */
+.app-sider .ant-menu,
+.app-sider .ant-menu-inline {
+  background: transparent;
+}
+/* Header 内控件融入玻璃：Segmented / 默认按钮白底半透化（页面动作区） */
+.app-glass .ant-segmented {
+  background: rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.app-glass .ant-btn-default {
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* ===== 选中态：液态玻璃凸起（侧边栏菜单 + 工作区文件树，替换默认浅蓝块）=====
+   物理隐喻——玻璃面板上"凝出一块更亮的玻璃"。像玻璃的三个关键：
+   ① 低 α（0.26）高透——大量透出后景光斑，而非磨砂白；
+   ② 强折射——blur 18 + saturate 1.9，后景色被强散射出彩色边缘；
+   ③ 厚度感——顶部 specular 斜光 + 上缘亮线下缘暗线的内渐变 + 下缘投影凸出。
+   主色左边条提供身份标识；四重信号（镜面/高光/投影/色条）不依赖底色差。 */
+
+/* 侧边栏菜单（.app-shell 前缀稳压 antd 运行时样式）。
+   透明度按反馈再降（0.26→0.12 底 + 0.30 渐变顶）：更依赖 rim/描边/投影/色条
+   定义玻璃轮廓，透出更多后景光斑 */
+.app-shell .app-sider .ant-menu-item.ant-menu-item-selected {
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.07) 38%, rgba(255, 255, 255, 0) 62%),
+    rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(18px) saturate(1.9) brightness(1.04);
+  -webkit-backdrop-filter: blur(18px) saturate(1.9) brightness(1.04);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  border-left: 3px solid var(--color-primary);
+  border-radius: 8px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 2px rgba(120, 145, 180, 0.25),
+    inset 0 8px 12px -8px rgba(255, 255, 255, 0.55),
+    0 1px 2px rgba(60, 64, 67, 0.08),
+    0 4px 10px rgba(60, 64, 67, 0.12);
+}
+.app-shell .app-sider .ant-menu-item.ant-menu-item-selected::after {
+  display: none; /* 去掉 antd 默认右侧主色竖条，玻璃自带左边条 */
+}
+.app-shell .app-sider .ant-menu-item:not(.ant-menu-item-selected):hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+}
+
+/* 工作区文件树：选中节点玻璃凸起（antd 默认浅蓝块 → 透明玻璃 + 主色条）。
+   ⚠ 收缩为内容宽必须带 .ant-tree 中段（0,3,0）：antd 自带
+   `.ant-tree .ant-tree-node-content-wrapper { flex: auto }`（0,2,0）注入更晚，
+   上轮缺中段类平手落败——玻璃块被拉满整行（"条块仍过长"的根因）。
+   fit-content 使块贴合"图标+名称+体积"，三态 padding 统一 8px 防悬停位移 */
+.ws-view__tree-body .ant-tree .ant-tree-node-content-wrapper {
+  flex: 0 0 auto;
+  width: fit-content;
+  max-width: 100%;
+  padding-inline: 8px;
+}
+.ws-view__tree-body .ant-tree .ant-tree-node-content-wrapper.ant-tree-node-selected,
+.ws-view__tree-body .ant-tree .ant-tree-node-content-wrapper.ant-tree-node-selected:hover {
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.07) 38%, rgba(255, 255, 255, 0) 62%),
+    rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(18px) saturate(1.9) brightness(1.04);
+  -webkit-backdrop-filter: blur(18px) saturate(1.9) brightness(1.04);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  border-left: 3px solid var(--color-primary);
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 2px rgba(120, 145, 180, 0.25),
+    inset 0 8px 12px -8px rgba(255, 255, 255, 0.55),
+    0 1px 2px rgba(60, 64, 67, 0.08),
+    0 4px 10px rgba(60, 64, 67, 0.12);
+  color: var(--color-text);
+}
+/* 树悬停：轻玻璃预览（比选中弱一档） */
+.ws-view__tree-body .ant-tree .ant-tree-node-content-wrapper:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .app-shell .app-sider .ant-menu-item.ant-menu-item-selected,
+  .ws-view__tree-body .ant-tree-node-content-wrapper.ant-tree-node-selected {
+    background: rgba(255, 255, 255, 0.9);
+  }
+}
+
+/* ===== 抽屉侧边栏玻璃化（知识库表单/文档管理/模型/MCP/配置历史 等所有 Drawer）=====
+   抽屉从右侧滑入、覆盖在页面上——是"流体玻璃侧边栏"的最佳载体：磨砂玻璃取景
+   被遮罩压暗的页面内容。选择器带 body 前缀（抽屉 portal 到 body，(0,3,0) 稳压
+   antd 运行时注入的 .ant-drawer .ant-drawer-content (0,2,0) 实白底）。
+   遮罩减淡（0.45→0.3）：透出更多页面轮廓，玻璃"有景可取"。 */
+body .ant-drawer .ant-drawer-content {
+  background: rgba(255, 255, 255, 0.66);
+  backdrop-filter: blur(26px) saturate(1.8);
+  -webkit-backdrop-filter: blur(26px) saturate(1.8);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+body .ant-drawer .ant-drawer-header,
+body .ant-drawer .ant-drawer-footer {
+  background: transparent;
+}
+body .ant-drawer .ant-drawer-header {
+  border-bottom: 1px solid var(--color-border-soft);
+}
+body .ant-drawer .ant-drawer-footer {
+  border-top: 1px solid var(--color-border-soft);
+}
+body .ant-drawer .ant-drawer-mask {
+  background: rgba(31, 38, 48, 0.3);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  body .ant-drawer .ant-drawer-content { background: rgba(255, 255, 255, 0.95); }
 }
 
 /* 节点详情面板（工作区卡内右区）：透明嵌入，无独立卡壳；flex:1 撑满列高（空态垂直居中） */
@@ -1704,13 +2201,19 @@ pre,
   height: 100%;
   min-width: 0;
 }
-/* 两卡共用的模块卡外观 */
+/* 两卡共用的模块卡外观（玻璃化：与页面内容卡同一玻璃语言，取景画布光斑） */
 .ws-view__tree,
 .ws-view__preview {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border-soft);
+  position: relative;
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.48);
+  backdrop-filter: blur(22px) saturate(1.7);
+  -webkit-backdrop-filter: blur(22px) saturate(1.7);
+  border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    var(--shadow-sm);
   overflow: hidden;
 }
 .ws-view__tree {
@@ -1724,7 +2227,9 @@ pre,
   justify-content: space-between;
   padding: 8px 10px;
   border-bottom: 1px solid var(--color-border-soft);
-  background: var(--color-bg-elevated);
+  background: rgba(255, 255, 255, 0.38);  /* 半透延续：卡壳玻璃不被实白头带打断 */
+  backdrop-filter: blur(10px) saturate(1.5);
+  -webkit-backdrop-filter: blur(10px) saturate(1.5);
   flex-shrink: 0;
 }
 .ws-view__tree-body {
@@ -1735,6 +2240,8 @@ pre,
 }
 .ws-view__tree-body .ant-tree {
   font-size: 13px;
+  /* antd Tree 自带白底会盖满玻璃卡内部（"卡片不玻璃"的根因），透明化露出卡壳玻璃 */
+  background: transparent;
 }
 .ws-view__tree-body .ant-tree .ant-tree-title {
   display: inline-flex;

@@ -26,15 +26,22 @@ def _service(request: Request) -> AgentService:
     return AgentService(get_appstate(request).pool)
 
 
-def _validate_vision_mount(st, vision_model_id, base_model_id: uuid.UUID) -> None:
+def _validate_vision_mount(st, vision_model_id, base_model_id: uuid.UUID, config: dict) -> None:
     """vision_model_id 保存门（CRUD 路径强制，router→400）。
 
-    - 必须已注册 + 启用 + supports_vision（经 ModelStore 内存缓存单一真相）；
+    - 前置：主代理须已开启 allow_attachments——三门（能力端点/上传门/发送门）
+      均先查 allow_attachments，未开启时下挂永不可达（死配置，拒绝保存）；
     - 互斥：基座模型自带视觉时禁止下挂（冗余引用制造歧义；前端隐藏选择器
-      仅 UX，此处才是本体强制）。
+      仅 UX，此处才是本体强制）；
+    - 可用性：必须已注册 + 启用 + supports_vision（经 ModelStore 内存缓存单一真相）。
     """
     if vision_model_id is None:
         return
+    if not config.get("allow_attachments", False):
+        raise HTTPException(
+            status_code=400,
+            detail="主代理未开启附件能力（allow_attachments），下挂视觉模型不可达，请先开启附件能力",
+        )
     if st.model_store.supports_vision(base_model_id):
         raise HTTPException(
             status_code=400,
@@ -72,7 +79,7 @@ async def create_agent(body: AgentCreate, request: Request):
     # 校验 model_id 已注册且可用
     if not st.model_store.has(body.model_id):
         raise HTTPException(status_code=404, detail=f"model {body.model_id} 未注册或已禁用")
-    _validate_vision_mount(st, body.vision_model_id, body.model_id)
+    _validate_vision_mount(st, body.vision_model_id, body.model_id, body.config)
     try:
         agent = await svc.create(
             body.name, body.description, body.config, body.model_id, body.creator,
@@ -94,7 +101,7 @@ async def update_agent(agent_id: uuid.UUID, body: AgentUpdate, request: Request)
     # 校验 model_id 已注册且可用（换模型时同样校验）
     if not st.model_store.has(body.model_id):
         raise HTTPException(status_code=404, detail=f"model {body.model_id} 未注册或已禁用")
-    _validate_vision_mount(st, body.vision_model_id, body.model_id)
+    _validate_vision_mount(st, body.vision_model_id, body.model_id, body.config)
     try:
         agent = await svc.update(
             agent_id, body.config, body.model_id, body.description, body.updater, body.name,

@@ -2,10 +2,11 @@
    react-markdown + gfm + 代码高亮 + 数学公式（remark-math → KaTeX）。
    代码块带「复制」；mermaid 块带「下载 SVG / 复制源码」；
    图像带「下载」（未来 agent 出图即用）。mermaid 走单一渲染入口（准则 F7）。 */
-import { type ReactElement, type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactElement, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
+import remarkBreaks from 'remark-breaks'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
@@ -143,11 +144,24 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }): ReactNode 
   )
 }
 
-export function Markdown({ children }: { children: string }): ReactNode {
+/** breaks：单次换行渲染为 <br>（所见即所得）。用于用户气泡——非技术用户
+    不会写"行尾两空格"或空行分段，GFM 默认会把多行合并成一段；
+    同时保留加粗/列表/代码等轻量语法，懂 markdown 的用户不受影响。 */
+export function Markdown({
+  children,
+  breaks = false,
+}: {
+  children: string
+  breaks?: boolean
+}): ReactNode {
+  const remarkPlugins = useMemo(
+    () => (breaks ? [remarkGfm, remarkMath, remarkBreaks] : [remarkGfm, remarkMath]),
+    [breaks],
+  )
   return (
     <div className="gd-md" style={{ lineHeight: 1.7, wordBreak: 'break-word' }}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={remarkPlugins}
         // ignoreMissing：mermaid 不是已注册高亮语言，避免 rehype-highlight 抛错
         rehypePlugins={[
           [rehypeHighlight, { ignoreMissing: true }],

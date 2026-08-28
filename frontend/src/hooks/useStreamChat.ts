@@ -56,10 +56,13 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       // 仅 idle 可发（interrupted 走 resume）
       if (store.status !== 'idle') return
 
-      // 先快照待发附件 + 启用知识库：既要挂到 user 消息上（会话窗内展示），又要写进请求体
+      // 先快照待发附件 + 启用知识库：既要挂到 user 消息上（会话窗内展示 KB 徽标/
+      // 附件缩略），又要写进请求体（后端同样把 kb_ids 旁挂进消息 additional_kwargs，
+      // 历史/回撤回显走同一形状 → 前后进入会话渲染一致）
       const attachs = store.attachments
+      const kbSnap = store.selectedKbs.map((kb) => ({ id: kb.id, name: kb.name }))
       const kbIds = store.selectedKbs.map((kb) => kb.id)
-      store.pushUser(content, attachs)
+      store.pushUser(content, attachs, kbSnap)
       store.setStreamError(null)
       store.setStatus('streaming')
       store.setStreamSource('sse')

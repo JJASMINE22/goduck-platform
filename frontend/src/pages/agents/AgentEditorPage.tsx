@@ -62,6 +62,9 @@ export function AgentEditorPage(): ReactNode {
   const setValidation = useAgentEditorStore((s) => s.setValidation)
 
   const [histOpen, setHistOpen] = useState(false)
+  // 主代理（根节点）附件开关：视觉下挂的渲染与保存共同前置
+  //（三门均先查 allow_attachments，未开启时下挂永不可达）
+  const rootAllowAttachments = !!nodes?.find((n) => n.parentId === null)?.allow_attachments
   // 右侧详情面板宽度：手柄在其左缘（edge='left'，向左拖变宽）；双击重置；宽度持久化
   const {
     size: detailWidth,
@@ -120,9 +123,11 @@ export function AgentEditorPage(): ReactNode {
     }
     if (!name.trim()) return toastError('请填写智能体名称')
     if (!modelId) return toastError('请绑定模型')
-    // 前端互斥防护（后端保存门为本体）：基座自带视觉时强制清空下挂
+    // 前端防护（后端保存门为本体）：基座自带视觉、或主代理未开启附件能力时
+    // 强制清空下挂（下拉隐藏后 store 可能残留旧值，保存时自愈为 null）
     const baseModel = (models.data ?? []).find((m) => m.id === modelId)
-    const effectiveVision = baseModel?.supports_vision ? null : visionModelId
+    const effectiveVision =
+      baseModel?.supports_vision || !rootAllowAttachments ? null : visionModelId
     const user = currentUserId
 
     const doUpdate = () =>
@@ -227,12 +232,13 @@ export function AgentEditorPage(): ReactNode {
     disabled: !m.enabled,
   }))
 
-  // 视觉下挂选择器：未选基座 → 禁用（placeholder 引导）；基座自带视觉 → 隐藏
-  // （互斥，后端保存门为本体强制）；基座无视觉 → 可选。候选走
+  // 视觉下挂选择器：仅在「主代理已开启附件能力 + 已选基座 + 基座不支持视觉」
+  // 三条件齐备后渲染（选基座前不渲染；基座自带视觉互斥隐藏；未开附件能力时
+  // 下挂不可达同样隐藏——后端保存门为本体强制）。候选走
   // GET /models?supports_vision=true&enable_thinking=false（已启用 + 视觉 +
   // 显式关思考——描述任务约定，注册表单有对应提示）。
   const baseModel = (models.data ?? []).find((m) => m.id === modelId)
-  const showVisionMount = !modelId || (!!baseModel && !baseModel.supports_vision)
+  const showVisionMount = rootAllowAttachments && !!baseModel && !baseModel.supports_vision
   const visionModelOptions = (visionModels.data ?? []).map((m) => ({
     value: m.id,
     label: `${m.name}（${m.model_type}）`,
@@ -310,13 +316,12 @@ export function AgentEditorPage(): ReactNode {
               <span className="editor-field__label">视觉下挂</span>
               <Select
                 style={{ width: 208 }}
-                placeholder={modelId ? '无（不能上传图像）' : '请先选择基座模型'}
+                placeholder="无（不能上传图像）"
                 value={visionModelId ?? undefined}
                 onChange={(v) => setVisionModelId(v ?? null)}
                 onClear={() => setVisionModelId(null)}
                 options={visionModelOptions}
                 allowClear
-                disabled={!modelId}
                 loading={visionModels.isLoading}
                 showSearch
                 optionFilterProp="label"

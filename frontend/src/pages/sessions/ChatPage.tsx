@@ -127,6 +127,7 @@ export function ChatPage(): ReactNode {
   const removeTurn = useChatStore((s) => s.removeTurn)
   const setDraft = useChatStore((s) => s.setDraft)
   const setAttachments = useChatStore((s) => s.setAttachments)
+  const setKbs = useChatStore((s) => s.setKbs)
   const clearInterrupt = useChatStore((s) => s.clearInterrupt)
   const setStatus = useChatStore((s) => s.setStatus)
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
@@ -162,6 +163,24 @@ export function ChatPage(): ReactNode {
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
   }
+
+  // —— 玻璃 dock 高度 → --composer-h ——
+  // composer 悬浮于滚动区之上（流体玻璃取景消息流），高度随 chips/textarea
+  // 自动增高/拖拽实时变化；ResizeObserver 把 dock 实际高度写到 body 的 CSS 变量，
+  // 阅读列 padding-bottom 引用它让位，最后一条消息永不沉入玻璃下方不可读。
+  // callback ref 模式：archived 切换引起的 dock 挂载/卸载自动接好观察与清理。
+  const dockRoRef = useRef<ResizeObserver | null>(null)
+  const attachDock = useCallback((el: HTMLDivElement | null) => {
+    dockRoRef.current?.disconnect()
+    dockRoRef.current = null
+    const body = el?.parentElement
+    if (!el || !body || typeof ResizeObserver === 'undefined') return
+    const apply = () => body.style.setProperty('--composer-h', `${el.offsetHeight}px`)
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(el)
+    dockRoRef.current = ro
+  }, [])
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
@@ -370,6 +389,7 @@ export function ChatPage(): ReactNode {
       removeTurn(messageId)
       setDraft(res.raw_content)
       setAttachments(res.attachments ?? [])
+      setKbs(res.kbs ?? [])
       clearInterrupt()
       setStatus('idle')
       toastSuccess('已回撤该回合，可编辑后重发')
@@ -433,32 +453,35 @@ export function ChatPage(): ReactNode {
                 />
                 {!archived ? <HitlCard resume={stream.resume} /> : null}
               </div>
-            </div>
-            {/* 回合导航轨：≥3 回合才渲染；形态随面板宽度分级（容器查询，见 index.css） */}
-            <TurnRail scrollRef={scrollRef} />
-          </div>
-
-          {/* 输入：归档会话只读，不可继续对话 */}
-          {archived ? (
-            <div className="chat-panel__composer">
-              <Alert type="info" message="该会话已归档，仅支持查看历史记录，不可继续对话。" />
-            </div>
-          ) : (
-            <>
-              <div className="row-resizer" onMouseDown={onInputResizeDown} title="拖拽调整输入区高度" />
-              <div className="chat-panel__composer" style={{ minHeight: inputHeight ?? undefined }}>
-                <ChatInput
-                  sessionId={session.id}
-                  userId={session.user_id}
-                  status={stream.status}
-                  send={stream.send}
-                  cancel={handleCancel}
-                  voice={voice}
-                />
               </div>
-            </>
-          )}
-        </section>
+              {/* 回合导航轨：≥3 回合才渲染；形态随面板宽度分级（容器查询，见 index.css） */}
+              <TurnRail scrollRef={scrollRef} />
+
+              {/* 玻璃 dock：composer 悬浮于滚动区底部（流体玻璃取景消息流，
+                  发送后消息从玻璃下滚过、模糊可见）；dock 本身不拦截指针，
+                  宽屏两侧空白处可正常 hover/点击下方消息 */}
+              <div className="chat-panel__dock" ref={attachDock}>
+                <div className="row-resizer" onMouseDown={onInputResizeDown} title="拖拽调整输入区高度" />
+                <div className="chat-panel__composer" style={{ minHeight: inputHeight ?? undefined }}>
+                  <ChatInput
+                    sessionId={session.id}
+                    userId={session.user_id}
+                    status={stream.status}
+                    send={stream.send}
+                    cancel={handleCancel}
+                    voice={voice}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 输入：归档会话只读，不可继续对话（常规流布局，不参与玻璃悬浮） */}
+            {archived ? (
+              <div className="chat-panel__composer">
+                <Alert type="info" message="该会话已归档，仅支持查看历史记录，不可继续对话。" />
+              </div>
+            ) : null}
+          </section>
 
         {wsVisited && allowWorkspace && !archived ? (
           <div className={effectiveView === 'workspace' ? 'ws-page' : 'ws-page ws-page--hidden'}>

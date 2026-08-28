@@ -24,6 +24,12 @@ export interface SessionOut {
   agent_name?: string | null
 }
 
+/** 知识库最小引用（schemas.py KbRef）：徽标渲染与回撤回填所需的全部信息 */
+export interface KbRef {
+  id: UUID
+  name: string
+}
+
 /** LangGraph checkpointer 历史消息（schemas.py MessageOut） */
 export interface MessageOut {
   id?: string | null
@@ -34,6 +40,9 @@ export interface MessageOut {
   tool_call_id?: string | null
   // 仅 human 消息：来自消息 additional_kwargs（发送时写入）→ 历史接口批量查 upload 表回填
   attachments?: UploadOut[]
+  // 仅 human 消息：本条消息启用的知识库（kb_ids 同源，批量解析为 id+名称），
+  // 用户气泡据此渲染 KB 徽标——与 content（已注入锚点脚手架）解耦
+  kbs?: KbRef[]
 }
 
 /** 回撤一个会话回合（schemas.py WithdrawRequest / WithdrawResponse） */
@@ -44,5 +53,6 @@ export interface WithdrawRequest {
 export interface WithdrawResponse {
   raw_content: string // 被回撤用户消息原文（回填发送框）
   attachments: UploadOut[] // 被回撤用户消息的附件（回填发送框 chip）
+  kbs: KbRef[] // 被回撤用户消息启用的知识库（回填发送框 KB 选择器）
   removed_ids: string[] // 实际软删的消息 id 列表
 }

@@ -360,6 +360,7 @@ async def _run_agent_round(
                 start.rubric,
                 upload_ids=built.upload_ids,
                 raw_content=user_text,
+                kb_ids=[str(k) for k in start.knowledge_base_ids],
             )
             try:
                 async for ev in gen:

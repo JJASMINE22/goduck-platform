@@ -22,7 +22,8 @@ class AgentCreate(BaseModel):
     vision_model_id: Optional[uuid.UUID] = Field(
         default=None,
         description="下挂视觉模型 id（基座无视觉时用于图像预消费描述）。"
-        "基座模型 supports_vision=true 时禁止设置（保存时 400）。",
+        "主代理须开启 allow_attachments 且基座 supports_vision=false 才允许设置"
+        "（违反任一保存时 400）。",
     )
     creator: str = Field(min_length=1)
 
@@ -32,7 +33,8 @@ class AgentUpdate(BaseModel):
     model_id: uuid.UUID = Field(..., description="引用已注册模型 id（可更换模型）")
     vision_model_id: Optional[uuid.UUID] = Field(
         default=None,
-        description="下挂视觉模型 id；null=解除下挂（基座自带视觉时同样禁止设置）",
+        description="下挂视觉模型 id；null=解除下挂。主代理须开启 allow_attachments "
+        "且基座自带视觉时禁止设置（违反任一保存时 400）",
     )
     name: Optional[str] = Field(
         default=None,
@@ -121,6 +123,13 @@ class SessionOut(BaseModel):
     agent_name: Optional[str] = None
 
 
+class KbRef(BaseModel):
+    """知识库最小引用（id + 名称）——历史/回撤回填时渲染 KB 徽标所需的全部信息。"""
+
+    id: uuid.UUID
+    name: str
+
+
 class MessageOut(BaseModel):
     id: Optional[str] = None
     role: str
@@ -131,6 +140,10 @@ class MessageOut(BaseModel):
     # 附件元数据（仅 human 消息）：upload_ids 记录在消息 additional_kwargs（发送时写入），
     # 历史接口据此批量查 upload 表回填。前端据此渲染缩略，与 content 解耦。
     attachments: list["UploadOut"] = Field(default_factory=list)
+    # 本条消息启用的知识库（仅 human 消息）：kb_ids 同样记录在 additional_kwargs，
+    # 历史接口据此批量查 knowledge_base 表回填 id+名称。前端据此在用户气泡上
+    # 渲染 KB 徽标——与 content（已注入锚点脚手架）解耦。
+    kbs: list["KbRef"] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -196,10 +209,11 @@ class WithdrawRequest(BaseModel):
 
 
 class WithdrawResponse(BaseModel):
-    """回撤结果：被回撤用户消息的原文 + 附件（回填发送框）+ 实际移除的消息 id 列表。"""
+    """回撤结果：被回撤用户消息的原文 + 附件 + 知识库选择（回填发送框）+ 实际移除的消息 id 列表。"""
 
     raw_content: str
     attachments: list["UploadOut"] = Field(default_factory=list)
+    kbs: list["KbRef"] = Field(default_factory=list)
     removed_ids: list[str] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}

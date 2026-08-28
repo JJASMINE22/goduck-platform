@@ -125,8 +125,10 @@ export function useVoiceInput(sessionId: UUID | null, enabled: boolean): UseVoic
         store.setVoiceState('idle')
         store.setInterimTranscript('')
         if (finalText && store.status === 'idle') {
+          // 快照与手打 send() 同源：附件/KB 挂上用户消息（徽标渲染一致）
           const attachs = store.attachments
-          store.pushUser(finalText, attachs)
+          const kbSnap = store.selectedKbs.map((kb) => ({ id: kb.id, name: kb.name }))
+          store.pushUser(finalText, attachs, kbSnap)
           store.setStreamError(null)
           store.clearAttachments()
           store.clearKbs()

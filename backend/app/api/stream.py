@@ -122,6 +122,7 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
                 body.rubric,
                 upload_ids=built.upload_ids,
                 raw_content=body.content,
+                kb_ids=[str(k) for k in body.knowledge_base_ids],
             )
             try:
                 async for ev in gen:

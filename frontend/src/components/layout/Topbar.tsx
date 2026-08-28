@@ -170,8 +170,8 @@ function UserSwitcher(): ReactNode {
           e.currentTarget.style.background = 'var(--color-primary-bg)'
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.borderColor = 'var(--color-border)'
-          e.currentTarget.style.background = 'var(--color-bg-elevated)'
+          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.65)'
+          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.5)'
         }}
         style={{
           display: 'inline-flex',
@@ -180,8 +180,8 @@ function UserSwitcher(): ReactNode {
           cursor: 'pointer',
           padding: '3px 10px 3px 5px',
           borderRadius: 'var(--radius-md)',
-          border: '1px solid var(--color-border)',
-          background: 'var(--color-bg-elevated)',
+          border: '1px solid rgba(255, 255, 255, 0.65)',
+          background: 'rgba(255, 255, 255, 0.5)',
           fontFamily: 'inherit',
           color: 'var(--color-text)',
           transition: 'background .15s, border-color .15s',

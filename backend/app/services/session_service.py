@@ -15,7 +15,7 @@ from langgraph.graph.state import CompiledStateGraph
 from psycopg_pool import AsyncConnectionPool
 
 from app.models import db as dbmod
-from app.models.schemas import UploadOut
+from app.models.schemas import KbRef, UploadOut
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +97,10 @@ class SessionService:
         # 附件缩略回显：upload_ids 记录在 human 消息 additional_kwargs（发送时写入），
         # 这里收集后一次批量查库注入，避免逐消息 N+1。与 content 完全解耦。
         attachments_by_idx = await self._resolve_attachments(messages, session_id)
+        # KB 徽标回显：kb_ids 同源（additional_kwargs），批量解析为 {id, name}。
+        kbs_by_idx = await self._resolve_kbs(messages)
         return [
-            _serialize_message(msg, attachments_by_idx.get(i))
+            _serialize_message(msg, attachments_by_idx.get(i), kbs_by_idx.get(i))
             for i, msg in enumerate(messages)
         ]
 
@@ -146,6 +148,48 @@ class SessionService:
                 out[i] = seq
         return out
 
+    async def _resolve_kbs(self, messages: list) -> dict[int, list[KbRef]]:
+        """Map each human message's kb_ids → resolved KbRef list (batch, no N+1).
+
+        kb_ids live on HumanMessage.additional_kwargs (written at send time).
+        KBs are workspace-global (no per-session scoping needed, unlike
+        uploads). Deleted KBs simply drop out of the resolved mapping — the
+        badge degrades to "gone" instead of erroring, mirroring the stale-
+        upload semantics of ``_resolve_attachments``.
+        """
+        per_msg: dict[int, list[str]] = {}
+        all_ids: list[uuid.UUID] = []
+        for i, m in enumerate(messages):
+            if getattr(m, "type", None) != "human":
+                continue
+            ak = getattr(m, "additional_kwargs", None) or {}
+            raw = ak.get("kb_ids")
+            if not isinstance(raw, list) or not raw:
+                continue
+            clean: list[str] = []
+            for kid in raw:
+                if not isinstance(kid, str):
+                    continue
+                try:
+                    parsed = uuid.UUID(kid)
+                except (ValueError, AttributeError, TypeError):
+                    continue
+                clean.append(kid)
+                all_ids.append(parsed)
+            if clean:
+                per_msg[i] = clean
+
+        if not all_ids:
+            return {}
+        rows = await dbmod.get_kbs_by_ids(self.pool, all_ids)
+        by_id = {str(r["id"]): r for r in rows}
+        out: dict[int, list[KbRef]] = {}
+        for i, ids in per_msg.items():
+            seq = [KbRef(id=by_id[k]["id"], name=by_id[k]["name"]) for k in ids if k in by_id]
+            if seq:
+                out[i] = seq
+        return out
+
     async def withdraw_turn(
         self,
         checkpointer: AsyncPostgresSaver,
@@ -167,8 +211,8 @@ class SessionService:
         state) no longer returns them — both /history and the next LLM context
         are correct automatically.
 
-        Returns the withdrawn user message's raw text + attachments so the
-        front-end can prefill the composer for edit-and-resend.
+        Returns the withdrawn user message's raw text + attachments + selected
+        KBs so the front-end can prefill the composer for edit-and-resend.
         """
         config = {"configurable": {"thread_id": thread_id}}
         messages = await self._load_messages(checkpointer, config)
@@ -214,7 +258,7 @@ class SessionService:
             {"messages": [RemoveMessage(id=i) for i in ids_to_remove]},
         )
 
-        # 5) recover raw_content + attachments for composer prefill
+        # 5) recover raw_content + attachments + kbs for composer prefill
         ak = getattr(target, "additional_kwargs", None) or {}
         raw = ak.get("raw_content")
         if not (isinstance(raw, str) and raw):
@@ -222,9 +266,11 @@ class SessionService:
             raw = c if isinstance(c, str) else str(c)
 
         attachments = await self._resolve_human_attachments(ak.get("upload_ids"), session_id)
+        kbs = await self._resolve_human_kbs(ak.get("kb_ids"))
         return {
             "raw_content": raw,
             "attachments": attachments,
+            "kbs": kbs,
             "removed_ids": ids_to_remove,
         }
 
@@ -261,6 +307,34 @@ class SessionService:
             if row:
                 out.append(_upload_row_to_out(row))
         return out
+
+    async def _resolve_human_kbs(self, kb_ids: object) -> list[KbRef]:
+        """Resolve a single message's kb_ids → ordered, de-duplicated KbRef list.
+
+        Mirrors ``_resolve_human_attachments`` for knowledge bases; stale /
+        non-UUID ids are skipped silently (deleted KBs drop out of prefill).
+        """
+        if not isinstance(kb_ids, list) or not kb_ids:
+            return []
+        parsed: list[uuid.UUID] = []
+        seen: set[str] = set()
+        for kid in kb_ids:
+            if not isinstance(kid, str) or kid in seen:
+                continue
+            try:
+                parsed.append(uuid.UUID(kid))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            seen.add(kid)
+        if not parsed:
+            return []
+        rows = await dbmod.get_kbs_by_ids(self.pool, parsed)
+        by_id = {str(r["id"]): r for r in rows}
+        return [
+            KbRef(id=by_id[str(p)]["id"], name=by_id[str(p)]["name"])
+            for p in parsed
+            if str(p) in by_id
+        ]
 
     @staticmethod
     async def _load_messages(checkpointer: AsyncPostgresSaver, config: dict) -> list:
@@ -325,11 +399,15 @@ def _upload_row_to_out(row: dict) -> UploadOut:
     )
 
 
-def _serialize_message(msg, attachments: list[UploadOut] | None = None) -> dict:
+def _serialize_message(
+    msg,
+    attachments: list[UploadOut] | None = None,
+    kbs: list[KbRef] | None = None,
+) -> dict:
     """Best-effort message -> dict for /sessions/{id}/history."""
     role = getattr(msg, "type", type(msg).__name__)
     content = getattr(msg, "content", "")
-    # 展示优先用用户原始输入：附件消息的 content 被 ContentComposer 注入了
+    # 展示优先用用户原始输入：附件/KB 消息的 content 被 ContentComposer 注入了
     # 给模型看的 anchor 表格，raw_content 保留了用户真正发送的文本。
     ak = getattr(msg, "additional_kwargs", None) or {}
     raw = ak.get("raw_content")
@@ -353,4 +431,6 @@ def _serialize_message(msg, attachments: list[UploadOut] | None = None) -> dict:
         out["tool_call_id"] = tool_call_id
     if attachments:
         out["attachments"] = attachments
+    if kbs:
+        out["kbs"] = kbs
     return out

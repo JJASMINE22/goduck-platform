@@ -39,8 +39,10 @@ export function buildHistoryReplay(history: MessageOut[]): HistoryReplay {
           role: 'user',
           agentPath: 'root',
           content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-          // human 消息的附件缩略（后端从消息 additional_kwargs 查库回填）
+          // human 消息的附件缩略 + KB 徽标（后端从消息 additional_kwargs 查库回填），
+          // 与实时发送时的快照形状一致 → 同一渲染路径
           attachments: m.attachments?.length ? m.attachments : undefined,
+          kbs: m.kbs?.length ? m.kbs : undefined,
           createdAt: i,
         })
         break

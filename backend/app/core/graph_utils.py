@@ -79,6 +79,34 @@ def _main_delegation_guard(has_subagents: bool, workspace: bool) -> str | None:
     )
 
 
+def _kb_capability_prompt(tool_names: List[str]) -> str | None:
+    """知识库检索纪律（构建期追加到 system_prompt，仅主代理生效）。
+
+    动机：用户自写的系统提示常含强意图路由（如"选型→电商工具/参数→网络搜索"），
+    会压过消息级 KB 锚点的软暗示——锚点不点名工具名时模型按提示词路由，kb_search
+    被跳过（工具 schema 里的描述权重不足以对抗系统提示的显式路由指令）。构建期把
+    真实工具名、锚点格式与优先级写进系统提示，使锚点轮次的检索优先级高于路由规则。
+
+    前置：allow_knowledge=True 且 tool_names 实际持有 {server}__kb_search 才注入
+    （无检索工具时锚点轮次本就按"如实说明+自身能力"降级，注入点名反而误导）。
+    """
+    kb_tool = next((n for n in tool_names if n.endswith("__kb_search")), None)
+    if not kb_tool:
+        return None
+    return (
+        "\n\n---\n\n## 知识库检索纪律（平台自动注入）\n"
+        f"你持有知识库检索工具 `{kb_tool}`。用户消息开头若出现"
+        "「## 用户选择的知识库」锚点（含 kb_id 表格），表明用户已为该问题指定知识库，"
+        "该轮必须：\n"
+        f"- 优先调用 `{kb_tool}` 检索，kb_ids 参数必须使用锚点表格中的真实 kb_id，"
+        "禁止编造；与问题相关的多个角度可多次检索\n"
+        "- 答案优先依据检索结果作答；**此优先级高于本提示中任何意图路由规则**"
+        "（如按意图选择电商/网络搜索工具的规则，在锚点存在的轮次一律让位）\n"
+        "- 检索未命中或无相关内容时，如实说明后再按原意图路由或自身能力作答，"
+        "不得编造检索结果\n"
+    )
+
+
 def create_agent_recursive(
     agent_config: AgentConfig,
     tools: List = None,
@@ -101,6 +129,7 @@ def create_agent_recursive(
     cfg_workspace = agent_config.workspace
     cfg_allow_shell = agent_config.allow_shell
     cfg_task_planning = agent_config.task_planning
+    cfg_allow_knowledge = getattr(agent_config, "allow_knowledge", False)
     cfg_has_skills = _has_skills_anywhere(agent_config)
 
     # rubric middleware comes from config, independent of agent tools; read from
@@ -192,6 +221,11 @@ def create_agent_recursive(
         _guard = _main_delegation_guard(bool(subagents), cfg_workspace)
         if _guard:
             agent_config["system_prompt"] += _guard
+        # KB 检索纪律：allow_knowledge 仅主代理可开，故只在此注入（与委派纪律同点）
+        if cfg_allow_knowledge:
+            _kb = _kb_capability_prompt(agent_config.get("tool_names", []))
+            if _kb:
+                agent_config["system_prompt"] += _kb
 
     create_kwargs = dict(
         model=ctx.model,
@@ -241,6 +275,7 @@ def create_agent_dictionary(
     cfg_workspace = agent_config.workspace
     cfg_allow_shell = agent_config.allow_shell
     cfg_task_planning = agent_config.task_planning
+    cfg_allow_knowledge = getattr(agent_config, "allow_knowledge", False)
     cfg_has_skills = _has_skills_anywhere(agent_config)
 
     # main agent rubric (from config), decoupled from tools
@@ -312,6 +347,12 @@ def create_agent_dictionary(
     _guard = _main_delegation_guard(bool(subagents_config), cfg_workspace)
     if _guard:
         agent_config["system_prompt"] += _guard
+
+    # KB 检索纪律（与 recursive 路径同语义：本函数组装的即主代理）
+    if cfg_allow_knowledge:
+        _kb = _kb_capability_prompt(agent_config.get("tool_names", []))
+        if _kb:
+            agent_config["system_prompt"] += _kb
 
     create_kwargs = dict(
         model=ctx.model,

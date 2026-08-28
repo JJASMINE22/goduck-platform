@@ -269,15 +269,7 @@ export function HitlCard({
 
   return (
     <Flex justify="flex-start">
-      <div
-        style={{
-          width: '78%',
-          border: '1px solid var(--color-warning)',
-          background: 'var(--color-bg-elevated)',
-          borderRadius: 12,
-          padding: 14,
-        }}
-      >
+      <div className="hitl-card" style={{ width: '78%', padding: 14 }}>
         <Flex align="center" gap={8} style={{ marginBottom: 4 }}>
           <Tag color="orange">人工审批</Tag>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>

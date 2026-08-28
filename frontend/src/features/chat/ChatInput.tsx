@@ -5,7 +5,7 @@
     录音中输入框只读展示"草稿 + 流式转写"合并预览（与后端 stt_output 合并稿同构），
     松开后草稿与终稿合并为一条消息发送，与手打输入互斥。 */
 import { Button, Checkbox, Flex, Input, Popover, Tooltip, Typography, Upload } from 'antd'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useRef, useState } from 'react'
 import { AudioLines, BookOpen, ChevronDown, ChevronUp, FileText, Paperclip, Send, Square, X } from 'lucide-react'
 import { useAttachmentCapability, useUploadFile } from '@/hooks/useUploads'
 import { useKnowledgeBases, useKnowledgeCapability } from '@/hooks/useKnowledge'
@@ -68,6 +68,13 @@ export function ChatInput({
 
   const idle = status === 'idle'
   const streaming = status === 'streaming'
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  // 玻璃"点击聚焦"：点击 composer 任意空白处（padding/边缘）即聚焦输入框，
+  // 触发 :focus-within 聚焦态特效；交互元素（按钮/输入/popover 内容）不劫持。
+  const focusComposer = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('button, input, textarea, a, .ant-popover')) return
+    taRef.current?.focus()
+  }
   const canAttach = !!cap.data?.allow_attachments
   const canUseKb = !!kbCap.data?.allow_knowledge
   // 麦克风闸门（与 press() 内部守卫同源）：连接就绪 + 会话空闲 + 无进行中的语音回合
@@ -147,7 +154,7 @@ export function ChatInput({
   )
 
   return (
-    <div className="chat-composer">
+    <div className="chat-composer" onPointerDown={focusComposer}>
       {/* 已选附件 + 知识库（chip 嵌在 composer 内） */}
       {attachments.length || selectedKbs.length ? (
         <Flex gap={8} wrap className="chat-composer__chips">
@@ -214,6 +221,7 @@ export function ChatInput({
 
       {/* 输入区（无边框，融入容器）；录音/转写期间只读展示"草稿+流式转写"合并预览 */}
       <Input.TextArea
+        ref={taRef}
         className="chat-composer__input"
         variant="borderless"
         autoSize={{ minRows: 1, maxRows: 6 }}
@@ -320,9 +328,10 @@ export function ChatInput({
             />
           </Tooltip>
           {streaming ? (
-            <Button danger icon={<Square size={14} />} onClick={cancel}>
+            <button type="button" className="glass-btn chat-composer__stop" onClick={cancel}>
+              <Square size={14} />
               中止
-            </Button>
+            </button>
           ) : recording || transcribing ? (
             <span className="chat-composer__voice-hint">
               {recording ? '录音中…' : '识别中…'}
@@ -330,7 +339,7 @@ export function ChatInput({
           ) : (
             <button
               type="button"
-              className={`chat-composer__send${idle && draft.trim() ? ' chat-composer__send--ready' : ''}`}
+              className={`glass-btn chat-composer__send${idle && draft.trim() ? ' chat-composer__send--ready' : ''}`}
               disabled={!idle}
               onClick={handleSend}
             >

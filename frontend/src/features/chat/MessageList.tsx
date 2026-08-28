@@ -3,14 +3,14 @@
    [Demo] 入场动画 / 头像 / 角色色带 / 流式打字指示 / 工具执行脉动。 */
 import { Button, Collapse, Flex, Tag } from 'antd'
 import { type CSSProperties, type ReactNode, useMemo } from 'react'
-import { Bot, Brain, OctagonX, Undo2, User } from 'lucide-react'
+import { BookOpen, Bot, Brain, OctagonX, Undo2, User } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage, FileChangeEntry, ToolCallEntry } from '@/store/chatStore'
 import { Markdown } from '@/components/markdown/Markdown'
 import { MessageAttachments } from './MessageAttachments'
 import { FileChangesCard } from './FileChangesCard'
 import { ToolCallCard } from './ToolCallCard'
-import type { UUID } from '@/types'
+import type { KbRef, UUID } from '@/types'
 
 type TimelineItem =
   | { kind: 'msg'; ts: number; data: ChatMessage }
@@ -123,6 +123,7 @@ function MessageBubble({
   const isUser = msg.role === 'user'
   const { label, color } = agentMeta(msg.agentPath)
   const hasAttachments = isUser && !!msg.attachments?.length
+  const hasKbs = isUser && !!msg.kbs?.length
   const withdrawing = withdrawingId === msg.id
   // 归档只读会话不可回撤；流式中仅最近一条用户消息可"停止并回撤"，其余禁用
   const canWithdraw = !readOnly && isUser && (streaming ? isLastUser : true)
@@ -144,12 +145,15 @@ function MessageBubble({
               <Tag style={{ color, borderColor: color, background: 'transparent' }}>{label}</Tag>
             </div>
           ) : null}
+          {hasKbs ? <KbBadges kbs={msg.kbs!} /> : null}
           {msg.streaming ? (
             // 流式接收中：纯文本渲染，避免逐 token 重解析 Markdown（性能 + 防半截语法抖动）。
             // 用户消息无 streaming 标志，恒走 Markdown（支持用户输入的标题/列表/代码等格式）。
             <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
           ) : (
-            <Markdown>{msg.content}</Markdown>
+            // breaks：用户输入的换行原样呈现（GFM 默认合并单换行，非技术用户难懂
+            // "行尾两空格"约定）；markdown 轻语法仍生效，配合气泡内驯化样式保美观。
+            <Markdown breaks={isUser}>{msg.content}</Markdown>
           )}
           {hasAttachments ? (
             <MessageAttachments sessionId={sessionId} attachments={msg.attachments!} />
@@ -172,6 +176,22 @@ function MessageBubble({
         ) : null}
       </div>
       {isUser ? <Avatar role="user" color={color} /> : null}
+    </Flex>
+  )
+}
+
+/** 用户气泡上的知识库徽标（只读 chip，复用 composer 的 kb-chip 样式；无关闭按钮——
+    徽标是历史事实，不提供就地反选）。实时发送（本地快照）与历史回放（/history 回填
+    的 {id,name}）同形状，渲染路径唯一 */
+function KbBadges({ kbs }: { kbs: KbRef[] }): ReactNode {
+  return (
+    <Flex gap={6} wrap style={{ marginBottom: 6 }}>
+      {kbs.map((kb) => (
+        <div key={kb.id} className="kb-chip" title={`已启用知识库：${kb.name}`} style={{ padding: '3px 8px' }}>
+          <BookOpen size={14} />
+          <span className="kb-chip__name">{kb.name}</span>
+        </div>
+      ))}
     </Flex>
   )
 }

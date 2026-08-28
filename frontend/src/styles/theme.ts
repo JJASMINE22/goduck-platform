@@ -19,11 +19,14 @@ export const antdTheme: ThemeConfig = {
   },
   components: {
     Layout: {
-      headerBg: '#ffffff',
-      siderBg: '#ffffff',
+      /* 侧栏/顶栏玻璃化（index.css .app-shell .app-glass）：token 层不再给实白底
+         （组件 token 编译为内联 CSS 变量，优先级高于任何类选择器，是此前
+         "玻璃贴白底"的根因）。透明让 .app-glass 的 rgba 半透 + backdrop-filter 生效 */
+      headerBg: 'transparent',
+      siderBg: 'transparent',
       bodyBg: '#eef1f6',
-      /* 折叠触发器：antd 默认深藏青在白色圆角卡片中突兀，改浅灰融入卡片 */
-      triggerBg: '#f6f8fb',
+      /* 折叠触发器：antd 默认深藏青在玻璃卡片中突兀，透明由 CSS 类接管玻璃化 */
+      triggerBg: 'transparent',
       triggerColor: '#5f6368',
     },
     Menu: {

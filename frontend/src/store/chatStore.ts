@@ -6,7 +6,7 @@ import type {
   ChatStreamStatus,
   FileChangeRecord,
   InterruptPayload,
-  KnowledgeBaseOut,
+  KbRef,
   TodoItem,
   UploadOut,
   VoiceState,
@@ -24,8 +24,11 @@ export interface ChatMessage {
   /** true=该条为「用户已手动中断」提示条目（content 恒空，渲染为气泡下方提示行，
       不走 Markdown；仅存在于 live 会话，历史回放不重建——刷新后自然消失） */
   interrupted?: boolean
-  /** 用户消息附带的附件（发送时快照；刷新后历史不回显——后端无 message↔upload 关联） */
+  /** 用户消息附带的附件（发送时快照；历史回放由 /history 的 attachments 回填，
+      与实时渲染同构——见 useStreamChat/handleWithdraw 的双向数据流） */
   attachments?: UploadOut[]
+  /** 用户消息启用的知识库（发送时快照 {id,name}；历史回放由 /history 的 kbs 回填） */
+  kbs?: KbRef[]
   createdAt: number
 }
 
@@ -69,7 +72,7 @@ export interface ChatState {
   streamSource: 'sse' | 'voice' | null
   pendingInterrupt: PendingInterrupt | null
   attachments: UploadOut[] // 待发附件，发消息后清空
-  selectedKbs: KnowledgeBaseOut[] // 本次启用的知识库，发消息后清空
+  selectedKbs: KbRef[] // 本次启用的知识库（{id,name} 最小形状），发消息后清空
   streamError: string | null
   /** 各代理的任务规划清单（todos 事件整表写入，agent_path 键控）。
       回合作用域：pushUser 新回合清空、cancel 中止拆除——清单是对"当前请求"的
@@ -89,7 +92,7 @@ export interface ChatState {
   interimTranscript: string
 
   // —— 动作 ——
-  pushUser: (content: string, attachments?: UploadOut[]) => void
+  pushUser: (content: string, attachments?: UploadOut[], kbs?: KbRef[]) => void
   pushAgent: (agentPath: string, content: string) => void
   pushReasoning: (agentPath: string, reasoning: string) => void
   /** 追加一个 token 增量：按 (tokenId, reasoning) 聚合到既有流式消息或新建一条 */
@@ -118,10 +121,10 @@ export interface ChatState {
   removeAttachment: (uploadId: string) => void
   clearAttachments: () => void
   setAttachments: (list: UploadOut[]) => void
-  addKb: (kb: KnowledgeBaseOut) => void
+  addKb: (kb: KbRef) => void
   removeKb: (kbId: string) => void
   clearKbs: () => void
-  setKbs: (list: KnowledgeBaseOut[]) => void
+  setKbs: (list: KbRef[]) => void
   setDraft: (v: string) => void
   /** 语音状态机流转（idle→recording→transcribing→idle） */
   setVoiceState: (s: VoiceState) => void
@@ -145,7 +148,7 @@ const initialState = {
   streamSource: null as 'sse' | 'voice' | null,
   pendingInterrupt: null as PendingInterrupt | null,
   attachments: [] as UploadOut[],
-  selectedKbs: [] as KnowledgeBaseOut[],
+  selectedKbs: [] as KbRef[],
   streamError: null as string | null,
   todosByAgent: {} as Record<string, TodoItem[]>,
   parseStatus: null as string | null,
@@ -161,11 +164,19 @@ const genId = () => `m${Date.now()}-${idSeq++}`
 export const useChatStore = create<ChatState>((set) => ({
   ...initialState,
 
-  pushUser: (content, attachments) =>
+  pushUser: (content, attachments, kbs) =>
     set((s) => ({
       messages: [
         ...s.messages,
-        { id: genId(), role: 'user', agentPath: 'user', content, attachments, createdAt: Date.now() },
+        {
+          id: genId(),
+          role: 'user',
+          agentPath: 'user',
+          content,
+          attachments,
+          kbs,
+          createdAt: Date.now(),
+        },
       ],
       // 新回合开始：上一回合的文件变更徽标随之消失（树/卡片同源清空）；
       // 任务清单浮窗同款清空——上一回合（尤其被中断的）计划不再悬挂，

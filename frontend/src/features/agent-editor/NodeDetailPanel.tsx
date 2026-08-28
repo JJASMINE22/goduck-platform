@@ -177,7 +177,12 @@ export function NodeDetailPanel(): ReactNode {
               </Flex>
             </Field>
             <Field label="附件能力（allow_attachments，仅主代理）">
-              <Switch checked={!!node.allow_attachments} onChange={(v) => patch({ allow_attachments: v })} />
+              <Flex align="center" gap={8}>
+                <Switch checked={!!node.allow_attachments} onChange={(v) => patch({ allow_attachments: v })} />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  开启后才可下挂视觉模型（基座无视觉时图像经其描述预消费）
+                </Typography.Text>
+              </Flex>
             </Field>
             <Field label="知识库能力（allow_knowledge，仅主代理）">
               <Switch checked={!!node.allow_knowledge} onChange={(v) => patch({ allow_knowledge: v })} />
