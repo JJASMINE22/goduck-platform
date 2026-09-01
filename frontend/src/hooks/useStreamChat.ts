@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { streamApi } from '@/api/stream'
 import { useChatStore } from '@/store/chatStore'
-import { dispatchStreamEvent } from '@/lib/streamEvents'
+import { dispatchStreamEvent, flushPendingTokens } from '@/lib/streamEvents'
 import type { ChatStreamStatus, Decision, UUID } from '@/types'
 
 export interface SendOptions {
@@ -32,6 +32,8 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
   // 中止语义同 cancel：拆除在途任务清单浮窗，避免重进会话时悬挂旧计划。
   useEffect(() => {
     return () => {
+      // 先冲刷 token 合并缓冲再固化：半截消息必须包含已到达未落地的增量
+      flushPendingTokens()
       const controller = abortRef.current
       controller?.abort()
       const store = useChatStore.getState()
@@ -126,6 +128,8 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
   )
 
   const cancel = useCallback(() => {
+    // 中止前冲刷 token 合并缓冲：固化半截消息需含缓冲中的尾部增量
+    flushPendingTokens()
     abortRef.current?.abort()
     const store = useChatStore.getState()
     // 中止后固化仍在流式的消息（转 Markdown 渲染，而非停留在纯文本流式态），再回 idle；

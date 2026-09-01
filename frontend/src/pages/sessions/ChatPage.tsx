@@ -84,6 +84,9 @@ export function ChatPage(): ReactNode {
   const historyQ = useSessionHistory(sessionId || null)
   const archiveSession = useArchiveSession()
   const { modal } = AntApp.useApp()
+  // 会话数据上提：handleWithdraw（useCallback）需在早退分支之前定义（Hook 顺序稳定），
+  // 引用随查询数据变化（React Query 结构共享，未变即同引用）
+  const session = sessionQ.data
 
   const stream = useStreamChat(sessionId || null)
   // 语音输入：仅后端能力开启时预建 WS（与按键解耦）；推理闸门复用 stream.status
@@ -93,12 +96,16 @@ export function ChatPage(): ReactNode {
   /** 中止当前流（按来源路由，语音回合无法中止/回撤的冲突修复点）：
       语音发起 → WS cancel 帧（后端取消 astream、即时释放 withdraw 的 409 闸）；
       SSE 发起 → abort fetch（FastAPI 取消传播至 event_gen finally）。两条路径
-      随后统一本地固化半截消息并回 idle（SSE abort 本就无终态帧，语义一致）。 */
+      随后统一本地固化半截消息并回 idle（SSE abort 本就无终态帧，语义一致）。
+      回调保持引用稳定（依赖的是两个稳定句柄而非整个 voice/stream 对象）：
+      该函数经 props 传入 memo 化的 MessageList/气泡，引用漂移会击穿渲染隔离。 */
+  const voiceCancelStream = voice.cancelStream
+  const streamCancel = stream.cancel
   const handleCancel = useCallback(() => {
     const st = useChatStore.getState()
-    if (st.status === 'streaming' && st.streamSource === 'voice') voice.cancelStream()
-    stream.cancel()
-  }, [voice, stream])
+    if (st.status === 'streaming' && st.streamSource === 'voice') voiceCancelStream()
+    streamCancel()
+  }, [voiceCancelStream, streamCancel])
   const wsCapQ = useWorkspaceCapability(sessionId || null)
   const allowWorkspace = wsCapQ.data?.allow_workspace === true
   const shellCapQ = useShellCapability(sessionId || null)
@@ -231,6 +238,57 @@ export function ChatPage(): ReactNode {
     if (!retainedRef.current) reset()
   }, [sessionId, reset])
 
+  // —— 回撤 ——
+  // useCallback + ref 闸门（而非依赖 withdrawingId state）：引用稳定，不击穿
+  // MessageList/气泡的 memo 隔离；并发防抖语义与原 state 闸门一致
+  const withdrawingRef = useRef(false)
+  const refetchHistory = historyQ.refetch
+  /** 回撤一个完整回合：① 流式中先中止（SSE abort / 语音 WS cancel，后端随后
+      释放 tracker）→ ② 解析真实 id → ③ 调回撤（409 退避重试）→ ④ 乐观移除 +
+      回填草稿/附件 + 退出中断态 → ⑤ 历史重拉兜底一致性。 */
+  const handleWithdraw = useCallback(
+    async (messageId: string) => {
+      if (!session || withdrawingRef.current) return
+      // 场景①：流式中先停止生成（按来源路由中止 + 置 idle），后端释放 tracker
+      if (useChatStore.getState().status === 'streaming') handleCancel()
+      withdrawingRef.current = true
+      setWithdrawingId(messageId)
+      try {
+        const realId = await resolveHumanId(session.id, messageId)
+        const res = await callWithdraw(session.id, realId)
+        removeTurn(messageId)
+        setDraft(res.raw_content)
+        setAttachments(res.attachments ?? [])
+        setKbs(res.kbs ?? [])
+        clearInterrupt()
+        setStatus('idle')
+        toastSuccess('已回撤该回合，可编辑后重发')
+        // 历史失效重拉：以服务端真值兜底（准则 R9），覆盖乐观删除的边界情况。
+        // 同会话保留模式下灌入被跳过，必须显式标记"放行一次"，且只接受本次
+        // 请求之后完成的新快照（refetch 失败时不得把撤回前的旧缓存灌回）。
+        forcedAtRef.current = Date.now()
+        forcedLoadRef.current = true
+        void refetchHistory()
+      } catch (e) {
+        toastError(e instanceof ApiError ? e.message : '回撤失败，请重试')
+      } finally {
+        withdrawingRef.current = false
+        setWithdrawingId(null)
+      }
+    },
+    [
+      session,
+      handleCancel,
+      removeTurn,
+      setDraft,
+      setAttachments,
+      setKbs,
+      clearInterrupt,
+      setStatus,
+      refetchHistory,
+    ],
+  )
+
   // 历史灌入：仅在数据就绪（非 fetching）时灌入。配合 useSessionHistory 的
   // staleTime:0，跨会话进入都会先 refetch 最新；refetch 进行中不灌入，避免用过时
   // 快照覆盖刚被 reset() 清空的 store。
@@ -360,7 +418,7 @@ export function ChatPage(): ReactNode {
   })
 
   if (sessionQ.isLoading) return <PageLoading tip="加载会话…" />
-  if (!sessionQ.data) {
+  if (!session) {
     return (
       <Alert
         type="warning"
@@ -370,41 +428,9 @@ export function ChatPage(): ReactNode {
     )
   }
 
-  const session = sessionQ.data
   const archived = session.status === 'archived'
   // 渲染期兜底：能力被关闭 / 会话归档时强制回会话视图，避免停留在无切换入口的死角
   const effectiveView: ChatView = allowWorkspace && !archived ? wsView : 'chat'
-
-  /** 回撤一个完整回合：① 流式中先中止（SSE abort / 语音 WS cancel，后端随后
-      释放 tracker）→ ② 解析真实 id → ③ 调回撤（409 退避重试）→ ④ 乐观移除 +
-      回填草稿/附件 + 退出中断态 → ⑤ 历史重拉兜底一致性。 */
-  const handleWithdraw = async (messageId: string) => {
-    if (withdrawingId) return
-    // 场景①：流式中先停止生成（按来源路由中止 + 置 idle），后端释放 tracker
-    if (stream.status === 'streaming') handleCancel()
-    setWithdrawingId(messageId)
-    try {
-      const realId = await resolveHumanId(session.id, messageId)
-      const res = await callWithdraw(session.id, realId)
-      removeTurn(messageId)
-      setDraft(res.raw_content)
-      setAttachments(res.attachments ?? [])
-      setKbs(res.kbs ?? [])
-      clearInterrupt()
-      setStatus('idle')
-      toastSuccess('已回撤该回合，可编辑后重发')
-      // 历史失效重拉：以服务端真值兜底（准则 R9），覆盖乐观删除的边界情况。
-      // 同会话保留模式下灌入被跳过，必须显式标记"放行一次"，且只接受本次
-      // 请求之后完成的新快照（refetch 失败时不得把撤回前的旧缓存灌回）。
-      forcedAtRef.current = Date.now()
-      forcedLoadRef.current = true
-      void historyQ.refetch()
-    } catch (e) {
-      toastError(e instanceof ApiError ? e.message : '回撤失败，请重试')
-    } finally {
-      setWithdrawingId(null)
-    }
-  }
 
   return (
     <Flex vertical gap={0} style={{ height: '100%' }}>

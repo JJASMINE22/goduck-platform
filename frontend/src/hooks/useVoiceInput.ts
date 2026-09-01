@@ -15,7 +15,7 @@
     采麦：AudioWorklet 直出 Float32 → 主线程降采样 16kHz → Int16 PCM，100ms/帧上行。 */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { asSSEEvent, VoiceConnection } from '@/api/voice'
-import { dispatchStreamEvent } from '@/lib/streamEvents'
+import { dispatchStreamEvent, flushPendingTokens } from '@/lib/streamEvents'
 import { useChatStore } from '@/store/chatStore'
 import { toastError, toastInfo } from '@/lib/antdStatic'
 import type { SttTranscriptPayload, UUID, VoiceDownFrame } from '@/types'
@@ -174,8 +174,10 @@ export function useVoiceInput(sessionId: UUID | null, enabled: boolean): UseVoic
         toastError(`${reason}，语音输入已取消`)
         return
       }
-      // 推理中掉线：按网络异常恢复（固化半截 + error 落态，准则 F4）
+      // 推理中掉线：按网络异常恢复（固化半截 + error 落态，准则 F4）。
+      // 先冲刷 token 合并缓冲，固化内容包含已到达未落地的增量
       if (store.status === 'streaming') {
+        flushPendingTokens()
         store.finalizeStreaming()
         store.setStreamError(`${reason}，回复已中断`)
       }

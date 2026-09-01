@@ -127,6 +127,14 @@ class Settings(BaseSettings):
     kb_chunk_size: int = 800
     kb_chunk_overlap: int = 120
     kb_ingestion_concurrency: int = 2
+    # 打印件 PDF（无文本层扫描件）OCR 兜底：依赖 rapidocr-onnxruntime（未安装自动
+    # 降级为仅文本层提取，行为同旧版；空文档报错信息会提示安装）。
+    kb_pdf_ocr_enabled: bool = True
+    # OCR 渲染 DPI：200 对常规印刷扫描件足够；小字号工程手册可提到 300
+    # （页面像素数×2.25，OCR 耗时同步放大）。
+    kb_pdf_ocr_dpi: int = Field(default=200, ge=72, le=600)
+    # 页文本层字符数低于该阈值 → 视为扫描页触发 OCR（原生文本层页零成本直通）。
+    kb_pdf_ocr_min_chars: int = Field(default=16, ge=1)
 
     # ---- AgentRegistry cache tuning ----
     registry_max_entries: int = 16

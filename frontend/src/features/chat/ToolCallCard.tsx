@@ -4,7 +4,7 @@
     超长内容默认折叠（渐隐遮罩 + 展开全部），参数/结果各带一键复制。
     执行中：工具名亮银色流光（与思考标签同一「进行中」语言，准则 F7）。 */
 import { Collapse, Flex, Tag, Typography } from 'antd'
-import { type ReactNode, useMemo, useState } from 'react'
+import { type ReactNode, memo, useMemo, useState } from 'react'
 import { Check, Wrench } from 'lucide-react'
 import type { ToolCallEntry } from '@/store/chatStore'
 
@@ -112,7 +112,9 @@ function PayloadSection({ title, text }: { title: string; text: string }): React
   )
 }
 
-export function ToolCallCard({ entry }: { entry: ToolCallEntry }): ReactNode {
+/** 工具调用卡（memo：entry 引用仅在该卡自身更新（setToolResult 回填结果）时
+    变化，流式批渲染时其余工具卡跳过） */
+export const ToolCallCard = memo(function ToolCallCard({ entry }: { entry: ToolCallEntry }): ReactNode {
   // 参数本身是对象：直接美化（与结果走同一渲染管线）
   const argsText = useMemo(() => JSON.stringify(entry.args, null, 2) || '{}', [entry.args])
   const resultText = useMemo(() => (entry.hasResult ? formatPayload(entry.result ?? '') : ''), [entry.hasResult, entry.result])
@@ -166,4 +168,4 @@ export function ToolCallCard({ entry }: { entry: ToolCallEntry }): ReactNode {
       </div>
     </Flex>
   )
-}
+})

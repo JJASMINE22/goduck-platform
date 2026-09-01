@@ -2,8 +2,8 @@
    react-markdown + gfm + 代码高亮 + 数学公式（remark-math → KaTeX）。
    代码块带「复制」；mermaid 块带「下载 SVG / 复制源码」；
    图像带「下载」（未来 agent 出图即用）。mermaid 走单一渲染入口（准则 F7）。 */
-import { type ReactElement, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import { type ReactElement, type ReactNode, memo, useEffect, useRef, useState } from 'react'
+import ReactMarkdown, { type Components, type Options } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import remarkBreaks from 'remark-breaks'
@@ -146,60 +146,66 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }): ReactNode 
 
 /** breaks：单次换行渲染为 <br>（所见即所得）。用于用户气泡——非技术用户
     不会写"行尾两空格"或空行分段，GFM 默认会把多行合并成一段；
-    同时保留加粗/列表/代码等轻量语法，懂 markdown 的用户不受影响。 */
-export function Markdown({
+    同时保留加粗/列表/代码等轻量语法，懂 markdown 的用户不受影响。
+
+    性能：插件表与组件映射提为模块常量、组件本身 memo——props 仅有
+    （children: string, breaks），内容不变即完全跳过重渲染， remark→rehype
+    （gfm/math/highlight/katex）全管线不重跑。这是流式期间"每 token 重解析
+    全部历史消息"这一长会话卡顿主因的修复点之一。 */
+const REMARK_PLUGINS: Options['remarkPlugins'] = [remarkGfm, remarkMath]
+const REMARK_PLUGINS_BREAKS: Options['remarkPlugins'] = [remarkGfm, remarkMath, remarkBreaks]
+const REHYPE_PLUGINS: Options['rehypePlugins'] = [
+  // ignoreMissing：mermaid 不是已注册高亮语言，避免 rehype-highlight 抛错
+  [rehypeHighlight, { ignoreMissing: true }],
+  // 出错不上抛：非法 LaTeX 在原位渲染红色错误提示，不中断整条消息
+  [rehypeKatex, { error: false, strict: 'ignore', output: 'htmlAndMathml' }],
+]
+const MD_COMPONENTS: Components = {
+  pre: ({ children }) => {
+    const codeEl = (Array.isArray(children) ? children[0] : children) as
+      | ReactElement<{ className?: string; children?: ReactNode }>
+      | undefined
+    const className: string = codeEl?.props?.className || ''
+    const match = /language-(\w+)/.exec(className)
+    const source = extractText(codeEl?.props?.children)
+    if (match?.[1] === 'mermaid') return <MermaidBlock code={source} />
+    return (
+      <CodeBlock lang={match?.[1] ?? ''} source={source}>
+        {children}
+      </CodeBlock>
+    )
+  },
+  code: ({ className, children, ...props }) => (
+    <code {...props} className={className} style={{ fontFamily: 'var(--font-mono)', fontSize: '0.92em' }}>
+      {children}
+    </code>
+  ),
+  img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
+  table: (props) => (
+    <table {...props} style={{ borderCollapse: 'collapse', width: '100%', margin: '8px 0' }} />
+  ),
+  th: (props) => (
+    <th {...props} style={{ border: '1px solid var(--color-border)', padding: '4px 8px', background: 'var(--color-border-soft)' }} />
+  ),
+  td: (props) => <td {...props} style={{ border: '1px solid var(--color-border)', padding: '4px 8px' }} />,
+}
+
+export const Markdown = memo(function Markdown({
   children,
   breaks = false,
 }: {
   children: string
   breaks?: boolean
 }): ReactNode {
-  const remarkPlugins = useMemo(
-    () => (breaks ? [remarkGfm, remarkMath, remarkBreaks] : [remarkGfm, remarkMath]),
-    [breaks],
-  )
   return (
     <div className="gd-md" style={{ lineHeight: 1.7, wordBreak: 'break-word' }}>
       <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        // ignoreMissing：mermaid 不是已注册高亮语言，避免 rehype-highlight 抛错
-        rehypePlugins={[
-          [rehypeHighlight, { ignoreMissing: true }],
-          // 出错不上抛：非法 LaTeX 在原位渲染红色错误提示，不中断整条消息
-          [rehypeKatex, { error: false, strict: 'ignore', output: 'htmlAndMathml' }],
-        ]}
-        components={{
-          pre: ({ children }) => {
-            const codeEl = (Array.isArray(children) ? children[0] : children) as
-              | ReactElement<{ className?: string; children?: ReactNode }>
-              | undefined
-            const className: string = codeEl?.props?.className || ''
-            const match = /language-(\w+)/.exec(className)
-            const source = extractText(codeEl?.props?.children)
-            if (match?.[1] === 'mermaid') return <MermaidBlock code={source} />
-            return (
-              <CodeBlock lang={match?.[1] ?? ''} source={source}>
-                {children}
-              </CodeBlock>
-            )
-          },
-          code: ({ className, children, ...props }) => (
-            <code {...props} className={className} style={{ fontFamily: 'var(--font-mono)', fontSize: '0.92em' }}>
-              {children}
-            </code>
-          ),
-          img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
-          table: (props) => (
-            <table {...props} style={{ borderCollapse: 'collapse', width: '100%', margin: '8px 0' }} />
-          ),
-          th: (props) => (
-            <th {...props} style={{ border: '1px solid var(--color-border)', padding: '4px 8px', background: 'var(--color-border-soft)' }} />
-          ),
-          td: (props) => <td {...props} style={{ border: '1px solid var(--color-border)', padding: '4px 8px' }} />,
-        }}
+        remarkPlugins={breaks ? REMARK_PLUGINS_BREAKS : REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        components={MD_COMPONENTS}
       >
         {normalizeMathDelimiters(children)}
       </ReactMarkdown>
     </div>
   )
-}
+})

@@ -3,7 +3,7 @@
     截图样式：[动作图标] 编辑 · ChatPage.tsx  +3 −2。
     点击文件行 → 切到工作区视图并选中该文件（ChatPage.openWorkspaceFile）。 */
 import { Collapse, Flex, Tooltip } from 'antd'
-import { type ReactNode, useMemo } from 'react'
+import { type ReactNode, memo, useMemo } from 'react'
 import { FileDiff, FileMinus, FilePen, FilePlus } from 'lucide-react'
 import { mergeFileChanges, type MergedFileChange } from '@/lib/fileChanges'
 import type { FileChangeEntry } from '@/store/chatStore'
@@ -69,7 +69,9 @@ function FileChangeRow({
   )
 }
 
-export function FileChangesCard({
+/** 文件变更卡（memo：records 引用仅在 file_change 事件追加时变化，流式批
+    渲染时跳过） */
+export const FileChangesCard = memo(function FileChangesCard({
   records,
   onOpenFile,
 }: {
@@ -103,4 +105,4 @@ export function FileChangesCard({
       </div>
     </Flex>
   )
-}
+})

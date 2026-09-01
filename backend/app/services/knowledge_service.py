@@ -22,7 +22,9 @@ KbDocsExistError→409 / DocumentBusyError→409），由路由层映射。
 """
 from __future__ import annotations
 
+import asyncio
 import io
+import json
 import logging
 import math
 import uuid
@@ -60,15 +62,23 @@ class DocumentBusyError(Exception):
     """文档正在解析中，拒绝重复投递（路由映射 → 409）。"""
 
 
-def _embed_progress(done: int, total: int) -> int:
-    """Map (done/total) embedded batches → 5..99（入库进度百分比）。
+def _embed_progress(done: int, total: int, lo: int = 5) -> int:
+    """Map (done/total) embedded batches → lo..99（入库进度百分比）。
 
-    嵌入是耗时主体，解析/收尾快：把已嵌入比例映射到 [5,99]，留出首尾余量——
-    解析完成即将嵌入≈5%，全部嵌入完≈99%，最终 indexed 固定 100%。
+    嵌入是耗时主体，解析/收尾快：把已嵌入比例映射到 [lo,99]，留出首尾余量——
+    解析完成即将嵌入≈lo%，全部嵌入完≈99%，最终 indexed 固定 100%。
+    lo 默认 5（无 OCR）；打印件文档 OCR 阶段占 2..50，嵌入从 51 起。
     """
     if total <= 0:
-        return 5
-    return min(99, 5 + round(done / total * 94))
+        return lo
+    return min(99, lo + round(done / total * (99 - lo)))
+
+
+def _ocr_progress(done: int, total: int) -> int:
+    """OCR 阶段进度 → 2..50（扫描件逐页识别，耗时主体让位给嵌入段）。"""
+    if total <= 0:
+        return 2
+    return min(50, 2 + round(done / total * 48))
 
 
 class KnowledgeService:
@@ -166,11 +176,12 @@ class KnowledgeService:
         existing = await dbmod.get_kb(self.pool, kb_id)
         if existing is None:
             raise KeyError(f"kb {kb_id} not found")  # -> 404
-        # ES：删索引（全部 chunk）；MinIO：删该库全部原始字节；PG：CASCADE 删库+文档行
+        # ES：删索引（全部 chunk）；MinIO：删该库全部原始字节（含 OCR 边车）；PG：CASCADE
         self.vector_factory.drop_index(str(kb_id))
         docs = await dbmod.list_kb_documents(self.pool, kb_id)
         for d in docs:
             if d.get("bucket_key"):
+                self.minio.remove_object(self._sidecar_key(d["bucket_key"]))
                 self.minio.remove_object(d["bucket_key"])
         await dbmod.delete_kb(self.pool, kb_id)
 
@@ -239,6 +250,7 @@ class KnowledgeService:
         # ES→MinIO→PG：ES/MinIO 尽力而为，PG 为存在性真相
         self.vector_factory.delete_by_doc_id(str(kb_id), str(doc_id))
         if doc.get("bucket_key"):
+            self.minio.remove_object(self._sidecar_key(doc["bucket_key"]))
             self.minio.remove_object(doc["bucket_key"])
         await dbmod.delete_kb_document(self.pool, doc_id)
 
@@ -322,12 +334,17 @@ class KnowledgeService:
                     self.pool, doc_id, eff_size, eff_overlap
                 )
 
-            chunks = self._build_chunks(
-                raw, doc["mime"], str(kb_id), str(doc_id), doc["filename"],
+            # 提取（pdf 逐页，扫描页 OCR 兜底 / docx 整篇）→ 切块。
+            # OCR 在 worker 线程执行（数百页扫描件可达数十分钟，禁阻塞事件循环），
+            # 进度分两段：OCR 2..50（线程内经 run_coroutine_threadsafe 回写）→
+            # 嵌入 51..99（无 OCR 文档维持 5..99）。
+            pages, ocr_doc = await self._extract_pages_with_ocr(doc, doc_id, raw)
+            chunks = self._split_pages(
+                pages, str(kb_id), str(doc_id), doc["filename"], doc["mime"],
                 chunk_size=eff_size, chunk_overlap=eff_overlap,
             )
             if not chunks:
-                raise ValueError("解析后无可索引文本（空文档或解析失败）")
+                raise ValueError(self._empty_reason(doc["mime"], pages))
 
             store = self.vector_factory.get(str(kb_id), dims)
             # 幂等：先删该文档旧 chunk（应对重传/重试/重建；新块数少于旧块时清残留）
@@ -343,7 +360,9 @@ class KnowledgeService:
                 store.add_documents(batch, ids=batch_ids)
                 await dbmod.update_kb_document_status(
                     self.pool, doc_id, status="indexing",
-                    progress=_embed_progress(start + len(batch), total),
+                    progress=_embed_progress(
+                        start + len(batch), total, lo=51 if ocr_doc else 5
+                    ),
                 )
 
             await dbmod.update_kb_document_status(
@@ -452,24 +471,158 @@ class KnowledgeService:
 
     # ============================ Parsing helpers ===========================
 
-    def _build_chunks(
+    async def _extract_pages_with_ocr(
+        self, doc: dict, doc_id: uuid.UUID, raw: bytes
+    ) -> tuple[list[tuple[int, str]], bool]:
+        """提取（pdf：文本层优先 + 扫描页 OCR 兜底；docx：整篇单页）。
+
+        → (pages, ocr_doc)：ocr_doc=该文档走过 OCR（或命中其结果缓存）→
+        嵌入进度段让位（51..99），否则退回原生提取（毫秒级，同步直跑）。
+
+        MinIO 边车缓存（{bucket_key}.pages.json）：OCR 结果（含原生页文本）
+        整体留底——reindex/调整切块参数重新解析时跳过重 OCR（数百页扫描件
+        × 1-3s/页 的成本只付一次）。缓存键含 dpi/min_chars（参数变更自动
+        失效重跑）；原始字节变更必然伴随新 doc_id，无悬挂缓存风险。
+        """
+        from app.services import pdf_ocr
+
+        if (
+            not is_pdf(doc["mime"])
+            or not self.settings.kb_pdf_ocr_enabled
+            or not pdf_ocr.ocr_available()
+        ):
+            return self._extract_pages(raw, doc["mime"]), False
+
+        dpi = self.settings.kb_pdf_ocr_dpi
+        min_chars = self.settings.kb_pdf_ocr_min_chars
+
+        if doc.get("bucket_key"):
+            cached = await self._load_pages_sidecar(doc["bucket_key"], dpi, min_chars)
+            if cached is not None:
+                logger.info("doc=%s 命中 OCR 提取缓存（%d 页）", doc_id, len(cached))
+                return cached, True
+
+        loop = asyncio.get_running_loop()
+
+        def on_page(done: int, total: int) -> None:
+            # 工作线程 → 事件循环封送；进度回写失败不致命（DB 抖动），静默消费
+            fut = asyncio.run_coroutine_threadsafe(
+                dbmod.update_kb_document_status(
+                    self.pool, doc_id, status="indexing",
+                    progress=_ocr_progress(done, total),
+                ),
+                loop,
+            )
+            fut.add_done_callback(lambda f: f.exception())
+
+        pages, ocr_pages = await asyncio.to_thread(
+            pdf_ocr.extract_pdf_pages, raw, dpi=dpi, min_chars=min_chars, on_page=on_page
+        )
+        # 全空（OCR 整体失败/纯图形文档）不落缓存——保留重试机会；
+        # 混合文档（含原生文本）提取结果确定，正常留底。
+        if ocr_pages and doc.get("bucket_key") and any(t.strip() for _, t in pages):
+            await self._save_pages_sidecar(doc["bucket_key"], pages, dpi, min_chars)
+        return pages, ocr_pages > 0
+
+    _SIDECAR_VERSION = 1
+
+    @staticmethod
+    def _sidecar_key(bucket_key: str) -> str:
+        return f"{bucket_key}.pages.json"
+
+    async def _load_pages_sidecar(
+        self, bucket_key: str, dpi: int, min_chars: int
+    ) -> Optional[list[tuple[int, str]]]:
+        """读边车缓存；形状/参数不匹配（版本升级、dpi 调整）一律视为未命中。"""
+
+        def _read() -> Optional[dict]:
+            key = self._sidecar_key(bucket_key)
+            if not self.minio.object_exists(key):
+                return None
+            try:
+                data = json.loads(self.minio.get_object(key))
+                return data if isinstance(data, dict) else None
+            except Exception:
+                return None
+
+        data = await asyncio.to_thread(_read)
+        if data is None:
+            return None
+        if (
+            data.get("version") != self._SIDECAR_VERSION
+            or data.get("dpi") != dpi
+            or data.get("min_chars") != min_chars
+        ):
+            return None
+        raw_pages = data.get("pages")
+        if not isinstance(raw_pages, list):
+            return None
+        out: list[tuple[int, str]] = []
+        for p in raw_pages:
+            if not (isinstance(p, (list, tuple)) and len(p) == 2):
+                return None
+            out.append((int(p[0]), str(p[1])))
+        return out
+
+    async def _save_pages_sidecar(
+        self, bucket_key: str, pages: list[tuple[int, str]], dpi: int, min_chars: int
+    ) -> None:
+        payload = json.dumps(
+            {
+                "version": self._SIDECAR_VERSION,
+                "dpi": dpi,
+                "min_chars": min_chars,
+                "pages": [[no, text] for no, text in pages],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+        def _write() -> None:
+            self.minio.put_object(
+                self._sidecar_key(bucket_key), payload, content_type="application/json"
+            )
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception:
+            logger.warning("OCR 结果边车写入失败（不影响入库，重解析将重跑 OCR）", exc_info=True)
+
+    @staticmethod
+    def _empty_reason(mime: str, pages: list[tuple[int, str]]) -> str:
+        """空文档报错文案：区分"扫描件且 OCR 缺位"（可行动）与一般空文档。"""
+        from app.services import pdf_ocr
+
+        if is_pdf(mime) and pages and not any(t.strip() for _, t in pages):
+            if pdf_ocr.ocr_available():
+                return (
+                    "解析后无可索引文本：PDF 无文本层，OCR 也未识别出内容"
+                    "（扫描质量过低或为纯图形页）"
+                )
+            return (
+                "解析后无可索引文本：PDF 为无文本层扫描件，且 OCR 未启用——"
+                "请安装 rapidocr-onnxruntime 或开启 kb_pdf_ocr_enabled"
+            )
+        return "解析后无可索引文本（空文档或解析失败）"
+
+    def _split_pages(
         self,
-        raw: bytes,
-        mime: str,
+        pages: list[tuple[int, str]],
         kb_id: str,
         doc_id: str,
         filename: str,
+        mime: str,
         chunk_size: int,
         chunk_overlap: int,
     ) -> list[Document]:
-        """解析（pdf 逐页 / docx 逐段）→ 分块（按文档生效参数构造 splitter）→ 带 metadata。
+        """切块（按文档生效参数构造 splitter）→ 带 metadata。
 
         RecursiveCharacterTextSplitter 无状态且构造廉价，按参即时构造不缓存。
+        pages 由 _extract_pages_with_ocr 产出（pdf 逐页 / docx 整篇单页）；
+        空页在此统一过滤。
         """
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap
         )
-        pages = self._extract_pages(raw, mime)
         chunks: list[Document] = []
         for page_no, text in pages:
             if not text.strip():
@@ -492,7 +645,11 @@ class KnowledgeService:
 
     @staticmethod
     def _extract_pages(raw: bytes, mime: str) -> list[tuple[int, str]]:
-        """→ [(page_no, text)]。pdf 逐页；docx 整篇作单页（无原生分页）。"""
+        """→ [(page_no, text)]。原生提取（pdf 逐页文本层 / docx 整篇单页）。
+
+        pdf 无文本层（扫描件）时逐页为空——OCR 兜底见 _extract_pages_with_ocr，
+        本方法是其降级路径（OCR 关闭/未安装）与 docx 的直通路径。
+        """
         if is_pdf(mime):
             try:
                 import fitz  # pymupdf
@@ -519,6 +676,4 @@ class KnowledgeService:
 
     async def _read_bytes_async(self, bucket_key: str) -> bytes:
         """MinIO 取字节（同步客户端，丢线程池避免阻塞事件循环）。"""
-        import asyncio
-
         return await asyncio.to_thread(self.minio.get_object, bucket_key)

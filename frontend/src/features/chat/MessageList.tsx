@@ -1,8 +1,14 @@
 /* 聊天消息流 —— 合并 chatStore.messages + toolCalls 按 createdAt 排序成统一时间线。
    user/agent 气泡（按 agentPath 区分主/子代理，准则 F2 角色色）+ 工具调用折叠卡。
-   [Demo] 入场动画 / 头像 / 角色色带 / 流式打字指示 / 工具执行脉动。 */
+   [Demo] 入场动画 / 头像 / 角色色带 / 流式打字指示 / 工具执行脉动。
+
+   性能（渲染隔离）：流式期间 store 每个合并批（≈30fps）都会更新 messages 引用，
+   本列表随之重渲染——但所有子项（气泡/思考块/工具卡/提示行）均为 memo 组件，
+   props 除正在增长的那条消息外全部引用稳定（ChatPage 侧已保证回调稳定），
+   历史消息在 token 流期间完全跳过重渲染（否则每批成本 = O(会话总内容)，
+   长会话吐字/滚动卡顿的主因）。timeline 构建同样入 useMemo。 */
 import { Button, Collapse, Flex, Tag } from 'antd'
-import { type CSSProperties, type ReactNode, useMemo } from 'react'
+import { type CSSProperties, type ReactNode, memo, useMemo } from 'react'
 import { BookOpen, Bot, Brain, OctagonX, Undo2, User } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage, FileChangeEntry, ToolCallEntry } from '@/store/chatStore'
@@ -31,7 +37,9 @@ function Avatar({ role, color }: { role: 'user' | 'agent'; color: string }): Rea
   )
 }
 
-export function MessageList({
+/** 消息流列表（memo：props 全部由 ChatPage 稳定供给，父组件因输入框拖拽等
+    重渲染时整棵消息树跳过；store 订阅在组件内部，流式增量不受影响） */
+export const MessageList = memo(function MessageList({
   sessionId,
   onWithdraw,
   withdrawingId,
@@ -60,14 +68,20 @@ export function MessageList({
     return null
   }, [messages])
 
-  const timeline: TimelineItem[] = [
-    ...messages.map((m) => ({ kind: 'msg' as const, ts: m.createdAt, data: m })),
-    ...toolCalls.map((t) => ({ kind: 'tool' as const, ts: t.createdAt, data: t })),
-    // 单张本回合聚合卡：ts 取末条记录到达时间，随流式新增记录自然贴近时间线底部
-    ...(fileChanges.length
-      ? [{ kind: 'files' as const, ts: fileChanges[fileChanges.length - 1].createdAt, data: fileChanges }]
-      : []),
-  ].sort((a, b) => a.ts - b.ts)
+  // 统一时间线：三源按 createdAt 归并排序（useMemo——每个 token 合并批都会
+  // 触发本组件重渲染，避免重复建数组 + 排序）
+  const timeline: TimelineItem[] = useMemo(
+    () =>
+      [
+        ...messages.map((m) => ({ kind: 'msg' as const, ts: m.createdAt, data: m })),
+        ...toolCalls.map((t) => ({ kind: 'tool' as const, ts: t.createdAt, data: t })),
+        // 单张本回合聚合卡：ts 取末条记录到达时间，随流式新增记录自然贴近时间线底部
+        ...(fileChanges.length
+          ? [{ kind: 'files' as const, ts: fileChanges[fileChanges.length - 1].createdAt, data: fileChanges }]
+          : []),
+      ].sort((a, b) => a.ts - b.ts),
+    [messages, toolCalls, fileChanges],
+  )
 
   return (
     <Flex vertical gap={14} style={{ padding: '0 0 10px', height: '100%' }}>
@@ -101,9 +115,11 @@ export function MessageList({
       {streaming ? <TypingIndicator label={parseStatus ?? undefined} /> : null}
     </Flex>
   )
-}
+})
 
-function MessageBubble({
+/** 消息气泡（memo：msg 引用仅在该条消息更新时变化；sessionId/onWithdraw 等
+    由 ChatPage 稳定供给——流式批渲染时历史气泡整体跳过） */
+const MessageBubble = memo(function MessageBubble({
   msg,
   sessionId,
   onWithdraw,
@@ -178,7 +194,7 @@ function MessageBubble({
       {isUser ? <Avatar role="user" color={color} /> : null}
     </Flex>
   )
-}
+})
 
 /** 用户气泡上的知识库徽标（只读 chip，复用 composer 的 kb-chip 样式；无关闭按钮——
     徽标是历史事实，不提供就地反选）。实时发送（本地快照）与历史回放（/history 回填
@@ -196,8 +212,9 @@ function KbBadges({ kbs }: { kbs: KbRef[] }): ReactNode {
   )
 }
 
-/** 思考过程（可折叠，默认收起）—— thinking 事件落为独立消息条，紧邻其后是正式回复 */
-function ThinkingBlock({ msg }: { msg: ChatMessage }): ReactNode {
+/** 思考过程（可折叠，默认收起）—— thinking 事件落为独立消息条，紧邻其后是正式回复。
+    （memo：仅正在流式增长的那条思考块会随合并批重渲染，历史思考块跳过） */
+const ThinkingBlock = memo(function ThinkingBlock({ msg }: { msg: ChatMessage }): ReactNode {
   const { label, color } = agentMeta(msg.agentPath)
   return (
     <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
@@ -229,10 +246,10 @@ function ThinkingBlock({ msg }: { msg: ChatMessage }): ReactNode {
       </div>
     </Flex>
   )
-}
+})
 
 /** 流式生成中：三个波动点 + 可选进度文案（附件解析徽标，裸点呈现，不包气泡框/头像） */
-function TypingIndicator({ label }: { label?: string }): ReactNode {
+const TypingIndicator = memo(function TypingIndicator({ label }: { label?: string }): ReactNode {
   return (
     <Flex justify="flex-start" align="flex-start" className="msg-in">
       <div className="typing-dots">
@@ -245,15 +262,15 @@ function TypingIndicator({ label }: { label?: string }): ReactNode {
       </div>
     </Flex>
   )
-}
+})
 
 /** 手动中断提示行：用户中止流式后落在本回合末尾（agent 输出气泡下方），
     弱化的虚线左条 + 三级色文字，表达"回合就此截断"而非系统错误 */
-function InterruptedNotice(): ReactNode {
+const InterruptedNotice = memo(function InterruptedNotice(): ReactNode {
   return (
     <div className="msg-in interrupted-notice">
       <OctagonX size={13} />
       <span>用户已手动中断</span>
     </div>
   )
-}
+})

@@ -86,7 +86,20 @@ pre,
 }
 .chat-bubble--user {
   --bubble-color: var(--color-primary);
-  background: var(--color-primary-bg);
+  /* 流体玻璃：顶部受光 → 底部主色沉底的透层渐变 + 磨砂折射（saturate 提亮透
+     过的背景色，玻璃"厚"感）。深灰正文叠在 blur 后的浅底上对比度不受影响；
+     代理气泡维持实白（长文阅读），玻璃化仅用户侧。 */
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0.55),
+    rgba(255, 255, 255, 0.14) 45%,
+    var(--color-primary-bg)
+  );
+  backdrop-filter: blur(10px) saturate(1.5);
+  -webkit-backdrop-filter: blur(10px) saturate(1.5);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .chat-bubble--user { background: #e9f1fc; }
 }
 .chat-bubble--agent {
   background: var(--color-bg-elevated);
@@ -128,24 +141,21 @@ pre,
 }
 .msg-turn--user { align-items: flex-end; }
 .msg-turn--agent { align-items: flex-start; }
-/* 操作条默认隐藏（pointer-events 防误点不可见按钮），浮现时白底 + 软阴影，
-   轻微覆盖下一回合顶部间隙也不影响可读性。
+/* 操作条默认隐藏（pointer-events 防误点不可见按钮）。
    命中性约束（回撤"点不中"的三处病灶，改动前先读）：
-   1) 操作条必须与气泡零间隙衔接（top:100%），视觉间距内化为自身 padding——
-      任何 px 级外置空隙都会打断 :hover 向操作条的转移，按钮在光标到达前淡出失联；
+   1) 操作条容器必须与气泡零间隙衔接（top:100%），与气泡的视觉间距内化为
+      容器自身的透明 padding-top——任何 px 级外置空隙都会打断 :hover 向操作条
+      的转移，按钮在光标到达前淡出失联；玻璃胶囊画在按钮上，桥区保持全透；
    2) .msg-in 入场动画 fill-mode:both 令 transform:translateY(0) 常驻，
       每个回合都是 z-auto 层叠上下文，DOM 靠后的回合会整体盖住本回合的操作条
       （按钮的 z-index:2 被困在 .msg-in 内部无法逃逸），故悬停回合必须整体提层。 */
 .msg-turn__action {
   position: absolute;
-  top: 100%; /* 紧贴气泡底缘：hover 转移无死区 */
+  top: 100%; /* 紧贴气泡底缘：hover 转移无死区（视觉间距见 padding-top 透明桥） */
   opacity: 0;
   transition: opacity 0.15s ease;
   pointer-events: none;
-  background: var(--color-surface);
-  border-radius: 6px;
-  padding: 3px 5px 2px; /* 顶部视觉间距属于本元素命中区，悬停不断链 */
-  box-shadow: var(--shadow-sm);
+  padding: 7px 2px 2px; /* 顶部 7px 透明桥 = 与气泡的视觉间隔，属本元素命中区，悬停不断链 */
   z-index: 2;
 }
 .msg-turn--user .msg-turn__action { right: 0; }
@@ -159,13 +169,34 @@ pre,
 /* 悬停回合整体提到后续回合之上（flex item 直接支持 z-index）：
    否则操作条向下溢出的 ~12px 会被 DOM 更靠后的兄弟回合盖住、点击被抢走 */
 .msg-in:hover { z-index: 10; }
-/* 回撤按钮：字号小于正文，弱化色；24px 高度保证可点性 */
+/* 回撤按钮：流体玻璃胶囊——半透磨砂取景后景 + 顶部/底部镜面 rim 高光 + 全圆角；
+   字号小于正文，弱化视觉；24px 高度保证可点性 */
 .msg-turn__action .ant-btn {
   font-size: 12px;
   line-height: 1;
   height: 24px;
-  padding: 0 8px;
+  padding: 0 10px;
   color: var(--color-text-tertiary);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(14px) saturate(1.6);
+  -webkit-backdrop-filter: blur(14px) saturate(1.6);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.3),
+    0 2px 8px rgba(60, 64, 67, 0.08);
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.msg-turn__action .ant-btn:not(:disabled):hover,
+.msg-turn__action .ant-btn:not(:disabled):focus-visible {
+  color: var(--color-text-secondary);
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(255, 255, 255, 0.85);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.35),
+    0 3px 10px rgba(60, 64, 67, 0.12);
 }
 
 /* ===== Markdown 排版规范（.gd-md）=====
@@ -1492,10 +1523,12 @@ pre,
   pointer-events: auto;
 }
 
-/* ===== 会话时间线非气泡卡：玻璃化（工具调用卡 / HITL 卡 / TodoPanel / 回撤操作条）=====
-   气泡保持白底（正文可读性），其余卡片统一玻璃语言：半透 + 取景后景 + rim 高光。
-   antd Collapse（工具调用卡）：默认白底 → 玻璃；ghost 变体（思考过程/文件变更）
-   刻意无壳，不套玻璃。展开内容区（.ant-collapse-content）同样透。 */
+/* ===== 会话时间线非气泡卡：玻璃化（工具调用卡 / HITL 卡 / TodoPanel）=====
+    代理气泡保持白底（长文可读性；用户气泡已在基础区玻璃化），其余卡片统一
+    玻璃语言：半透 + 取景后景 + rim 高光（回撤操作条的玻璃胶囊同样画在
+    按钮上，见基础区 .msg-turn__action .ant-btn）。
+    antd Collapse（工具调用卡）：默认白底 → 玻璃；ghost 变体（思考过程/文件变更）
+    刻意无壳，不套玻璃。展开内容区（.ant-collapse-content）同样透。 */
 .chat-panel .ant-collapse:not(.ant-collapse-ghost) {
   background: rgba(255, 255, 255, 0.42);
   backdrop-filter: blur(16px) saturate(1.6);
@@ -1547,19 +1580,13 @@ pre,
     inset 0 1px 0 rgba(255, 255, 255, 0.75),
     var(--shadow-md);
 }
-/* 回撤操作条：悬浮玻璃（原实白底） */
-.msg-turn__action {
-  background: rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(14px) saturate(1.5);
-  -webkit-backdrop-filter: blur(14px) saturate(1.5);
-}
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .chat-panel,
   .chat-panel .ant-collapse:not(.ant-collapse-ghost),
   .hitl-card,
   .todo-panel__chip,
   .todo-panel__body,
-  .msg-turn__action {
+  .msg-turn__action .ant-btn {
     background: rgba(255, 255, 255, 0.94);
   }
 }

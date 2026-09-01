@@ -3,7 +3,16 @@
    - SSE（useStreamChat：POST /messages、/resume）；
    - 语音 WS 下行隧道（useVoiceInput：stt_output 触发 astream 后的 agent 事件）。
    注意：done/error 的"终态收尾"（clearAttachments 等）在此统一处理，
-   与 useStreamChat 原实现行为逐帧一致。 */
+   与 useStreamChat 原实现行为逐帧一致。
+
+   性能：token 事件先入模块级缓冲、按窗口（TOKEN_COALESCE_MS）合并落地，
+   而非逐事件写 store + 触发渲染——LLM 流可达 50–100 token/s，逐 token 全量
+   渲染是长会话吐字卡顿的主因。合并只改变落地节奏（≈30fps 批次），不改变
+   内容、到达顺序与状态机语义：
+   - 任何非 token 事件处理前先冲刷（flushPendingTokens），store 看到的事件
+     顺序与网络到达顺序严格一致（终态 finalizeStreaming 含上最后一批增量；
+     tool_call/agent_message 等时间线条目不会插到未落地 token 之前）；
+   - 中止/卸载路径（useStreamChat.cancel、语音掉线恢复）显式冲刷后再固化。 */
 import { useChatStore } from '@/store/chatStore'
 import type {
   AgentMessagePayload,
@@ -18,17 +27,74 @@ import type {
   ToolResultPayload,
 } from '@/types'
 
+/** token 合并窗口（ms）：≈30fps，吐字观感与逐 token 无差别 */
+const TOKEN_COALESCE_MS = 32
+
+interface PendingToken {
+  agentPath: string
+  tokenId: string
+  delta: string
+  reasoning: boolean
+}
+
+/** 模块级缓冲（SSE 与语音 WS 共用同一分发器，天然共享同一缓冲，且同一时刻
+    至多一路流活跃——状态机保证）。到达顺序完整保留。 */
+let pendingTokens: PendingToken[] = []
+let flushTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 立即冲刷缓冲中的 token（幂等，可安全重入）。
+    终态/中止/卸载路径必须先调用：finalizeStreaming 之后才落地的增量只会
+    徒增一次已固化消息的 Markdown 重解析。 */
+export function flushPendingTokens(): void {
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  if (!pendingTokens.length) return
+  // 相邻同源（同 tokenId + 同类型）delta 预先拼接，减少 store 写入次数；
+  // 非相邻的交错流（多代理并行）保持独立调用，时间线顺序不变
+  const batch: PendingToken[] = []
+  for (const t of pendingTokens) {
+    const last = batch[batch.length - 1]
+    if (last && last.tokenId === t.tokenId && last.reasoning === t.reasoning) {
+      last.delta += t.delta
+    } else {
+      batch.push(t)
+    }
+  }
+  pendingTokens = []
+  const store = useChatStore.getState()
+  // 原"逐 token 顶替附件解析进度徽标"收敛为每批一次（首 token 批即清）
+  store.setParseStatus(null)
+  for (const t of batch) store.appendToken(t.agentPath, t.tokenId, t.delta, t.reasoning)
+}
+
+function bufferToken(t: PendingToken): void {
+  pendingTokens.push(t)
+  if (flushTimer === null) {
+    // 定时器锚定在本批首个 token：窗口有界，不会随持续到达无限顺延
+    flushTimer = setTimeout(() => {
+      flushTimer = null
+      flushPendingTokens()
+    }, TOKEN_COALESCE_MS)
+  }
+}
+
 export function dispatchStreamEvent(e: SSEEvent): void {
+  // token 入缓冲延后落地；其余事件先冲刷，保证顺序与到达严格一致（见文件头）
+  if (e.type === 'token') {
+    const p = e.payload as unknown as TokenPayload
+    bufferToken({
+      agentPath: e.agent_path ?? 'root',
+      tokenId: p.id,
+      delta: p.delta,
+      reasoning: !!p.reasoning,
+    })
+    return
+  }
+  flushPendingTokens()
   const store = useChatStore.getState()
   switch (e.type) {
-    case 'token': {
-      // 逐 token 增量：聚合进流式消息（content 或 reasoning）；首个 token 同时
-      // 顶替附件解析进度徽标（"正在解析附件…"使命完成）
-      const p = e.payload as unknown as TokenPayload
-      store.setParseStatus(null)
-      store.appendToken(e.agent_path ?? 'root', p.id, p.delta, !!p.reasoning)
-      break
-    }
     case 'status': {
       // 附件预消费进度（非错误型）：parsing/skipped 映射临时徽标；parsed 不展示
       //（首个 token 即将到达，避免徽标闪烁）

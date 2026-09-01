@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from langchain_core.messages import RemoveMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.graph import END
 from langgraph.graph.state import CompiledStateGraph
 from psycopg_pool import AsyncConnectionPool
 
@@ -18,6 +19,11 @@ from app.models import db as dbmod
 from app.models.schemas import KbRef, UploadOut
 
 logger = logging.getLogger(__name__)
+
+# deepagents 摘要中间件卸载全量历史的虚拟目录前缀（StateBackend files 通道内）。
+# 撤回时该前缀下的所有键（thread md + media）一并失效，防止已撤回内容经
+# read_file 回读 / 摘要文本复活（"摘要投毒"根因，见 withdraw_turn）。
+_CONVERSATION_HISTORY_PREFIX = "/conversation_history/"
 
 
 class SessionService:
@@ -206,10 +212,31 @@ class SessionService:
         the LLM context stays well-formed (no dangling tool_call).
 
         Removal is a *soft delete* via the ``add_messages`` reducer: we append
-        ``RemoveMessage(id)`` deltas through ``agent.update_state``. The original
+        ``RemoveMessage(id)`` deltas through ``agent.aupdate_state``. The original
         writes remain on disk (shadow) but replay (``_load_messages`` / graph
         state) no longer returns them — both /history and the next LLM context
         are correct automatically.
+
+        Besides the messages channel, two summarization side-channels must be
+        invalidated together, or withdrawn content re-enters the LLM context
+        through them ("摘要投毒"):
+        - ``_summarization_event`` (summary_message + cutoff_index): the event
+          survives a messages-only removal, and its absolute cutoff_index is
+          shifted by it, swallowing NEWER messages (the user's follow-up
+          instructions) into the summarized void.
+        - ``files`` keys under ``/conversation_history/``: the offloaded full
+          history (incl. withdrawn user queries) that the agent re-reads via
+          read_file.
+        Clearing both makes the next model call see the cleaned raw messages
+        only; if the context again exceeds the threshold, summarization
+        re-fires lazily and rebuilds both artifacts from post-withdraw
+        messages (self-healing).
+
+        A thread abandoned mid-run (cancelled stream / pending HITL) carries
+        pending tasks (``state.next``); after the update they are cleared with
+        ``values=None, as_node=END`` — the withdrawn turn's in-flight work dies
+        with it, and the clear path bypasses the writer chain that breaks on
+        such states (KeyError 'model' → HTTP 500).
 
         Returns the withdrawn user message's raw text + attachments + selected
         KBs so the front-end can prefill the composer for edit-and-resend.
@@ -253,10 +280,7 @@ class SessionService:
         # 4) soft delete via the add_messages reducer (no raw checkpoint writes).
         #    必须用 aupdate_state：checkpointer 是 AsyncPostgresSaver（仅异步方法），
         #    调同步 update_state 会去用不存在的 put() → 500。
-        await agent.aupdate_state(
-            config,
-            {"messages": [RemoveMessage(id=i) for i in ids_to_remove]},
-        )
+        await self._apply_withdraw_update(agent, config, ids_to_remove)
 
         # 5) recover raw_content + attachments + kbs for composer prefill
         ak = getattr(target, "additional_kwargs", None) or {}
@@ -273,6 +297,69 @@ class SessionService:
             "kbs": kbs,
             "removed_ids": ids_to_remove,
         }
+
+    async def _apply_withdraw_update(
+        self,
+        agent: CompiledStateGraph,
+        config: dict,
+        ids_to_remove: list[str],
+    ) -> None:
+        """Apply the withdraw state update: messages soft-delete + summarization
+        side-channel invalidation + stale pending-task cleanup.
+
+        Update routing (all through the public aupdate_state API, reducers apply
+        per channel — files 的 {path: None} 增量即删除键):
+        - 摘要通道仅在图中存在且确有产物时写入（未触发过摘要的线程保持
+          messages-only 更新，行为与历史版本一致）。
+        - 常规更新走无 as_node 推断路径（干净回合边界，生产验证）；中止态
+          （cancelled 流残留 pending 任务）下该路径经 model 节点 writer 链
+          会触发 langgraph 分支 ``KeyError: 'model'``（撤回 500 的根因），
+          回退 ``as_node='tools'``（同一增量经 tools writer 链可正常应用，
+          已在真实中止态复现验证）。
+        - 更新成功后若 ``state.next`` 非空（中止残留 / HITL 待审批 / tools
+          回退触发的路由），以 ``values=None, as_node=END`` 清空 pending 任务：
+          被撤回回合的未竟执行应一并作废，且清尾路径不经过 writer 链，
+          任何状态下均可安全执行。
+        """
+        state = await agent.aget_state(config)
+        update: dict[str, Any] = {
+            "messages": [RemoveMessage(id=i) for i in ids_to_remove]
+        }
+        channels = getattr(agent, "channels", None) or {}
+        if (
+            "_summarization_event" in channels
+            and state.values.get("_summarization_event") is not None
+        ):
+            update["_summarization_event"] = None
+        if "files" in channels:
+            stale = [
+                path
+                for path in (state.values.get("files") or {})
+                if path.startswith(_CONVERSATION_HISTORY_PREFIX)
+            ]
+            if stale:
+                update["files"] = {path: None for path in stale}
+
+        try:
+            await agent.aupdate_state(config, update)
+        except Exception:
+            nodes = getattr(agent, "nodes", None) or {}
+            fallback = next(
+                (name for name in ("tools",) if name in nodes),
+                next((name for name in nodes if name != "__start__"), None),
+            )
+            if fallback is None:
+                raise
+            logger.exception(
+                "withdraw: 常规 aupdate_state 失败（中止态 writer 链已知问题），"
+                "回退 as_node=%s 重试",
+                fallback,
+            )
+            await agent.aupdate_state(config, update, as_node=fallback)
+
+        state_after = await agent.aget_state(config)
+        if state_after.next:
+            await agent.aupdate_state(config, None, as_node=END)
 
     async def _resolve_human_attachments(
         self,
