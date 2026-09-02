@@ -121,6 +121,8 @@ class SessionOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     agent_name: Optional[str] = None
+    # 会话级 token 用量累计（db.add_session_usage 维护的固定五键；NULL=尚无消耗）
+    usage_totals: Optional[dict] = None
 
 
 class KbRef(BaseModel):

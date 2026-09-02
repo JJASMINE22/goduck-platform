@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
@@ -34,6 +35,8 @@ from app.services.message_content import (
     assemble_message_content_stream,
     validate_message_content,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sessions", tags=["流式对话"])
 
@@ -71,6 +74,19 @@ async def _load_session_or_404(request: Request, session_id: uuid.UUID) -> dict:
     if session["status"] == "archived":
         raise HTTPException(status_code=409, detail="session archived")
     return session, svc
+
+
+async def _persist_usage(pool, session_id: uuid.UUID, payload: dict) -> None:
+    """Best-effort mirror one `usage` event into session.usage_totals.
+
+    统计入库绝不允许打断对话流：写库失败仅告警（下次 /sessions 回读时前端
+    以服务端真值兜底）。按事件即时入库（而非流末一次性）：中止/断连路径的
+    已完成 LLM 调用同样计入。语音 WS 隧道（voice.py）复用本函数。
+    """
+    try:
+        await dbmod.add_session_usage(pool, session_id, payload)
+    except Exception:  # noqa: BLE001
+        logger.warning("persist usage for session %s failed (skipped)", session_id, exc_info=True)
 
 
 @router.post("/{session_id}/messages")
@@ -126,6 +142,9 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
             )
             try:
                 async for ev in gen:
+                    # token 用量即时入库（best-effort，失败不打断流；见 _persist_usage）
+                    if ev.type == "usage":
+                        await _persist_usage(st.pool, session["id"], ev.payload)
                     yield ev.to_sse()
             finally:
                 # 客户端中止（abort fetch → FastAPI 取消本生成器）：确定性关闭 adapter
@@ -214,6 +233,8 @@ async def resume(session_id: uuid.UUID, body: ResumeRequest, request: Request):
         gen = adapter.stream_resume(agent, decisions, config)
         try:
             async for ev in gen:
+                if ev.type == "usage":
+                    await _persist_usage(st.pool, session["id"], ev.payload)
                 yield ev.to_sse()
         finally:
             st.stream_tracker.release(thread_id)

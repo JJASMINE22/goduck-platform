@@ -82,8 +82,10 @@ export function TurnRail({ scrollRef }: { scrollRef: RefObject<HTMLDivElement | 
           key={t.anchorId}
           trigger="hover"
           placement="left"
+          arrow={false}
           mouseEnterDelay={0.2}
           mouseLeaveDelay={0.1}
+          overlayClassName="turn-rail__popover"
           overlayStyle={{ maxWidth: 340 }}
           content={
             <div className="turn-rail__preview">

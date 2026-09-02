@@ -2,6 +2,7 @@
    api/sessions.py。thread_id 是 LangGraph checkpointer 的键。 */
 import type { ISODateTime, UUID } from './common'
 import type { UploadOut } from './upload'
+import type { UsageTotals } from './stream'
 
 export interface SessionCreate {
   user_id: string
@@ -22,6 +23,8 @@ export interface SessionOut {
   created_at: ISODateTime
   updated_at: ISODateTime
   agent_name?: string | null
+  /** 会话级 token 用量累计（null/缺省 = 尚无消耗；流中由 usage 事件前端累加） */
+  usage_totals?: UsageTotals | null
 }
 
 /** 知识库最小引用（schemas.py KbRef）：徽标渲染与回撤回填所需的全部信息 */

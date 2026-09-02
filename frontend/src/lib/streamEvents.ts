@@ -25,6 +25,7 @@ import type {
   TokenPayload,
   ToolCallPayload,
   ToolResultPayload,
+  UsagePayload,
 } from '@/types'
 
 /** token 合并窗口（ms）：≈30fps，吐字观感与逐 token 无差别 */
@@ -145,6 +146,11 @@ export function dispatchStreamEvent(e: SSEEvent): void {
       // 工作区文件变更徽标：一批落盘记录追加进本回合时间线
       const p = e.payload as unknown as FileChangePayload
       store.applyFileChange(Array.isArray(p.records) ? p.records : [])
+      break
+    }
+    case 'usage': {
+      // token 用量（一次 LLM 调用）：累加进会话级累计徽标
+      store.applyUsageIncrement(e.payload as unknown as UsagePayload)
       break
     }
     case 'interrupt':

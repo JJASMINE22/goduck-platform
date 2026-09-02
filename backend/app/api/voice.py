@@ -35,7 +35,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from websockets.exceptions import WebSocketException
 
-from app.api.stream import _build_agent_or_409
+from app.api.stream import _build_agent_or_409, _persist_usage
 from app.deps import SimpleUser, get_ws_appstate
 from app.models.schemas import VoiceStartFrame
 from app.services.message_content import (
@@ -364,7 +364,10 @@ async def _run_agent_round(
             )
             try:
                 async for ev in gen:
-                    # done/interrupt/error 终态事件由 adapter 产出，前端据其落态
+                    # done/interrupt/error 终态事件由 adapter 产出，前端据其落态；
+                    # usage 事件与 SSE 路径同构即时入库（best-effort，见 _persist_usage）
+                    if ev.type == "usage":
+                        await _persist_usage(st.pool, session["id"], ev.payload)
                     await sess.send_json(ev)
             finally:
                 # 确定性关闭生成器链（astream → stream_message）：发送失败/取消路径若

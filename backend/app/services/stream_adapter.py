@@ -7,6 +7,11 @@ Streams in two modes simultaneously to deliver **token-level** output:
   that was NOT streamed token-by-token).
   Node updates carrying a `todos` state change (TodoListMiddleware, per-node
   task planning) additionally emit a `todos` event — deduped per agent_path.
+  Every node-complete AIMessage carrying `usage_metadata` (model client must
+  run with stream_usage=True, see model_store) additionally emits a `usage`
+  event — deduped by message id across the dual stream modes, one per LLM
+  call; the front-end accumulates these into session-level token totals and
+  stream.py/voice.py mirror each increment into session.usage_totals.
 
 Dedup: every AI message delivered as tokens is recorded in `streamed_ids`
 (matched by message id). In updates mode its content/reasoning are skipped to
@@ -201,6 +206,32 @@ def _has_interrupt(state) -> bool:
     return False
 
 
+def _usage_from_message(msg) -> Optional[dict]:
+    """Normalize a message's usage_metadata into the fixed five-key shape.
+
+    Source keys vary across langchain-core versions / providers:
+    - input cache hit: input_token_details['cache_read'] (newer) or
+      ['cached_tokens'] (older) — both accepted;
+    - output reasoning: output_token_details['reasoning'].
+    Returns None when the message carries no usage (client ran without
+    stream_usage, provider didn't return usage, or not an AI message).
+    """
+    um = getattr(msg, "usage_metadata", None)
+    if not isinstance(um, dict):
+        return None
+    itd = um.get("input_token_details") or {}
+    otd = um.get("output_token_details") or {}
+    input_tokens = um.get("input_tokens") or 0
+    output_tokens = um.get("output_tokens") or 0
+    return {
+        "input_tokens": input_tokens,
+        "cached_tokens": itd.get("cache_read") or itd.get("cached_tokens") or 0,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": otd.get("reasoning") or 0,
+        "total_tokens": um.get("total_tokens") or (input_tokens + output_tokens),
+    }
+
+
 def _extract_interrupt(state) -> dict:
     """Extract the interrupt payload (action_requests + review_configs)."""
     action_requests: list[dict] = []
@@ -292,6 +323,9 @@ class StreamAdapter:
         # agent_path -> last emitted todos (dedup: node updates may repeat the
         # same todos value; only state CHANGES are pushed as SSE events)
         last_todos: dict[str, list[dict]] = {}
+        # ids of AI messages whose usage was already emitted as a `usage` event
+        # (dedup: the dual stream modes may both surface the same message)
+        usage_counted: set[str] = set()
         # 文件变更收集器引用：activate() yield 出实例，error 路径（with 已退出、
         # contextvar 已复位）仍可 drain(collector) 取走残留记录。
         collector = None
@@ -324,6 +358,10 @@ class StreamAdapter:
                                         continue
                                     for msg in state.get("messages", []):
                                         for ev in _msg_to_events(msg, agent_path, streamed_ids):
+                                            yield ev
+                                        for ev in self._usage_events(
+                                            msg, agent_path, usage_counted
+                                        ):
                                             yield ev
                                     # Task planning: TodoListMiddleware writes the `todos`
                                     # state channel inside the same node update as messages.
@@ -391,6 +429,37 @@ class StreamAdapter:
             ):
                 yield ev
             yield SSEEvent(type="error", payload={"message": str(e)})
+
+    @staticmethod
+    def _usage_events(
+        msg,
+        agent_path: str,
+        counted: set[str],
+    ) -> list[SSEEvent]:
+        """Turn one node-complete message into 0..1 `usage` SSE events.
+
+        Emitted once per LLM call (per AI message): only updates-mode complete
+        messages are inspected — the messages-mode final usage chunk shares the
+        same message id, so counting here with an id-keyed dedup set covers
+        both modes exactly once. Messages without an id (rare; langchain
+        auto-ids generated AI messages) are counted without dedup.
+        """
+        usage = _usage_from_message(msg)
+        if usage is None:
+            return []
+        mid = getattr(msg, "id", None)
+        if mid:
+            key = str(mid)
+            if key in counted:
+                return []
+            counted.add(key)
+        return [
+            SSEEvent(
+                type="usage",
+                agent_path=agent_path,
+                payload={"id": mid, **usage},
+            )
+        ]
 
     @staticmethod
     def _file_change_events(

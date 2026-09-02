@@ -23,6 +23,7 @@ import { HitlCard } from '@/features/chat/HitlCard'
 import { TodoPanel } from '@/features/chat/TodoPanel'
 import { TurnRail } from '@/features/chat/TurnRail'
 import { ChatInput } from '@/features/chat/ChatInput'
+import { UsageBadge } from '@/features/chat/UsageBadge'
 import { WorkspaceView, type WorkspaceSelection } from '@/features/workspace/WorkspaceView'
 import { PageLoading } from '@/components/feedback/states'
 import { sessionsApi } from '@/api/sessions'
@@ -336,10 +337,25 @@ export function ChatPage(): ReactNode {
       scrollToBottom()
     }
     // 流式结束（idle/interrupted/error）：工作区已挂载则刷新文件树，agent 落盘产物即时可见
-    if (prev === 'streaming' && stream.status !== 'streaming' && wsVisited) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceTree(sessionId) })
+    if (prev === 'streaming' && stream.status !== 'streaming') {
+      if (wsVisited) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaceTree(sessionId) })
+      }
+      // token 累计真值兜底：usage 事件已逐条入库，重拉 session 让基线同步效应
+      // 以服务端计数替换本地累加（校正丢帧/本地漏算的偏差）
+      queryClient.invalidateQueries({ queryKey: queryKeys.session(sessionId) })
     }
   }, [stream.status, scrollToBottom, wsVisited, queryClient, sessionId])
+
+  // token 用量基线同步：session 查询的 usage_totals → store（整表替换）。
+  // 流式中跳过——服务端快照必然滞后于事件增量（usage 先于 done 入库），
+  // 此时套用会把正在跳动的徽标拉回旧值；终态失效重拉后本效应自然落真值。
+  const setUsageTotals = useChatStore((s) => s.setUsageTotals)
+  const usageBaseline = sessionQ.data?.usage_totals
+  useEffect(() => {
+    if (!usageBaseline || useChatStore.getState().status === 'streaming') return
+    setUsageTotals(usageBaseline)
+  }, [usageBaseline, setUsageTotals])
 
   // token 流式增长：仅在贴底且指针不在消息流内时跟随（用户上滑翻历史或悬停
   // 瞄准操作按钮时不打扰；离开消息流后若仍贴底则立即追上流式进度）。
@@ -370,6 +386,8 @@ export function ChatPage(): ReactNode {
           {allowShell ? <Tag color="magenta">Shell</Tag> : null}
           {stream.status === 'streaming' ? <Tag color="processing">生成中</Tag> : null}
           {stream.status === 'interrupted' ? <Tag color="orange">待审批</Tag> : null}
+          {/* 会话级 token 用量（含缓存命中）：元信息层，流中实时跳动，Tooltip 见明细 */}
+          <UsageBadge />
           {archived ? <Tag color="default">已归档（只读）</Tag> : null}
         </Space>
       ),

@@ -9,6 +9,8 @@ import type {
   KbRef,
   TodoItem,
   UploadOut,
+  UsagePayload,
+  UsageTotals,
   VoiceState,
 } from '@/types'
 
@@ -83,6 +85,9 @@ export interface ChatState {
   parseStatus: string | null
   /** 本回合的工作区文件变更（file_change 事件追加；pushUser 新回合清空，回撤随时间窗移除） */
   fileChanges: FileChangeEntry[]
+  /** 会话级 token 用量累计（usage 事件逐条累加；基线由 ChatPage 从 session 查询灌入，
+      流结束后终态失效重拉以服务端真值校正）。会话作用域：reset 清零，不随回合清空 */
+  usageTotals: UsageTotals
   // 发送框草稿：上提到 store，使回撤可回填原文（受控于 store，非组件局部 state）
   draft: string
   // —— 语音输入（麦克风小状态机，与 status 正交联动）——
@@ -117,6 +122,10 @@ export interface ChatState {
   clearTodos: () => void
   /** file_change 事件落地：同批记录统一时间戳追加（合并展示在渲染层完成） */
   applyFileChange: (records: FileChangeRecord[]) => void
+  /** usage 事件落地：一次 LLM 调用的用量累加进会话累计（五键全加，负值不可能出现） */
+  applyUsageIncrement: (p: UsagePayload) => void
+  /** 灌入服务端累计基线（进入会话 / 终态失效重拉后；整表替换非合并） */
+  setUsageTotals: (t: UsageTotals) => void
   addAttachment: (u: UploadOut) => void
   removeAttachment: (uploadId: string) => void
   clearAttachments: () => void
@@ -153,6 +162,13 @@ const initialState = {
   todosByAgent: {} as Record<string, TodoItem[]>,
   parseStatus: null as string | null,
   fileChanges: [] as FileChangeEntry[],
+  usageTotals: {
+    input_tokens: 0,
+    cached_tokens: 0,
+    output_tokens: 0,
+    reasoning_tokens: 0,
+    total_tokens: 0,
+  } as UsageTotals,
   draft: '',
   voiceState: 'idle' as VoiceState,
   interimTranscript: '',
@@ -311,6 +327,28 @@ export const useChatStore = create<ChatState>((set) => ({
         ? { fileChanges: [...s.fileChanges, ...records.map((r) => ({ ...r, createdAt: Date.now() }))] }
         : {},
     ),
+
+  applyUsageIncrement: (p) =>
+    set((s) => ({
+      usageTotals: {
+        input_tokens: s.usageTotals.input_tokens + (p.input_tokens || 0),
+        cached_tokens: s.usageTotals.cached_tokens + (p.cached_tokens || 0),
+        output_tokens: s.usageTotals.output_tokens + (p.output_tokens || 0),
+        reasoning_tokens: s.usageTotals.reasoning_tokens + (p.reasoning_tokens || 0),
+        total_tokens: s.usageTotals.total_tokens + (p.total_tokens || 0),
+      },
+    })),
+
+  setUsageTotals: (t) =>
+    set({
+      usageTotals: {
+        input_tokens: t.input_tokens || 0,
+        cached_tokens: t.cached_tokens || 0,
+        output_tokens: t.output_tokens || 0,
+        reasoning_tokens: t.reasoning_tokens || 0,
+        total_tokens: t.total_tokens || 0,
+      },
+    }),
 
   addAttachment: (u) => set((s) => ({ attachments: [...s.attachments, u] })),
 

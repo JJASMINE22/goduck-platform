@@ -18,6 +18,9 @@ EventType = Literal[
     "agent_message",
     "todos",
     "file_change",
+    # —— token 用量（每条 AI 消息一次：input/cached/output/reasoning/total 五键，
+    #    前端会话级累加展示，stream.py/voice.py 同步入库 session.usage_totals）——
+    "usage",
     # —— 附件解析进度（非错误型；前端映射临时徽标，首个 token 自然顶替）——
     "status",
     "interrupt",

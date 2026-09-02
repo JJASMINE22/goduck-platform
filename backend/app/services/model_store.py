@@ -62,10 +62,17 @@ def build_chat_model(
             kwargs["extra_body"] = {
                 "thinking": {"type": "enabled" if enable_thinking else "disabled"}
             }
+        # stream_usage：流式请求带 stream_options={"include_usage": true}，使
+        # 最后一个 chunk 携带 usage → 聚合后的 AIMessage.usage_metadata 非空
+        # （StreamAdapter 据此发 usage 事件、session 表累计 token 消耗）。
+        # langchain-openai 仅对官方 OpenAI 端点默认开启；本项目全部走 OpenAI
+        # 兼容网关（base_url 恒非空），必须显式开启。GLM/DeepSeek/DashScope
+        # compatible-mode 均已支持该参数。
         return ChatOpenAI(
             model=model_type,
             api_key=api_key,
             base_url=base_url or None,
+            stream_usage=True,
             **kwargs,
         )
     raise ValueError(f"不支持的 provider_kind: {provider_kind}")

@@ -175,6 +175,8 @@ _MIGRATIONS = [
     "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc TEXT",
     "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc_model TEXT",
     "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc_at TIMESTAMPTZ",
+    # 会话级 token 用量累计（jsonb，固定五键，见 add_session_usage）
+    "ALTER TABLE session ADD COLUMN IF NOT EXISTS usage_totals JSONB",
 ]
 
 # enable_thinking 三态化一次性迁移：旧 schema 为 NOT NULL 且旧语义 false=不注入；
@@ -590,8 +592,8 @@ async def get_session(pool: AsyncConnectionPool, session_id: uuid.UUID) -> Optio
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, agent_id, user_id, thread_id, title, status, created_at, updated_at "
-                "FROM session WHERE id = %s",
+                "SELECT id, agent_id, user_id, thread_id, title, status, usage_totals, "
+                "created_at, updated_at FROM session WHERE id = %s",
                 (session_id,),
             )
             row = await cur.fetchone()
@@ -636,6 +638,35 @@ async def touch_session(pool: AsyncConnectionPool, session_id: uuid.UUID) -> Non
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute("UPDATE session SET updated_at = now() WHERE id = %s", (session_id,))
+
+
+# usage_totals 的固定键（写入与展示的唯一契约；缺失键按 0 处理）
+_USAGE_KEYS = ("input_tokens", "cached_tokens", "output_tokens", "reasoning_tokens", "total_tokens")
+
+
+async def add_session_usage(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, delta: dict
+) -> None:
+    """把一次 LLM 调用的 token 用量原子累加进 session.usage_totals（jsonb）。
+
+    单条 UPDATE 在 SQL 侧做读-改-写（COALESCE 旧值 + 增量），无需应用层事务；
+    键集合固定为 _USAGE_KEYS，历史行缺键 / 列为 NULL 均从 0 起算。累加语义是
+    成本视角：回撤（withdraw）不回退已消耗的 token；子代理调用同样计入。
+    delta 中未知键忽略（防御事件 payload 演进）。
+    """
+    values = [int(delta.get(k) or 0) for k in _USAGE_KEYS]
+    if not any(values):
+        return
+    set_expr = ",\n      ".join(
+        f"'{k}', COALESCE((usage_totals->>'{k}')::bigint, 0) + %s" for k in _USAGE_KEYS
+    )
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"UPDATE session SET usage_totals = jsonb_build_object(\n      {set_expr}\n      ) "
+                "WHERE id = %s",
+                (*values, session_id),
+            )
 
 
 # ============================ MCP server ops ==============================

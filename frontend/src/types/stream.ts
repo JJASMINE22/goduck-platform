@@ -13,6 +13,7 @@ export type SSEEventType =
   | 'agent_message'
   | 'todos'
   | 'file_change'
+  | 'usage'
   | 'status'
   | 'interrupt'
   | 'done'
@@ -104,6 +105,22 @@ export interface FileChangeRecord {
 export interface FileChangePayload {
   records: FileChangeRecord[]
 }
+
+// —— usage payload（stream_adapter._usage_from_message：一次 LLM 调用的用量）——
+export interface UsagePayload {
+  /** 产生本次用量的 AI 消息 id（无 id 消息为 null） */
+  id?: string | null
+  input_tokens: number
+  /** 输入中的缓存命中部分（input_tokens 已含，展示时勿重复计入发送量） */
+  cached_tokens: number
+  output_tokens: number
+  /** 输出中的思考 token（output_tokens 已含） */
+  reasoning_tokens: number
+  total_tokens: number
+}
+
+/** 会话级累计（session.usage_totals，与 UsagePayload 同五键、无 id） */
+export type UsageTotals = Omit<UsagePayload, 'id'>
 
 // —— interrupt payload（hitl_resolver._extract_interrupt）——
 // deepagents 的 action_requests 为扁平结构：每个待审批工具调用 = { name, args }
