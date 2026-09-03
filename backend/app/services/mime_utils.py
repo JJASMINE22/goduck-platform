@@ -1,7 +1,7 @@
 """MIME 类型判定（plan §5.1 三重优先级）。
 
 服务端唯一可信源：魔数 > 扩展名 > 客户端声明。
-kind 推断：image/* → image；docx/pdf → file；其余 → file（受白名单限制）。
+kind 推断：image/* → image；白名单文档（docx/pdf/xlsx/csv/html/txt/md）→ file。
 """
 from __future__ import annotations
 
@@ -19,36 +19,82 @@ _ALLOWED_MIME = {
     "image/gif",
     "image/webp",
     "image/bmp",
-    # docx: zip 容器，魔数识别为 zip，靠扩展名二次确认
+    # OOXML 系（docx/xlsx）：zip 容器，魔数指纹失灵时靠扩展名二次确认
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    # pdf: 魔数 %PDF- 可直接识别，无需 docx 那套 zip 兜底
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    # pdf: 魔数 %PDF- 可直接识别，无需 OOXML 那套 zip 兜底
     "application/pdf",
+    # 文本类（markitdown 原生支持）。csv 别名 application/csv 一并放行；
+    # 注意 application/vnd.ms-excel 指旧版二进制 xls，刻意不放行（markitdown 需 xlrd）
+    "text/csv",
+    "application/csv",
+    "text/html",
+    "text/plain",
+    "text/markdown",
 }
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _PDF_MIME = "application/pdf"
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_CSV_MIME = "text/csv"
+
+# 扩展名 → mime 显式映射（优先于 mimetypes 猜测，跨平台确定性）：
+# - Windows 注册表把 .csv 污染为 application/vnd.ms-excel；
+# - Python <3.13 内置表无 .md → text/markdown 映射。
+# 覆盖全部白名单文档扩展名，白名单语义自持、不随宿主 OS/Python 版本漂移。
+_EXT_MIME_OVERRIDES = {
+    "docx": _DOCX_MIME,
+    "pdf": _PDF_MIME,
+    "xlsx": _XLSX_MIME,
+    "csv": _CSV_MIME,
+    "html": "text/html",
+    "htm": "text/html",
+    "txt": "text/plain",
+    "md": "text/markdown",
+    "markdown": "text/markdown",
+}
 
 # 白名单内"文档类" mime → 扩展名（image/* 之外的可上传类型）。
-# allowed_file_extensions() 的单一来源：新增文档类型只需同时加 _ALLOWED_MIME
-# 与本表，上传门/能力查询/前端 accept 三处自动跟随。
+# allowed_file_extensions() 的单一来源：新增文档类型只需同时加 _ALLOWED_MIME、
+# _FILE_EXT_BY_MIME（必要时补 _EXT_MIME_OVERRIDES），上传门/能力查询/前端
+# accept 三处自动跟随。
 _FILE_EXT_BY_MIME = {
     _DOCX_MIME: "docx",
     _PDF_MIME: "pdf",
+    _XLSX_MIME: "xlsx",
+    _CSV_MIME: "csv",
+    "application/csv": "csv",
+    "text/html": "html",
+    "text/plain": "txt",
+    "text/markdown": "md",
 }
 
 
 def allowed_file_extensions() -> list[str]:
-    """白名单派生的可上传文档扩展名（如 ['docx', 'pdf']）。
+    """白名单派生的可上传文档扩展名（如 ['csv', 'docx', 'html', 'md', 'pdf', 'txt', 'xlsx']）。
 
     供 attachment-capability 下发前端渲染 accept；与 is_allowed_mime 同源，
-    消灭各处硬编码的文档类型清单。
+    消灭各处硬编码的文档类型清单。csv 的双 mime 别名去重后仅产出一份。
     """
-    return sorted(ext for mime, ext in _FILE_EXT_BY_MIME.items() if mime in _ALLOWED_MIME)
+    return sorted({ext for mime, ext in _FILE_EXT_BY_MIME.items() if mime in _ALLOWED_MIME})
 
 
 def file_ext_of(mime: str) -> Optional[str]:
     """文档 mime → markitdown 扩展名（StreamInfo 分派用）；非文档返回 None。"""
     return _FILE_EXT_BY_MIME.get(mime)
+
+
+def mime_of_ext(ext: str) -> Optional[str]:
+    """白名单扩展名 → 规范 mime（取首个命中，别名扩展名归一到规范 mime）。
+
+    供 _convert_bytes 的 StreamInfo 双通道分派：同时给 extension + mimetype，
+    避免 markitdown 落到 magika 字节嗅探（短 csv 被误判 text/plain 之类的内容
+    摆布），让服务端魔数判定结果成为分派唯一权威。
+    """
+    for mime, e in _FILE_EXT_BY_MIME.items():
+        if e == ext and mime in _ALLOWED_MIME:
+            return mime
+    return None
 
 
 def detect_mime(raw: bytes, filename: Optional[str], client_mime: Optional[str]) -> str:
@@ -58,12 +104,13 @@ def detect_mime(raw: bytes, filename: Optional[str], client_mime: Optional[str])
         guessed = filetype.guess(raw)
         if guessed is not None:
             magic_mime = guessed.mime
-            # docx 本质是 zip 容器，魔数只能给出 application/zip
+            # OOXML 系（docx/xlsx）本质是 zip 容器，魔数只能给出 application/zip。
+            # 典型文件可被直接指纹识别出精确 mime；此分支兜底指纹失灵的变体：
+            # 靠扩展名二次确认（非 OOXML 扩展名的普通 zip 不放大，仍返回 zip）
             if magic_mime == "application/zip":
-                # 靠扩展名二次确认是否为 docx
                 ext_mime = _ext_mime(filename)
-                if ext_mime == _DOCX_MIME:
-                    return _DOCX_MIME
+                if ext_mime in (_DOCX_MIME, _XLSX_MIME):
+                    return ext_mime
             return magic_mime
     except Exception:
         pass
@@ -81,8 +128,12 @@ def detect_mime(raw: bytes, filename: Optional[str], client_mime: Optional[str])
 
 
 def _ext_mime(filename: Optional[str]) -> Optional[str]:
-    if not filename:
+    if not filename or "." not in filename:
         return None
+    ext = filename.rsplit(".", 1)[-1].lower()
+    # 白名单扩展名走显式映射（见 _EXT_MIME_OVERRIDES 注释），其余交 mimetypes
+    if ext in _EXT_MIME_OVERRIDES:
+        return _EXT_MIME_OVERRIDES[ext]
     ext_mime, _ = mimetypes.guess_type(filename)
     return ext_mime
 
@@ -95,7 +146,7 @@ def detect_kind(real_mime: str) -> str:
 
 
 def is_allowed_mime(real_mime: str) -> bool:
-    """白名单校验：仅放行 image/* + docx + pdf。"""
+    """白名单校验：仅放行 image/* 与白名单文档（docx/pdf/xlsx/csv/html/txt/md）。"""
     if real_mime.startswith(_IMAGE_PREFIX):
         return True
     return real_mime in _ALLOWED_MIME

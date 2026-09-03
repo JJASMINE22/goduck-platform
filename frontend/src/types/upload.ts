@@ -18,6 +18,6 @@ export interface UploadOut {
 export interface AttachmentCapability {
   allow_attachments: boolean
   allow_image: boolean // 取决于 model.supports_vision 或 wrapper 已挂载
-  allow_file: string[] // 当前 ["docx", "pdf"]
+  allow_file: string[] // 后端白名单派生（mime_utils 单一来源），当前 csv/docx/html/md/pdf/txt/xlsx
   max_size_mb: number
 }

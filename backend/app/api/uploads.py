@@ -16,6 +16,7 @@ from app.models import db as dbmod
 from app.models.schemas import AttachmentCapability, UploadOut
 from app.services.attachment_policy import AttachmentPolicyService
 from app.services.mime_utils import (
+    allowed_file_extensions,
     detect_kind,
     detect_mime,
     extract_document_meta,
@@ -62,9 +63,13 @@ async def upload_file(
     # ③ 服务端判定真实 mime（魔数 > 扩展名 > 客户端）
     real_mime = detect_mime(raw, file.filename, file.content_type)
     if not is_allowed_mime(real_mime):
+        # 支持清单由白名单动态派生（mime_utils 单一来源），文案随白名单自动跟随
         raise HTTPException(
             status_code=415,
-            detail=f"不支持的文件类型: {real_mime}，仅支持 image/*、docx 与 pdf",
+            detail=(
+                f"不支持的文件类型: {real_mime}，"
+                f"仅支持 image/* 与 {'、'.join(allowed_file_extensions())}"
+            ),
         )
 
     # ④ 智能体级策略门（plan §3.2）：附件总开关 + 图像能力（基座视觉 OR 下挂
@@ -120,7 +125,7 @@ async def upload_file(
 
 @router.get("/{session_id}/uploads/{upload_id}/preview")
 async def preview_upload(session_id: uuid.UUID, upload_id: uuid.UUID, request: Request):
-    """返回附件字节供前端缩略图渲染（仅 image；docx/pdf 无二进制预览 → 404，前端回退图标）。"""
+    """返回附件字节供前端缩略图渲染（仅 image；文档类附件无二进制预览 → 404，前端回退图标）。"""
     st = _appstate(request)
     upload = await dbmod.get_upload(st.pool, upload_id)
     if upload is None or upload["session_id"] != session_id:

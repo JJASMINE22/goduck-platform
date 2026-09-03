@@ -2,20 +2,83 @@
     （Tooltip + 点击打开选择器），已选项以 chip 嵌在容器内。
     发送仅在 status==='idle' 启用；streaming/interrupted 时由消息流/HITL 卡处理。
     附件图标、知识库图标与麦克风（长按说话）各自独立成入口（准则 F2 能力驱动 UI：未开启时不显示）。
+    附件三入口共用 useAttachFiles 编排：选择器（可多选）/ 输入框 Ctrl+V 粘贴（截图、复制的
+    图片或文件）；上传未返回时渲染 pending chip（图片本地 objectURL 即时缩略 + spinner，
+    失败留驻可点重试），全部落定前发送门关闭（快照发生在点击瞬间，防止漏挂在途文件）。
     录音中输入框只读展示"草稿 + 流式转写"合并预览（与后端 stt_output 合并稿同构），
     松开后草稿与终稿合并为一条消息发送，与手打输入互斥。 */
 import { Button, Checkbox, Flex, Input, Popover, Tooltip, Typography, Upload } from 'antd'
 import { type ReactNode, useRef, useState } from 'react'
-import { AudioLines, BookOpen, ChevronDown, ChevronUp, FileText, Paperclip, Send, Square, X } from 'lucide-react'
-import { useAttachmentCapability, useUploadFile } from '@/hooks/useUploads'
+import {
+  AlertCircle,
+  AudioLines,
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
+  FileText,
+  Loader2,
+  Paperclip,
+  Send,
+  Square,
+  X,
+} from 'lucide-react'
+import { useAttachmentCapability, useAttachFiles } from '@/hooks/useUploads'
 import { useKnowledgeBases, useKnowledgeCapability } from '@/hooks/useKnowledge'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { uploadsApi } from '@/api/uploads'
-import { useChatStore } from '@/store/chatStore'
-import { toastError } from '@/lib/antdStatic'
+import { useChatStore, type PendingAttachment } from '@/store/chatStore'
 import type { ChatStreamStatus, KnowledgeBaseOut, UUID } from '@/types'
 import type { SendOptions } from '@/hooks/useStreamChat'
 import type { UseVoiceInput } from '@/hooks/useVoiceInput'
+
+/** 上传中/失败占位 chip：复用 .attach-chip 骨架。图片以本地 objectURL 即时缩略 +
+    状态蒙层（spinner/失败图标）；文档走类型色块。失败态整卡可点重试，X 移除。 */
+function PendingChip({
+  p,
+  onRemove,
+  onRetry,
+}: {
+  p: PendingAttachment
+  onRemove: (localId: string) => void
+  onRetry: (localId: string) => void
+}): ReactNode {
+  const failed = p.status === 'error'
+  const statusIcon = failed ? (
+    <AlertCircle size={15} />
+  ) : (
+    <Loader2 size={15} className="attach-chip__spin" />
+  )
+  return (
+    <div
+      className={`attach-chip attach-chip--${p.status}`}
+      title={failed ? '上传失败：点击重试，或点 × 移除' : '上传中…'}
+      onClick={failed ? () => onRetry(p.localId) : undefined}
+    >
+      {p.kindHint === 'image' && p.previewUrl ? (
+        <span className="attach-chip__thumbbox">
+          <img className="attach-chip__thumb" src={p.previewUrl} alt={p.filename} />
+          <span className="attach-chip__mask">{statusIcon}</span>
+        </span>
+      ) : (
+        <span className="attach-chip__icon">{statusIcon}</span>
+      )}
+      <span className="attach-chip__name" title={p.filename}>
+        {p.filename}
+      </span>
+      <button
+        type="button"
+        className="attach-chip__close"
+        title="移除"
+        onClick={(e) => {
+          e.stopPropagation()
+          onRemove(p.localId)
+        }}
+      >
+        <X size={13} />
+      </button>
+    </div>
+  )
+}
 
 export function ChatInput({
   sessionId,
@@ -41,10 +104,11 @@ export function ChatInput({
 
   // —— 附件 ——
   const cap = useAttachmentCapability(sessionId)
-  const upload = useUploadFile(sessionId)
+  const { attach, retry } = useAttachFiles(sessionId, userId)
   const attachments = useChatStore((s) => s.attachments)
-  const addAttachment = useChatStore((s) => s.addAttachment)
   const removeAttachment = useChatStore((s) => s.removeAttachment)
+  const pendingAttachments = useChatStore((s) => s.pendingAttachments)
+  const removePending = useChatStore((s) => s.removePending)
 
   // —— 知识库 ——
   const kbCap = useKnowledgeCapability(sessionId)
@@ -94,23 +158,29 @@ export function ChatInput({
         .join(',')
     : undefined
 
-  const handleFile = async (file: File) => {
-    if (!cap.data) return
-    if (file.size > cap.data.max_size_mb * 1024 * 1024) {
-      toastError(`文件超过 ${cap.data.max_size_mb}MB 限制`)
-      return
-    }
-    try {
-      const res = await upload.mutateAsync({ file, userId })
-      addAttachment(res)
-    } catch {
-      /* 错误由全局提示 */
-    }
+  // 占位门：任一附件在途/失败未决时禁止发送（快照在点击瞬间，避免漏挂）；📎 spinner 仅看 uploading
+  const hasPending = pendingAttachments.length > 0
+  const anyUploading = pendingAttachments.some((p) => p.status === 'uploading')
+
+  // 粘贴上传：截图/复制的图片/复制的文件 → 附件；纯文本粘贴零干预。
+  // DataTransferItem 让出事件循环即失效，getAsFile 必须同步收集后再异步上传。
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!canAttach || !idle || recording || transcribing) return
+    const files = Array.from(e.clipboardData.items)
+      .filter((it) => it.kind === 'file' && it.type)
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => f !== null)
+    if (!files.length) return
+    // 纯文件粘贴（无文本）时阻止向输入框插入无意义占位文本；文本+文件共存（Excel 复制）双行为并存
+    if (e.clipboardData.getData('text/plain').trim().length === 0) e.preventDefault()
+    attach(files)
   }
 
   const handleSend = () => {
     const text = draft.trim()
     if (!text || !idle) return
+    // 附件在途/未决：禁止发送（见 hasPending 注释）
+    if (hasPending) return
     // 语音回合进行中（录音/识别）不与手打发送并发
     if (useChatStore.getState().voiceState !== 'idle') return
     void send(text, { rubric: rubric.trim() || undefined })
@@ -155,8 +225,8 @@ export function ChatInput({
 
   return (
     <div className="chat-composer" onPointerDown={focusComposer}>
-      {/* 已选附件 + 知识库（chip 嵌在 composer 内） */}
-      {attachments.length || selectedKbs.length ? (
+      {/* 已选附件（pending 占位 + 已完成）+ 知识库（chip 嵌在 composer 内） */}
+      {attachments.length || pendingAttachments.length || selectedKbs.length ? (
         <Flex gap={8} wrap className="chat-composer__chips">
           {selectedKbs.map((kb) => (
             <div key={kb.id} className="kb-chip">
@@ -173,6 +243,9 @@ export function ChatInput({
                 <X size={13} />
               </button>
             </div>
+          ))}
+          {pendingAttachments.map((p) => (
+            <PendingChip key={p.localId} p={p} onRemove={removePending} onRetry={retry} />
           ))}
           {attachments.map((a) => (
             <div key={a.upload_id} className="attach-chip">
@@ -228,6 +301,7 @@ export function ChatInput({
         value={recording || transcribing ? voicePreview : draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         readOnly={recording || transcribing}
         placeholder={
           recording
@@ -248,19 +322,21 @@ export function ChatInput({
           {canAttach ? (
             <Upload
               accept={accept || undefined}
+              multiple
               showUploadList={false}
               beforeUpload={(f) => {
-                void handleFile(f)
+                // multiple 下 antd 逐文件触发；返回 false 阻止自动上传
+                attach([f])
                 return false
               }}
             >
-              <Tooltip title="上传附件（点击选择文件）" placement="top">
+              <Tooltip title="上传附件（点击选择或 Ctrl+V 粘贴，可多选）" placement="top">
                 <Button
                   type="text"
                   shape="circle"
                   size="middle"
                   icon={<Paperclip size={16} />}
-                  loading={upload.isPending}
+                  loading={anyUploading}
                   disabled={!idle}
                 />
               </Tooltip>
@@ -339,8 +415,9 @@ export function ChatInput({
           ) : (
             <button
               type="button"
-              className={`glass-btn chat-composer__send${idle && draft.trim() ? ' chat-composer__send--ready' : ''}`}
-              disabled={!idle}
+              className={`glass-btn chat-composer__send${idle && draft.trim() && !hasPending ? ' chat-composer__send--ready' : ''}`}
+              disabled={!idle || hasPending}
+              title={hasPending ? '附件上传中，请稍候…' : undefined}
               onClick={handleSend}
             >
               <Send size={14} />

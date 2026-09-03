@@ -20,7 +20,10 @@ export function mimeLabel(mime: string | null | undefined): string {
   if (!mime) return '未知'
   const slash = mime.lastIndexOf('/')
   const sub = slash >= 0 ? mime.slice(slash + 1) : mime
-  // docx 特殊：wordprocessingml.document → docx
+  // OOXML 长 mime 取通用缩写：wordprocessingml/spreadsheetml → DOCX/XLSX
   if (sub.includes('wordprocessing')) return 'DOCX'
+  if (sub.includes('spreadsheetml')) return 'XLSX'
+  if (sub === 'plain') return 'TXT'
+  if (sub === 'markdown') return 'MD'
   return sub.toUpperCase()
 }

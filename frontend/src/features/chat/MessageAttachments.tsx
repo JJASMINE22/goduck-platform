@@ -1,6 +1,6 @@
 /* 会话窗内的用户附件展示（发送后即时回显）。
    - 图片：antd Image 缩略图 + PreviewGroup 点击放大左右切换
-   - 文档：docx/pdf 类型色块卡片（文件名 + 页数/段数 + 大小）
+   - 文档：类型色块卡片（文件名 + 页数/段数 + 大小；pdf/docx/xlsx/csv/html/txt/md）
    说明：附件元数据来自发送时的 UploadOut 快照，刷新后历史不回显
    （后端 upload 表无 message 关联，附件已被组装进 HumanMessage.content）。 */
 import { Flex, Image, Typography } from 'antd'
@@ -11,12 +11,18 @@ import { formatBytes } from '@/lib/format'
 import type { UUID, UploadOut } from '@/types'
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 const PDF_MIME = 'application/pdf'
 
 /** mime → 类型徽章（色 + 缩写），仅展示用途 */
 function fileBadge(mime: string): { label: string; color: string } {
   if (mime === PDF_MIME) return { label: 'PDF', color: '#E53935' }
   if (mime === DOCX_MIME) return { label: 'DOCX', color: '#2B579A' }
+  if (mime === XLSX_MIME) return { label: 'XLSX', color: '#217346' }
+  // text/plain / text/markdown 的默认分支会显示 PLAIN/MARKDOWN，收敛为常用缩写；
+  // csv/html 走默认分支即为 CSV/HTML，无需特判
+  if (mime === 'text/plain') return { label: 'TXT', color: '#4B5563' }
+  if (mime === 'text/markdown') return { label: 'MD', color: '#083FA1' }
   const ext = mime.split('/').pop()?.toUpperCase() ?? 'FILE'
   return { label: ext, color: '#6B7280' }
 }

@@ -6,7 +6,7 @@
 - image × 基座 supports_vision  → bytes→base64 data URL 直传块（零解析零损耗）
 - image × 下挂视觉模型          → VisionDescriber 预消费 → 文本描述块
   （描述缓存于 upload.vision_desc，固定预 prompt ⇒ 同图跨轮复用）
-- docx / pdf                    → markitdown 转 Markdown + 截断
+- 白名单文档（docx/pdf/xlsx/csv/html/txt/md）→ markitdown 转 Markdown + 截断
   （结果缓存于 MinIO 边车对象 {bucket_key}.md，避免每轮重解析）
 - 任一解析失败                  → 降级为"仅属性行 + 解析失败标记"，结构不塌
 
@@ -27,7 +27,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from app.models import db as dbmod
 from app.services.doc_convert import get_markitdown
-from app.services.mime_utils import file_ext_of
+from app.services.mime_utils import file_ext_of, mime_of_ext
 from app.services.storage import MinioStorage
 from app.services.vision_describer import DescriberError, VisionDescriber
 
@@ -158,7 +158,13 @@ class ContentComposer:
         try:
             from markitdown import StreamInfo
 
-            result = md.convert(io.BytesIO(raw), stream_info=StreamInfo(extension=ext))
+            # 双通道分派（extension 带点 + 规范 mime）：只给扩展名时 markitdown 会
+            # 跑 magika 字节嗅探补全 mime，短样本可能被误判（如 csv → text/plain）
+            # 而落入错误转换器；显式双通道让分派确定性地跟随服务端魔数判定。
+            result = md.convert(
+                io.BytesIO(raw),
+                stream_info=StreamInfo(extension=f".{ext}", mimetype=mime_of_ext(ext)),
+            )
             return result.markdown or ""
         except Exception:  # noqa: BLE001
             logger.warning("markitdown 转换失败", exc_info=True)

@@ -40,6 +40,9 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       if (controller && store.status === 'streaming') {
         store.finalizeStreaming()
         store.clearTodos()
+        // 离开页面 = 本回合就地截断：在途工具卡标记已中断（结果永不再到达，
+        // 「执行中」不应永挂），同 cancel 语义；半截消息由 finalize 固化
+        store.markTurnInterrupted()
         store.setStatus('idle')
       }
     }
@@ -85,7 +88,21 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       abortRef.current = controller
 
       try {
-        await streamApi.sendMessage(sessionId, body, { onEvent: dispatchEvent }, controller.signal)
+        const termination = await streamApi.sendMessage(sessionId, body, { onEvent: dispatchEvent }, controller.signal)
+        // 流关闭但未收到任何终止事件（done/interrupt/error）：后端被硬杀/代理掐断。
+        // 绝不允许 status 永久停留在 streaming（输入锁死）——落回 idle 并提示；
+        // 若后端实际已停在 HITL（事件丢失恰恰发生在 interrupt 落库后），会话重入
+        // 恢复（ChatPage /interrupt 查询）仍可重建审批卡。
+        if (termination === 'closed' && !controller.signal.aborted) {
+          const store2 = useChatStore.getState()
+          if (store2.status === 'streaming') {
+            store2.finalizeStreaming()
+            store2.clearTodos()
+            store2.markTurnInterrupted()
+            store2.setStatus('idle')
+            store2.setStreamError('连接中断（未收到终止事件），本回合已截断；若后端停在待审批，重进会话可恢复')
+          }
+        }
       } catch {
         // 网络层异常：error floor，兜底转 error 状态（准则 F4）
         if (!controller.signal.aborted) {
@@ -112,12 +129,22 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       abortRef.current = controller
 
       try {
-        await streamApi.resume(
+        const termination = await streamApi.resume(
           sessionId,
           { decisions },
           { onEvent: dispatchEvent },
           controller.signal,
         )
+        if (termination === 'closed' && !controller.signal.aborted) {
+          const store2 = useChatStore.getState()
+          if (store2.status === 'streaming') {
+            store2.finalizeStreaming()
+            store2.clearTodos()
+            store2.markTurnInterrupted()
+            store2.setStatus('idle')
+            store2.setStreamError('恢复流被中断（未收到终止事件）；若后端仍停在待审批，重进会话可恢复')
+          }
+        }
       } catch {
         if (!controller.signal.aborted) {
           useChatStore.getState().setStreamError('网络异常，恢复已中断')

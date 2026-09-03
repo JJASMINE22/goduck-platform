@@ -29,6 +29,8 @@ function deriveMessage(status: number, detail: unknown): string {
         .filter(Boolean)
         .join('; ')
     }
+    // FastAPI HTTPException 标准形态 {"detail": "..."}：后端中文原因直接展示（准则 F6）
+    if (typeof obj.detail === 'string' && obj.detail) return obj.detail
     if (typeof obj.message === 'string') return obj.message
   }
   const map: Record<number, string> = {

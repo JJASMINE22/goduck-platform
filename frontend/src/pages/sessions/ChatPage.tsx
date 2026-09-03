@@ -27,6 +27,7 @@ import { UsageBadge } from '@/features/chat/UsageBadge'
 import { WorkspaceView, type WorkspaceSelection } from '@/features/workspace/WorkspaceView'
 import { PageLoading } from '@/components/feedback/states'
 import { sessionsApi } from '@/api/sessions'
+import { streamApi } from '@/api/stream'
 import { ApiError } from '@/api/client'
 import { toastError, toastSuccess } from '@/lib/antdStatic'
 import type { WithdrawResponse } from '@/types'
@@ -239,6 +240,31 @@ export function ChatPage(): ReactNode {
     if (!retainedRef.current) reset()
   }, [sessionId, reset])
 
+  // —— 待审批恢复（HITL 重入重建）——
+  // 待决 interrupt 只存活于 live SSE 流的前端内存态：刷新/切会话即丢失审批卡，
+  // 而图仍暂停在 interrupt（工具卡永挂「执行中」，发新消息还会静默取消待审批）。
+  // 会话进入时向 checkpointer 查询真值，有待审批则重建 interrupted 状态与审批卡
+  // （准则 F3：终态必须落定且可恢复）。live 流自己的 interrupt 已写入 store，
+  // 下方守卫（非 idle / 已有 pendingInterrupt）确保不覆盖。
+  useEffect(() => {
+    if (!sessionId) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const payload = await streamApi.getInterrupt(sessionId)
+        if (cancelled || !payload?.action_requests?.length) return
+        const store = useChatStore.getState()
+        if (store.status !== 'idle' || store.pendingInterrupt) return
+        store.setInterrupt(payload)
+      } catch {
+        /* 恢复失败不阻塞会话进入（如模型不可用 409），退化为旧行为 */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId])
+
   // —— 回撤 ——
   // useCallback + ref 闸门（而非依赖 withdrawingId state）：引用稳定，不击穿
   // MessageList/气泡的 memo 隔离；并发防抖语义与原 state 闸门一致
@@ -303,8 +329,11 @@ export function ChatPage(): ReactNode {
     // 显式失效：只接受失效之后完成的新快照（refetch 失败时 dataUpdatedAt 不变）
     if (forcedLoadRef.current && historyQ.dataUpdatedAt <= forcedAtRef.current) return
     // 流式进行中禁止灌入：服务端快照在节点完成前不含 token 级部分输出，
-    // 此时 loadHistory 会抹掉正在增长的流式气泡并把 status 强置回 idle
-    if (useChatStore.getState().status === 'streaming') return
+    // 此时 loadHistory 会抹掉正在增长的流式气泡并把 status 强置回 idle。
+    // 待审批（interrupted）同样禁止：快照灌入会冲掉刚写入的审批卡（loadHistory
+    // 已保留 pendingInterrupt，此处守卫双保险；回撤路径会先 clearInterrupt+idle）
+    const stNow = useChatStore.getState()
+    if (stNow.status === 'streaming' || stNow.status === 'interrupted') return
     // 回撤兜底快照只对"回撤发起时刻之前"的本地状态负责：若用户已编辑重发
     // （forcedAt 之后又出现新消息），迟到的快照会整体抹掉新回合——正是
     // "回撤后重发、query 不在会话末尾"的诱因。放弃本次兜底（乐观删除已生效）。

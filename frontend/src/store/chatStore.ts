@@ -60,6 +60,19 @@ export interface FileChangeEntry extends FileChangeRecord {
   createdAt: number
 }
 
+/** 上传中的附件占位（pending chip）。选择器/粘贴共用编排入口入队：
+    file 保留原引用供失败重试；previewUrl 为图片本地即时缩略（objectURL，
+    成功转正式 chip / 手动移除时 revoke）。kindHint 仅为展示位推断，真相仍后端判定。 */
+export interface PendingAttachment {
+  localId: string
+  file: File
+  filename: string
+  size: number
+  kindHint: 'image' | 'file'
+  previewUrl?: string
+  status: 'uploading' | 'error'
+}
+
 export interface ChatState {
   // —— 数据 ——
   /** store 当前绑定的会话（loadHistory 绑定；同会话往返切页时据此保留 live 状态） */
@@ -74,6 +87,7 @@ export interface ChatState {
   streamSource: 'sse' | 'voice' | null
   pendingInterrupt: PendingInterrupt | null
   attachments: UploadOut[] // 待发附件，发消息后清空
+  pendingAttachments: PendingAttachment[] // 上传中/失败占位：成功转 attachments，失败留驻供重试
   selectedKbs: KbRef[] // 本次启用的知识库（{id,name} 最小形状），发消息后清空
   streamError: string | null
   /** 各代理的任务规划清单（todos 事件整表写入，agent_path 键控）。
@@ -130,6 +144,17 @@ export interface ChatState {
   removeAttachment: (uploadId: string) => void
   clearAttachments: () => void
   setAttachments: (list: UploadOut[]) => void
+  /** pending 入队（编排层调用；入队即渲染占位 chip） */
+  addPending: (p: PendingAttachment) => void
+  /** 单文件上传成功：pending → 正式 chip（addAttachment + 移除占位 + revoke） */
+  resolvePending: (localId: string, upload: UploadOut) => void
+  /** 单文件上传失败：占位留驻转错误态（previewUrl 继续展示，供点击重试） */
+  failPending: (localId: string) => void
+  /** 重试入口：错误态占位回到 uploading */
+  setPendingUploading: (localId: string) => void
+  /** 手动移除占位（在途请求返回后按 localId 匹配，无匹配即静默丢弃） */
+  removePending: (localId: string) => void
+  clearPending: () => void
   addKb: (kb: KbRef) => void
   removeKb: (kbId: string) => void
   clearKbs: () => void
@@ -157,6 +182,7 @@ const initialState = {
   streamSource: null as 'sse' | 'voice' | null,
   pendingInterrupt: null as PendingInterrupt | null,
   attachments: [] as UploadOut[],
+  pendingAttachments: [] as PendingAttachment[],
   selectedKbs: [] as KbRef[],
   streamError: null as string | null,
   todosByAgent: {} as Record<string, TodoItem[]>,
@@ -176,6 +202,11 @@ const initialState = {
 
 let idSeq = 0
 const genId = () => `m${Date.now()}-${idSeq++}`
+
+/** 释放占位的 objectURL（本地即时缩略）。每个 pending 只会被移除一次，无重复 revoke 风险。 */
+function revokePreview(p: PendingAttachment) {
+  if (p.previewUrl) URL.revokeObjectURL(p.previewUrl)
+}
 
 export const useChatStore = create<ChatState>((set) => ({
   ...initialState,
@@ -359,6 +390,47 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setAttachments: (list) => set({ attachments: list }),
 
+  addPending: (p) => set((s) => ({ pendingAttachments: [...s.pendingAttachments, p] })),
+
+  resolvePending: (localId, upload) =>
+    set((s) => {
+      const p = s.pendingAttachments.find((x) => x.localId === localId)
+      if (!p) return {}
+      revokePreview(p)
+      return {
+        attachments: [...s.attachments, upload],
+        pendingAttachments: s.pendingAttachments.filter((x) => x.localId !== localId),
+      }
+    }),
+
+  failPending: (localId) =>
+    set((s) => ({
+      pendingAttachments: s.pendingAttachments.map((x) =>
+        x.localId === localId ? { ...x, status: 'error' as const } : x,
+      ),
+    })),
+
+  setPendingUploading: (localId) =>
+    set((s) => ({
+      pendingAttachments: s.pendingAttachments.map((x) =>
+        x.localId === localId ? { ...x, status: 'uploading' as const } : x,
+      ),
+    })),
+
+  removePending: (localId) =>
+    set((s) => {
+      const p = s.pendingAttachments.find((x) => x.localId === localId)
+      if (!p) return {}
+      revokePreview(p)
+      return { pendingAttachments: s.pendingAttachments.filter((x) => x.localId !== localId) }
+    }),
+
+  clearPending: () =>
+    set((s) => {
+      s.pendingAttachments.forEach(revokePreview)
+      return { pendingAttachments: [] }
+    }),
+
   addKb: (kb) => set((s) => (s.selectedKbs.some((k) => k.id === kb.id) ? {} : { selectedKbs: [...s.selectedKbs, kb] })),
 
   removeKb: (kbId) => set((s) => ({ selectedKbs: s.selectedKbs.filter((k) => k.id !== kbId) })),
@@ -393,18 +465,30 @@ export const useChatStore = create<ChatState>((set) => ({
     }),
 
   loadHistory: (sessionId, msgs, toolCalls = []) =>
-    set({
-      sessionId,
-      messages: msgs,
-      toolCalls,
-      status: 'idle',
-      streamSource: null,
-      pendingInterrupt: null,
-      streamError: null,
-      todosByAgent: {},
-      parseStatus: null,
-      fileChanges: [],
+    set((s) => {
+      // 跨会话进入：占位不可能属于新会话，直接释放并清空
+      s.pendingAttachments.forEach(revokePreview)
+      return {
+        sessionId,
+        messages: msgs,
+        toolCalls,
+        // 历史快照是数据刷新，不是状态机复位：live/恢复写入的待审批绝不能被冲掉
+        // （进入会话时 /interrupt 恢复查询先返回、/history 后到的竞态曾把审批卡
+        // 瞬间清空——"卡片闪现即消失"的根因）。回撤/审批前会显式 clearInterrupt。
+        pendingInterrupt: s.pendingInterrupt,
+        status: s.status === 'interrupted' ? 'interrupted' : 'idle',
+        streamSource: null,
+        streamError: null,
+        todosByAgent: {},
+        parseStatus: null,
+        fileChanges: [],
+        pendingAttachments: [],
+      }
     }),
 
-  reset: () => set({ ...initialState }),
+  reset: () =>
+    set((s) => {
+      s.pendingAttachments.forEach(revokePreview)
+      return { ...initialState }
+    }),
 }))

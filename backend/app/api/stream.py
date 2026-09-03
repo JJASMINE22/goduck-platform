@@ -14,7 +14,7 @@ import contextlib
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from sse_starlette.sse import EventSourceResponse
 
 from app.streaming.events import SSEEvent
@@ -208,6 +208,31 @@ def _allows_shell_anywhere(cfg: AgentConfig) -> bool:
     if cfg.allow_shell:
         return True
     return any(_allows_shell_anywhere(sa) for sa in (cfg.subagents or []))
+
+
+@router.get("/{session_id}/interrupt")
+async def get_pending_interrupt(session_id: uuid.UUID, request: Request):
+    """待审批 HITL 查询（会话重入恢复，plan §5.3 补全）。
+
+    待审批状态在前端仅存活于 live SSE 流内：刷新/切会话即丢失审批卡，
+    图却仍暂停在 interrupt（悬空工具卡永远「执行中」，且用户发新消息会
+    静默取消待审批）。本端点返回 checkpointer 真值——与 interrupt SSE 事件
+    同一 payload 形状（action_requests + review_configs），前端据此重建
+    interrupted 状态与审批卡。无待审批 → 204。
+
+    只读 aget_state，不占用 stream_tracker；resume 端点同源校验（409 契约
+    不变），两端点天然一致。
+    """
+    st = get_appstate(request)
+    session, _svc = await _load_session_or_404(request, session_id)
+    config = _config_for(session)
+    agent = await _build_agent_or_409(st, session["agent_id"])
+    intr = await HITLResolver().assert_interrupted(agent, config)
+    # 非字典/空值（如裸 interrupt() 原语）无 action_requests，前端守卫会跳过；
+    # 此处一并 204，保持「有返回即可渲染审批卡」的简单契约
+    if not intr:
+        return Response(status_code=204)
+    return intr
 
 
 @router.post("/{session_id}/resume")

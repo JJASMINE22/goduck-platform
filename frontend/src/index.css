@@ -506,6 +506,73 @@ pre,
   overflow: auto;
   font-size: 12.5px;
 }
+
+/* —— 代码高亮配色（hljs token）——
+   rehype-highlight 只给 token 打 hljs-* class，不含样式（katex 那样引官方 css 的路
+   走不通：highlight.js 是 rehype-highlight 的传递依赖，import 其内部路径脆弱，
+   且固定主题不接设计 token）。故按"配色集中管理"准则自写：
+   - 基础正文/注释 → 设计 token（跟随全局文本灰阶）
+   - 语义强调色 → GitHub Light 固定色板（token 体系无对应语义，取业界最泛用
+     的浅色配色，与 Google 灰阶/蓝主色同属冷调；app 仅浅色主题，无需暗色变体）
+   作用域收敛在 .md-codeblock__pre 内：行内 code（无 hljs class）与其他模块
+   （工具卡 JSON 用 .tc-json__*）不受影响。 */
+.md-codeblock__pre code.hljs {
+  color: var(--color-text);      /* 基色：未命中任何 token 的文本 */
+  background: transparent;       /* 底色由 .md-codeblock__pre 统一提供 */
+}
+/* 注释/引用：三级灰 + 斜体，弱化存在感 */
+.md-codeblock__pre .hljs-comment,
+.md-codeblock__pre .hljs-quote {
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+/* 控制流/声明类关键字：红 */
+.md-codeblock__pre .hljs-keyword,
+.md-codeblock__pre .hljs-selector-tag,
+.md-codeblock__pre .hljs-doctag,
+.md-codeblock__pre .hljs-section,
+.md-codeblock__pre .hljs-name {
+  color: #cf222e;
+}
+/* 字符串/正则：深藏青 */
+.md-codeblock__pre .hljs-string,
+.md-codeblock__pre .hljs-regexp {
+  color: #0a3069;
+}
+/* 数字/字面量/内置名/元信息：蓝（与主色同族的深一档） */
+.md-codeblock__pre .hljs-number,
+.md-codeblock__pre .hljs-literal,
+.md-codeblock__pre .hljs-built_in,
+.md-codeblock__pre .hljs-meta,
+.md-codeblock__pre .hljs-symbol,
+.md-codeblock__pre .hljs-bullet {
+  color: #0550ae;
+}
+/* 标题（函数名/类名）：紫；类型：橙棕 */
+.md-codeblock__pre .hljs-title {
+  color: #8250df;
+}
+.md-codeblock__pre .hljs-type {
+  color: #953800;
+}
+/* 属性/变量/模板占位：橙棕 */
+.md-codeblock__pre .hljs-attr,
+.md-codeblock__pre .hljs-attribute,
+.md-codeblock__pre .hljs-variable,
+.md-codeblock__pre .hljs-template-variable,
+.md-codeblock__pre .hljs-property,
+.md-codeblock__pre .hljs-params {
+  color: #953800;
+}
+/* 加/删行（diff 语言）：色块 + 深字，与文件变更徽标绿红语义一致 */
+.md-codeblock__pre .hljs-addition {
+  color: #116329;
+  background: #dafbe1;
+}
+.md-codeblock__pre .hljs-deletion {
+  color: #82071e;
+  background: #ffebe9;
+}
 .md-mermaid {
   border: 1px solid var(--color-border);
   border-radius: 8px;
@@ -612,6 +679,54 @@ pre,
 .attach-chip__close:hover {
   background: var(--color-danger);
   color: #fff;
+}
+
+/* pending chip（上传中/失败）—— 复用 .attach-chip 骨架：
+   uploading 虚线边框 + 降透明度示意「未就绪」；error 边框转 danger，整卡可点重试 */
+.attach-chip--uploading {
+  border-style: dashed;
+  opacity: 0.78;
+}
+.attach-chip--error {
+  border-color: var(--color-danger);
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+}
+.attach-chip--error:hover {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-danger) 22%, transparent);
+}
+/* 图片 pending：本地 objectURL 即时缩略（36×36 同正式 chip），其上状态蒙层 */
+.attach-chip__thumbbox {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+.attach-chip__thumbbox .attach-chip__thumb {
+  width: 100%;
+  height: 100%;
+}
+.attach-chip__mask {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: rgba(90, 90, 90, 0.38);
+  color: #fff;
+}
+/* 失败态：蒙层与文档色块内的状态图标转 danger */
+.attach-chip--error .attach-chip__mask,
+.attach-chip--error .attach-chip__icon {
+  color: var(--color-danger);
+}
+.attach-chip__spin {
+  animation: attach-chip-spin 0.9s linear infinite;
+}
+@keyframes attach-chip-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* 已选知识库 chip（图标 + 库名 + 移除；主色 tint 区别于附件 chip） */
@@ -1384,7 +1499,8 @@ pre,
 
 /* ===== 任务清单：吸顶可折叠标签 =====
    默认收起为一行胶囊（图标 + 进度 + 当前任务预览），sticky 吸顶随消息流滚动
-   常驻，随时点击展开；展开后的清单体为白底浮层卡，悬浮于消息流之上不占位。 */
+   常驻，随时点击展开；展开后的清单体为流体玻璃浮层卡（见时间线卡片区），
+   悬浮于消息流之上不占位。此处为布局与实底兜底，玻璃质感在后区覆写。 */
 .todo-panel {
   position: sticky;
   top: 8px;
@@ -1523,10 +1639,13 @@ pre,
   pointer-events: auto;
 }
 
-/* ===== 会话时间线非气泡卡：玻璃化（工具调用卡 / HITL 卡 / TodoPanel）=====
+/* ===== 会话时间线非气泡卡：流体玻璃（Liquid Glass）=====
     代理气泡保持白底（长文可读性；用户气泡已在基础区玻璃化），其余卡片统一
-    玻璃语言：半透 + 取景后景 + rim 高光（回撤操作条的玻璃胶囊同样画在
-    按钮上，见基础区 .msg-turn__action .ant-btn）。
+    流体玻璃语言（与 .glass-btn / .usage-badge 同源成像三要素）：
+    ① 低 α 半透薄底 ② backdrop-filter 取景后景（blur + 提饱和）
+    ③ 多道 inset rim 高光模拟玻璃边缘折射；::before 常驻顶部镜面亮斑（厚度感），
+    ::after 悬停流光扫过（overflow:hidden 裁切在卡内；静置容器不扫）。
+    （回撤操作条的玻璃胶囊同样画在按钮上，见基础区 .msg-turn__action .ant-btn）。
     antd Collapse（工具调用卡）：默认白底 → 玻璃；ghost 变体（思考过程/文件变更）
     刻意无壳，不套玻璃。展开内容区（.ant-collapse-content）同样透。 */
 .chat-panel .ant-collapse:not(.ant-collapse-ghost) {
@@ -1547,38 +1666,138 @@ pre,
   background: transparent;
   border-top: 1px solid var(--color-border-soft);
 }
-/* HITL 审批卡：警示橙描边玻璃（替换原实白底） */
+/* HITL 审批卡：警示橙流体玻璃——橙染边框与外辉保留"待人工介入"身份识别；
+   受光面常驻亮斑 + 悬停流光；interrupt 到达时轻升起入场（注意力引导） */
 .hitl-card {
   position: relative;
   isolation: isolate;
-  background: rgba(255, 255, 255, 0.42);
-  backdrop-filter: blur(16px) saturate(1.6);
-  -webkit-backdrop-filter: blur(16px) saturate(1.6);
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.38);
+  backdrop-filter: blur(20px) saturate(1.7);
+  -webkit-backdrop-filter: blur(20px) saturate(1.7);
   border: 1px solid color-mix(in srgb, var(--color-warning) 45%, rgba(255, 255, 255, 0.5));
   border-radius: 12px;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 0 0 1px color-mix(in srgb, var(--color-warning) 14%, transparent),
-    var(--shadow-sm);
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.3),
+    inset 1px 0 0 rgba(255, 255, 255, 0.38),
+    inset -1px 0 0 rgba(255, 255, 255, 0.38),
+    0 0 0 1px color-mix(in srgb, var(--color-warning) 16%, transparent),
+    0 2px 6px rgba(60, 64, 67, 0.08),
+    0 14px 36px color-mix(in srgb, var(--color-warning) 12%, transparent);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  animation: glass-card-in 0.26s cubic-bezier(0.22, 1, 0.36, 1);
 }
-/* TodoPanel：chip 胶囊 + 展开体均玻璃 */
+.hitl-card:hover {
+  border-color: color-mix(in srgb, var(--color-warning) 62%, rgba(255, 255, 255, 0.5));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.32),
+    inset 1px 0 0 rgba(255, 255, 255, 0.4),
+    inset -1px 0 0 rgba(255, 255, 255, 0.4),
+    0 0 0 1px color-mix(in srgb, var(--color-warning) 26%, transparent),
+    0 2px 6px rgba(60, 64, 67, 0.08),
+    0 16px 44px color-mix(in srgb, var(--color-warning) 20%, transparent);
+}
+/* 顶部镜面亮斑：受光面常驻柔和高光（与 .glass-btn::before 同款，两卡共用） */
+.hitl-card::before,
+.todo-panel__chip::before,
+.todo-panel__body::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(130% 70% at 28% -25%, rgba(255, 255, 255, 0.5), transparent 55%);
+  pointer-events: none;
+}
+/* 悬停流光：斜向亮带从左扫到右（液体滚过玻璃面；仅交互面配，静置容器不扫） */
+.hitl-card::after,
+.todo-panel__chip::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(105deg, transparent 38%, rgba(255, 255, 255, 0.45) 50%, transparent 62%);
+  transform: translateX(-130%);
+  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+.hitl-card:hover::after,
+.todo-panel__chip:hover::after {
+  transform: translateX(130%);
+}
+/* TodoPanel：chip 胶囊（可按压交互件，与 .glass-btn 同级质感）流体玻璃 */
 .todo-panel__chip {
-  background: rgba(255, 255, 255, 0.42);
-  backdrop-filter: blur(12px) saturate(1.5);
-  -webkit-backdrop-filter: blur(12px) saturate(1.5);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.34);
+  backdrop-filter: blur(14px) saturate(1.7);
+  -webkit-backdrop-filter: blur(14px) saturate(1.7);
   border: 1px solid rgba(255, 255, 255, 0.55);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    var(--shadow-sm);
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.32),
+    inset 1px 0 0 rgba(255, 255, 255, 0.4),
+    inset -1px 0 0 rgba(255, 255, 255, 0.4),
+    0 1px 2px rgba(60, 64, 67, 0.1),
+    0 6px 16px rgba(60, 64, 67, 0.07);
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease,
+    box-shadow 0.18s ease, transform 0.12s ease;
 }
+/* 悬停：玻璃染主色凝亮（与 .chat-composer__send--ready 同款辉光语义） */
+.todo-panel__chip:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, #ffffff);
+  background: color-mix(in srgb, var(--color-primary) 10%, rgba(255, 255, 255, 0.42));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.3),
+    inset 1px 0 0 rgba(255, 255, 255, 0.4),
+    inset -1px 0 0 rgba(255, 255, 255, 0.4),
+    0 0 0 1px color-mix(in srgb, var(--color-primary) 18%, transparent),
+    0 4px 14px color-mix(in srgb, var(--color-primary) 26%, transparent);
+}
+.todo-panel__chip:active {
+  transform: scale(0.97);
+}
+/* 展开体：静置容器——同款成像但不配流光，展开时轻升起浮现 */
 .todo-panel__body {
-  background: rgba(255, 255, 255, 0.5);
-  backdrop-filter: blur(18px) saturate(1.6);
-  -webkit-backdrop-filter: blur(18px) saturate(1.6);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.44);
+  backdrop-filter: blur(20px) saturate(1.7);
+  -webkit-backdrop-filter: blur(20px) saturate(1.7);
   border: 1px solid rgba(255, 255, 255, 0.55);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.3),
+    inset 1px 0 0 rgba(255, 255, 255, 0.38),
+    inset -1px 0 0 rgba(255, 255, 255, 0.38),
     var(--shadow-md);
+  animation: glass-card-in 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* 流体入场：轻升起 + 淡入（interrupt 到达 / 清单展开的瞬间动态） */
+@keyframes glass-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 减动效偏好：入场与流光退场为静态呈现，玻璃质感（半透/rim/亮斑）不受影响 */
+@media (prefers-reduced-motion: reduce) {
+  .hitl-card,
+  .todo-panel__body {
+    animation: none;
+  }
+  .hitl-card::after,
+  .todo-panel__chip::after {
+    display: none;
+  }
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .chat-panel,
