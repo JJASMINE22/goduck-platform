@@ -14,6 +14,8 @@ import asyncio
 import ipaddress
 import logging
 import socket
+import sys
+from pathlib import Path
 from urllib.parse import urlparse
 
 from langchain_core.tools import BaseTool
@@ -24,6 +26,10 @@ from app.mcps.mcp_client import MCPClientManager
 from app.models import db as dbmod
 
 logger = logging.getLogger(__name__)
+
+# stdio stdout 守卫脚本：过滤第三方 server 打到 stdout 的非 JSONRPC 输出
+# （见脚本头部说明；office-word-mcp-server 等"吵闹"server 没有它会被判 down）。
+STDIO_GUARD_PATH = Path(__file__).resolve().parents[1] / "mcps" / "stdio_guard.py"
 
 # Tool namespace separator: exposed tools are `{server_name}__{tool_name}`.
 # Public: api/mcp.py uses it to scan agent configs for references before
@@ -104,7 +110,7 @@ class MCPLifecycle:
         cfg = row["config_json"] or {}
         kind = row["kind"]
         if kind == "stdio":
-            return {name: {"transport": "stdio", **cfg}}
+            return {name: self._wrap_stdio_with_guard(cfg)}
         if kind == "sse":
             url = cfg.get("url", "")
             _validate_http_url(url, allow_loopback=self.settings.mcp_allow_loopback)
@@ -116,6 +122,42 @@ class MCPLifecycle:
             _validate_http_url(url, allow_loopback=self.settings.mcp_allow_loopback)
             return {name: {"transport": "streamable_http", **cfg}}
         raise ValueError(f"未知 MCP server kind: {kind}")
+
+    @staticmethod
+    def _wrap_stdio_with_guard(cfg: dict) -> dict:
+        """组装 stdio 子配置，默认透明套一层 stdout 守卫进程。
+
+        部分第三方 stdio server（如 office-word-mcp-server）向 stdout print 非
+        JSON 内容，mcp 客户端读到第一条垃圾行即 ValidationError → server 判
+        down。守卫只做逐行过滤（JSON 对象行原样转发），真实 command（uvx 等）、
+        args、env、cwd 均原样生效，可在 config_json 里用 "stdout_guard": false
+        对行为良好的 server 显式关闭。
+
+        cwd 改由守卫的 --cwd 参数下发（而非依赖 mcp SDK 版本是否支持 cwd 字段），
+        守卫子进程继承本进程环境后再传给真实命令，env 语义不变。
+        """
+        cfg = dict(cfg)
+        if "command" not in cfg:
+            raise ValueError("stdio MCP server config 缺少 command")
+        # 空 env dict 在部分 mcp SDK 版本会整体替换子进程环境（丢 PATH/SystemRoot），
+        # 视同未设置更稳妥
+        if cfg.get("env") == {}:
+            cfg.pop("env")
+        if not cfg.pop("stdout_guard", True):
+            return {"transport": "stdio", **cfg}
+        cwd = cfg.pop("cwd", None)
+        guard_args = [
+            str(STDIO_GUARD_PATH),
+            *(["--cwd", str(cwd)] if cwd else []),
+            "--",
+            str(cfg["command"]),
+            *[str(a) for a in cfg.get("args", [])],
+        ]
+        wrapped = {"transport": "stdio", "command": sys.executable, "args": guard_args}
+        for key, value in cfg.items():
+            if key not in ("command", "args"):
+                wrapped[key] = value
+        return wrapped
 
     async def refresh(self) -> None:
         """Reload servers from DB and reconnect each (fault-isolated, time-bounded).

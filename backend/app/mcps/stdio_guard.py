@@ -2,15 +2,17 @@
 
 背景：部分第三方 stdio MCP server（如 office-word-mcp-server）会向 stdout print
 非 JSON 内容（"Loading configuration from .env file..." 等），违反 stdio 传输
-协议（stdout 只允许换行分隔的 JSONRPC 消息）。轻则客户端刷 ERROR 日志，重则在
-Windows 管道块缓冲下，垃圾行延迟到进程退出才 flush，撞上已关闭的读取流导致
-ExceptionGroup[BrokenResourceError]，整个 server 被判 down。
+协议（stdout 只允许换行分隔的 JSONRPC 消息）。客户端（mcp SDK stdout_reader）
+在握手阶段逐行 model_validate_json，读到第一条垃圾行即 ValidationError →
+BrokenResourceError，整个 server 被判 down；Windows 管道块缓冲下垃圾行还可能
+延迟到进程退出才 flush，同样撞上已关闭的读取流。
 
-用法（注册 stdio MCP server 时）：
-  command: <python 绝对路径>
-  args:    [<本脚本绝对路径>, "--", "<真实 command>", "<arg1>", ...]
-  env:     原样透传给子进程
-  cwd:     平台配置里的 cwd 生效于守卫进程，子进程继承
+接入方式：
+  1. 自动（推荐）：services/mcp_lifecycle.py 在连接 stdio server 时透明注入本
+     守卫，注册表里的 command/args/cwd/env 原样生效（真实命令仍由 uvx 等执行）；
+     config_json 里加 "stdout_guard": false 可按 server 关闭。
+  2. 手动：command 填 <python 绝对路径>，args 填
+     [<本脚本绝对路径>, "--cwd", "<DIR>", "--", "<真实 command>", "<arg1>", ...]。
 
 守卫行为：stdin 逐行转发给子进程；子进程 stdout 中能解析为 JSON 对象的行原样
 转发（JSONRPC 消息），其余行改道 stderr 并加 [mcp-stdio-guard] 前缀；子进程
@@ -72,8 +74,12 @@ def _pump_stdout(child: subprocess.Popen) -> None:
 
 def main() -> None:
     # stdio 传输按协议固定 UTF-8；Windows 默认 GBK 管道会损坏非 ASCII JSONRPC 消息
+    # （stdin 不重配置的话，转发给子进程的含中文 JSON 会被 GBK 误解码再写坏）
+    if sys.stdin is not None:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     for stream in (sys.stdout, sys.stderr):
-        stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+        if stream is not None:
+            stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
 
     argv = sys.argv[1:]
     cwd = None

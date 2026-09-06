@@ -42,6 +42,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from app.core import file_change_tracker
+from app.services.thinking_patch import extract_reasoning
 from app.streaming.events import SSEEvent
 
 logger = logging.getLogger(__name__)
@@ -72,30 +73,6 @@ def _text_delta(content: Any) -> str:
                     parts.append(text)
         return "".join(parts)
     return ""
-
-
-def _extract_reasoning(msg) -> Optional[str]:
-    """Best-effort 思考内容提取（reasoning / thinking）for a COMPLETE message.
-
-    Used only for the atomic fallback path (messages that weren't streamed).
-    Covers GLM/DeepSeek/Qwen (additional_kwargs['reasoning_content']) and
-    Anthropic-style 'thinking' content blocks. None when no reasoning present.
-    """
-    ak = getattr(msg, "additional_kwargs", None) or {}
-    rc = ak.get("reasoning_content")
-    if isinstance(rc, str) and rc.strip():
-        return rc
-    content = getattr(msg, "content", None)
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") in ("thinking", "reasoning"):
-                text = block.get("thinking") or block.get("text") or block.get("reasoning")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text)
-        if parts:
-            return "\n\n".join(parts)
-    return None
 
 
 def _reasoning_delta(chunk) -> str:
@@ -157,7 +134,7 @@ def _msg_to_events(msg, agent_path: str, streamed_ids: set[str]) -> list[SSEEven
     if isinstance(msg, AIMessage):
         already_streamed = bool(msg.id) and str(msg.id) in streamed_ids
 
-        reasoning = _extract_reasoning(msg)
+        reasoning = extract_reasoning(msg)
         if reasoning and not already_streamed:
             events.append(SSEEvent(
                 type="thinking",

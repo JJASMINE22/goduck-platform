@@ -3,22 +3,30 @@
    刷新 / 重进 / 归档查看都会丢失；后端 _serialize_message 已在 AI 消息上携带
    tool_calls、在 ToolMessage 上携带 tool_call_id + content，这里把它们配对
    还原，使历史回放与实时流共享同一时间线视图（MessageList 无需感知数据来源）。
+   AI 消息的 reasoning（additional_kwargs.reasoning_content，随 checkpoint 持久化）
+   同样还原为独立思考条目——流结束后的历史重灌（done 级联失效 session 前缀键
+   会连带刷新 history）与刷新页面后，"思考过程"折叠块均不丢失。
 
    时序约定（MessageList 按 createdAt 归并排序）：
    - 消息气泡 createdAt = 原始历史序数（tool 消息造成的空位无妨，只需单调）；
    - 工具卡 createdAt = 宿主 AI 消息序数 + 0.5：与实时流对齐——同一 LLM 消息的
      token 内容先流式到达，tool_call 事件在其后（updates 模式、消息完成时发出），
      工具卡因此稳定落在宿主气泡与下一条消息之间；
+   - 思考块 createdAt = 宿主 AI 消息序数 - 0.25：与实时流对齐——reasoning token
+     先于 content token 到达，思考块落在宿主气泡上方、上一回合工具卡（宿主-1+0.5）
+     下方；
    - ToolMessage 不产生独立时间线条目，仅按 tool_call_id 回填宿主卡结果
      （与实时流的 setToolResult 同语义）。
    单调的序数时间戳同时保证 removeTurn 的回合时间窗过滤（createdAt ∈
-   [turnStart, turnEnd)）对历史重建的工具卡同样成立——刷新后回撤仍能整段移除
-   本回合的工具卡。 */
+   [turnStart, turnEnd)）对历史重建的工具卡/思考块同样成立——刷新后回撤仍能
+   整段移除本回合的工具卡与思考块。 */
 import type { ChatMessage, ToolCallEntry } from '@/store/chatStore'
 import type { MessageOut } from '@/types'
 
 /** 工具卡相对宿主 AI 消息的时序偏移：严格介于宿主（i）与下一条消息（i+1）之间 */
 const TOOL_CARD_TS_OFFSET = 0.5
+/** 思考块相对宿主 AI 消息的时序偏移：严格介于上一条消息的工具卡（i-0.5）与宿主（i）之间 */
+const REASONING_TS_OFFSET = -0.25
 
 export interface HistoryReplay {
   messages: ChatMessage[]
@@ -48,6 +56,20 @@ export function buildHistoryReplay(history: MessageOut[]): HistoryReplay {
         break
       }
       case 'ai': {
+        // 思考块：与实时流同构——同一 LLM 消息的 reasoning 与 content 拆成独立
+        // 条目（ThinkingBlock 只认 reasoning 字段，气泡只认 content，合一只会
+        // 互相顶替）。id 沿用实时流的 `<msgId>#r` 约定，跨刷新稳定。
+        const reasoning = typeof m.reasoning === 'string' ? m.reasoning : ''
+        if (reasoning.trim() !== '') {
+          messages.push({
+            id: `${m.id ?? `h${i}`}#r`,
+            role: 'agent',
+            agentPath: 'root',
+            content: '',
+            reasoning,
+            createdAt: i + REASONING_TS_OFFSET,
+          })
+        }
         // 工具卡：caller 语义与实时流一致（msg.name ?? agent_path；
         // 历史无子代理命名空间，agent_path 恒为 root）
         for (const tc of Array.isArray(m.tool_calls) ? m.tool_calls : []) {

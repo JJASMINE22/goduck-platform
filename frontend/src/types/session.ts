@@ -46,6 +46,9 @@ export interface MessageOut {
   // 仅 human 消息：本条消息启用的知识库（kb_ids 同源，批量解析为 id+名称），
   // 用户气泡据此渲染 KB 徽标——与 content（已注入锚点脚手架）解耦
   kbs?: KbRef[]
+  // 仅 ai 消息：思考内容（additional_kwargs.reasoning_content，随 checkpoint 持久化），
+  // 历史回放据此重建"思考过程"折叠块——与实时流 ThinkingBlock 同构
+  reasoning?: string | null
 }
 
 /** 回撤一个会话回合（schemas.py WithdrawRequest / WithdrawResponse） */

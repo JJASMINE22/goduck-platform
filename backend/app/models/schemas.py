@@ -146,6 +146,10 @@ class MessageOut(BaseModel):
     # 历史接口据此批量查 knowledge_base 表回填 id+名称。前端据此在用户气泡上
     # 渲染 KB 徽标——与 content（已注入锚点脚手架）解耦。
     kbs: list["KbRef"] = Field(default_factory=list)
+    # 思考内容（仅 ai 消息）：additional_kwargs.reasoning_content（thinking_patch
+    # 提取，随 checkpoint 持久化）。前端历史回放据此重建"思考过程"折叠块，
+    # 与实时流 ThinkingBlock 同构；无思考内容的消息该字段为 null（同 name 等既有可空字段）。
+    reasoning: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

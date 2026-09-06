@@ -2,8 +2,8 @@
 
 其源码多处注明："reasoning_content, reasoning_details are **not** extracted. Use a
 provider-specific subclass."（只认 OpenAI 原生 `reasoning`）。GLM 的思考内容走
-`reasoning_content`（DeepSeek 约定），会被直接丢弃，导致 stream_adapter._extract_reasoning
-无内容可取。
+`reasoning_content`（DeepSeek 约定），会被直接丢弃，导致思考内容提取
+（本模块 ``extract_reasoning``）无内容可取。
 
 本模块在响应转换入口（_convert_dict_to_message 非流式 / _convert_delta_to_message_chunk
 流式）注入提取：把原始响应里的 reasoning_content 写入 AIMessage(Chunk).additional_kwargs。
@@ -14,11 +14,39 @@ provider-specific subclass."（只认 OpenAI 原生 `reasoning`）。GLM 的思�
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
 _applied = False
+
+
+def extract_reasoning(msg) -> Optional[str]:
+    """Best-effort 思考内容提取（reasoning / thinking）for a COMPLETE message。
+
+    实时流的原子兜底（stream_adapter，未经 token 流式的 AI 消息）与历史回放
+    （session_service._serialize_message，checkpoint 重放消息）共用本函数，
+    保证"思考过程"面板在两条路径下逐字一致。覆盖两类载体：
+    - GLM/DeepSeek/Qwen：``additional_kwargs['reasoning_content']``（本模块
+      patch 注入，随 checkpoint 持久化）；
+    - Anthropic 风格：content blocks 中 type 为 'thinking'/'reasoning' 的文本。
+    无思考内容时返回 None（纯空白视为无）。
+    """
+    ak = getattr(msg, "additional_kwargs", None) or {}
+    rc = ak.get("reasoning_content")
+    if isinstance(rc, str) and rc.strip():
+        return rc
+    content = getattr(msg, "content", None)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in ("thinking", "reasoning"):
+                text = block.get("thinking") or block.get("text") or block.get("reasoning")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+        if parts:
+            return "\n\n".join(parts)
+    return None
 
 
 def apply_once() -> None:

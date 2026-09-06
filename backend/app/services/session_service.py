@@ -17,6 +17,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from app.models import db as dbmod
 from app.models.schemas import KbRef, UploadOut
+from app.services.thinking_patch import extract_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -507,6 +508,13 @@ def _serialize_message(
         "name": getattr(msg, "name", None),
         "content": display if isinstance(display, str) else str(display),
     }
+    # 思考内容回显（仅 ai 消息携带，GLM/DeepSeek reasoning_content 随 checkpoint
+    # 持久化）：前端历史回放据此重建"思考过程"折叠块，与实时流 ThinkingBlock
+    # 同构。仅序列化展示层——_load_messages 返回的原始消息对象同时服务回撤定位
+    # （RemoveMessage）与图状态（摘要中间件的上下文重建），不得为展示而改写。
+    reasoning = extract_reasoning(msg)
+    if reasoning:
+        out["reasoning"] = reasoning
     tool_calls = getattr(msg, "tool_calls", None)
     if tool_calls:
         out["tool_calls"] = [
