@@ -436,6 +436,13 @@ class SessionService:
         #    【关键】必须以 seed.value 起步再叠加 writes——若从空表起步，只能得到
         #    最后一个版本化 checkpoint 之后的增量，历史被截断为最后几轮
         #    （实测 69 条消息只回出 14 条 = 恰好最后两轮）。
+        #    【关键】entry 一旦存在即以 seed(+writes) 为唯一真值，不得以
+        #    ``if writes:`` 门控：流式推理刚结束的线程，walk 停在最新版本化
+        #    快照上，writes 恒为空而 seed 已是全量（实测 writes=0 + seed=55）。
+        #    空 writes 若把合法 seed 丢弃并落回下方 blob 路径，langgraph>=1.2
+        #    的 channel_values["messages"] 是 _DeltaSnapshot 占位对象，
+        #    ``list(...)`` 迭代出垃圾条目（无 type/content），/history 只回一条
+        #    空消息 → 前端历史重灌后全部文本消失（seed-only 竞态根因）。
         if hasattr(checkpointer, "aget_delta_channel_history"):
             delta = await checkpointer.aget_delta_channel_history(
                 config=config, channels=["messages"]
@@ -451,13 +458,12 @@ class SessionService:
                         writes = entry.get("writes")
                     if seed is None:
                         seed = entry.get("seed")
-            if writes:
                 from langgraph.graph.message import add_messages
 
                 # seed 兼容 _DeltaSnapshot(.value) / 直接值 / None 三种形态
                 seed_value = getattr(seed, "value", seed)
                 messages = list(seed_value) if seed_value else []
-                for w in writes:
+                for w in writes or []:
                     # each delta is (checkpoint_id, channel, value); value is the
                     # message list written in that superstep (incl. RemoveMessage).
                     value = w[-1] if isinstance(w, (tuple, list)) else w
