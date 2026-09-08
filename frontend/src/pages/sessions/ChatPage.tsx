@@ -527,7 +527,8 @@ export function ChatPage(): ReactNode {
                 {!archived ? <HitlCard resume={stream.resume} /> : null}
               </div>
               </div>
-              {/* 回合导航轨：≥3 回合才渲染；形态随面板宽度分级（容器查询，见 index.css） */}
+              {/* 回合导航轨：首个回合落定即渲染（流式/待审批中的末轮暂不入轨）；
+                  形态随面板宽度分级（容器查询，见 index.css） */}
               <TurnRail scrollRef={scrollRef} />
 
               {/* 玻璃 dock：composer 悬浮于滚动区底部（流体玻璃取景消息流，

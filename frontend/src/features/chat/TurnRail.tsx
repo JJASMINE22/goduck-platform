@@ -1,13 +1,15 @@
 /* 会话回合导航轨（TurnRail）—— 每轮对话一个 label：悬停弹小窗预览该轮内容，点击跳转。
    - turns 由 chatStore.messages 派生（role==='user' 切分回合）：label = 用户 query 截断；
-     预览 = query 全文 + 该轮首条非空代理回复（流式中显示已到部分）。
+     预览 = query 全文 + 该轮首条非空代理回复。
      历史灌入与实时流共用同一 store，刷新后自动重建；锚点与 label 同源同快照，不会错位。
    - 点击经 data-turn-anchor 锚点平滑滚动（锚点挂在 MessageList 的用户回合容器上）；
      跳转后 scroll 容器判定离底、自动追底停止——复用 ChatPage 既有 pinnedRef 机制。
    - 三级形态由容器查询驱动（.chat-panel 为容器，见 index.css）：
      宽面板 = 完整 label / 中宽 = 仅圆点（悬停仍有预览）/ 窄面板 = 整轨隐藏；
      阅读列同步在右侧让位，轨道永不与气泡及回撤操作条重叠。
-   - <3 回合不渲染：短会话零打扰。 */
+   - ≥1 落定回合即渲染：末轮进行中（streaming/interrupted）暂不入轨——发送瞬间
+     轨道不弹入、逐 token 不触发条目/预览抖动；回合结束（done/error）或历史
+     灌入后自然出现（准则 F3：终态事件驱动）。 */
 import { Popover } from 'antd'
 import { type ReactNode, type RefObject, useMemo } from 'react'
 import { useChatStore } from '@/store/chatStore'
@@ -23,8 +25,8 @@ interface Turn {
   replyPreview: string
 }
 
-/** 出现阈值：回合数不足时整轨不渲染（短会话零打扰） */
-const MIN_TURNS = 3
+/** 出现阈值：只要存在一个已落定回合即渲染；空会话/首轮进行中不渲染 */
+const MIN_TURNS = 1
 const LABEL_MAX = 26
 const QUERY_MAX = 120
 const REPLY_MAX = 200
@@ -65,8 +67,15 @@ function anchorSelector(id: string): string {
 
 export function TurnRail({ scrollRef }: { scrollRef: RefObject<HTMLDivElement | null> }): ReactNode {
   const messages = useChatStore((s) => s.messages)
-  // 仅在 messages 引用变化时重算；流式逐 token 会触发，但 O(n) 浅遍历开销可忽略
-  const turns = useMemo(() => deriveTurns(messages), [messages])
+  const status = useChatStore((s) => s.status)
+  // 末轮落定才入轨：streaming/interrupted 中的回合尚未结束，暂不渲染——
+  // 发送瞬间轨道不弹入、逐 token 不触发条目/预览抖动；done/error 终态或历史
+  // 灌入后自然出现。interrupted 视为未结束（resume 属同回合继续），避免
+  // 审批等待期间入轨、恢复流式又消失的往复闪烁。已落定的旧回合不受影响。
+  const turns = useMemo(() => {
+    const all = deriveTurns(messages)
+    return status === 'streaming' || status === 'interrupted' ? all.slice(0, -1) : all
+  }, [messages, status])
 
   if (turns.length < MIN_TURNS) return null
 
