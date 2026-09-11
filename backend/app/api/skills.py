@@ -10,15 +10,41 @@ from __future__ import annotations
 
 import re
 import shutil
+from pathlib import Path
 
+import yaml
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 
 from app.deps import get_appstate
-from app.models.schemas import SkillInfo
+from app.models.schemas import SkillDetail, SkillInfo
 
 router = APIRouter(prefix="/skills", tags=["技能管理"])
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+# 描述文件优先级：SKILL.md（frontmatter description）→ README.md
+_MD_CANDIDATES = ("SKILL.md", "README.md")
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
+
+
+def _frontmatter_description(md_path: Path) -> str | None:
+    """读取 markdown YAML frontmatter 的 description 字段；缺失/解析失败返回 None。"""
+    try:
+        text = md_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return None
+    try:
+        meta = yaml.safe_load(m.group(1)) or {}
+    except yaml.YAMLError:
+        return None
+    desc = meta.get("description") if isinstance(meta, dict) else None
+    if isinstance(desc, str) and desc.strip():
+        return desc.strip()
+    return None
 
 
 def _pool_dir(request: Request):
@@ -68,6 +94,25 @@ async def upload_skill(
     if not saved:
         raise HTTPException(status_code=400, detail="技能目录不能为空 (无有效文件)")
     return SkillInfo(name=name, file_count=len(saved))
+
+
+@router.get("/{name}/description", response_model=SkillDetail)
+async def get_skill_description(name: str, request: Request):
+    """取技能描述：SKILL.md（缺失时回退 README.md）frontmatter 的 description。"""
+    if not _NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="skill 名称非法")
+    pool = _pool_dir(request)
+    skill_dir = pool / name
+    if not skill_dir.is_dir():
+        raise HTTPException(status_code=404, detail="skill not found")
+    desc: str | None = None
+    for fname in _MD_CANDIDATES:
+        md = skill_dir / fname
+        if md.is_file():
+            desc = _frontmatter_description(md)
+            if desc:
+                break
+    return SkillDetail(name=name, description=desc)
 
 
 @router.delete("/{name}")

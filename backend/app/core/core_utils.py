@@ -4,6 +4,9 @@ Changes:
 - No sys.path hack / no base_confs global imports.
 - `_build_backend` LOCAL_DIR hardcoded -> config-injected paths.
 - `build_rubric_middleware` grader tools built from path-bound factory.
+- Turn-scoped variants (TurnScopedRubricMiddleware / TurnScopedFixedRubricMiddleware):
+  grading view is limited to the current turn (last real user message → end),
+  see `_TurnScopedGraderMixin`.
 """
 from __future__ import annotations
 
@@ -17,7 +20,7 @@ from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.store import StoreBackend
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.errors import GraphBubbleUp
 
 from app.core.user_scoped_backend import TrackedUserScopedFilesystemBackend
@@ -121,6 +124,54 @@ class FixedRubricMiddleware(RubricMiddleware):
         return inject or base
 
 
+class _TurnScopedGraderMixin:
+    """评分材料限定为当前回合：最后一条真实用户消息 → 通道末尾。
+
+    上游 RubricMiddleware 的评分视图是「强制前置首条用户消息 + 最近
+    _MAX_TRANSCRIPT_MESSAGES 条」，为单任务轨迹设计。本平台把它用作
+    会话级常驻评审（FixedRubricMiddleware 每回合注入固定 rubric），累积
+    历史会随窗口滑入评审现场：首问题被强制前置而其原始回答滚出窗口，
+    grader 据此判定"问题从未被回答"，needs_revision 的修订回路转而补答
+    与本次提问无关的旧问题（实测「尼康相机学习上手」thread）。
+
+    修复：覆写上游文档明示的 `_grader_input` 扩展点（rubric.py，同步/
+    异步 grader 调用共用此入口），把传入 payload 构建器的 messages 视图
+    换成当前回合切片。切片 = 最后一条「真实」HumanMessage（lc_source !=
+    rubric_grader，即用户发起而非 grader 合成）到通道末尾：本轮提问、
+    回答、工具调用、修订循环（grader 反馈 + 补答）全量保留，可被复审；
+    更早回合全部排除。切片内首条 human 恰为本轮提问，上游的强制前置
+    逻辑自然选中它——当前问题永远不会滚出自己的评分窗口。
+
+    仅替换评审视图，不改 messages 通道真值：主智能体上下文、/history、
+    withdraw 语义均不受影响。
+    """
+
+    def _grader_input(self, state, iteration, correction=None):
+        msgs = state.get("messages", [])
+        start = None
+        for i in range(len(msgs) - 1, -1, -1):
+            m = msgs[i]
+            if isinstance(m, HumanMessage) and (
+                getattr(m, "additional_kwargs", None) or {}
+            ).get("lc_source") != "rubric_grader":
+                start = i
+                break
+        if start is None or start == 0:
+            # 无真实用户消息（异常形态）或本回合本就从头开始：维持原行为
+            return super()._grader_input(state, iteration, correction)
+        scoped = {**state}
+        scoped["messages"] = msgs[start:]
+        return super()._grader_input(scoped, iteration, correction)
+
+
+class TurnScopedRubricMiddleware(_TurnScopedGraderMixin, RubricMiddleware):
+    """RubricMiddleware + 回合级评分窗口（每消息 invoke payload rubric 路径）。"""
+
+
+class TurnScopedFixedRubricMiddleware(_TurnScopedGraderMixin, FixedRubricMiddleware):
+    """FixedRubricMiddleware + 回合级评分窗口（常驻 rubric 路径）。"""
+
+
 # ======================== Rubric middleware build ========================
 
 def _log_evaluation(evaluation: dict) -> None:
@@ -174,8 +225,8 @@ def build_rubric_middleware(
     )
 
     if rubric_cfg.fixed:
-        return FixedRubricMiddleware(fixed_rubric=rubric_cfg.content, **common)
-    return RubricMiddleware(**common)
+        return TurnScopedFixedRubricMiddleware(fixed_rubric=rubric_cfg.content, **common)
+    return TurnScopedRubricMiddleware(**common)
 
 
 # ======================== Backend build ========================

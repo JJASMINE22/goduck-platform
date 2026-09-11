@@ -179,11 +179,17 @@ export function ChatPage(): ReactNode {
   // 阅读列 padding-bottom 引用它让位，最后一条消息永不沉入玻璃下方不可读。
   // callback ref 模式：archived 切换引起的 dock 挂载/卸载自动接好观察与清理。
   const dockRoRef = useRef<ResizeObserver | null>(null)
+  const dockBodyRef = useRef<HTMLElement | null>(null)
   const attachDock = useCallback((el: HTMLDivElement | null) => {
     dockRoRef.current?.disconnect()
     dockRoRef.current = null
+    // dock 卸载（如切到归档会话）时清掉写死在 body 上的让位变量：否则残留的
+    // 内联值会盖过 .chat-panel--archived 定义、经继承生效的 0px
+    dockBodyRef.current?.style.removeProperty('--composer-h')
+    dockBodyRef.current = null
     const body = el?.parentElement
     if (!el || !body || typeof ResizeObserver === 'undefined') return
+    dockBodyRef.current = body
     const apply = () => body.style.setProperty('--composer-h', `${el.offsetHeight}px`)
     apply()
     const ro = new ResizeObserver(apply)
@@ -498,7 +504,10 @@ export function ChatPage(): ReactNode {
           不卸载，SSE 流与滚动位置不中断/不丢失。会话区包装为独立模块卡片（chat-panel），
           消息流与输入框之间的分隔条内化为卡片内部，默认隐形。 */}
       <Flex gap={12} style={{ flex: 1, minHeight: 0 }}>
-        <section className="chat-panel" style={{ display: effectiveView === 'chat' ? 'flex' : 'none' }}>
+        <section
+          className={archived ? 'chat-panel chat-panel--archived' : 'chat-panel'}
+          style={{ display: effectiveView === 'chat' ? 'flex' : 'none' }}
+        >
           {/* body：滚动区 + 回合导航轨的定位上下文（轨不随内容滚、也不伸进 composer） */}
           <div className="chat-panel__body">
             <div
@@ -533,20 +542,23 @@ export function ChatPage(): ReactNode {
 
               {/* 玻璃 dock：composer 悬浮于滚动区底部（流体玻璃取景消息流，
                   发送后消息从玻璃下滚过、模糊可见）；dock 本身不拦截指针，
-                  宽屏两侧空白处可正常 hover/点击下方消息 */}
-              <div className="chat-panel__dock" ref={attachDock}>
-                <div className="row-resizer" onMouseDown={onInputResizeDown} title="拖拽调整输入区高度" />
-                <div className="chat-panel__composer" style={{ minHeight: inputHeight ?? undefined }}>
-                  <ChatInput
-                    sessionId={session.id}
-                    userId={session.user_id}
-                    status={stream.status}
-                    send={stream.send}
-                    cancel={handleCancel}
-                    voice={voice}
-                  />
+                  宽屏两侧空白处可正常 hover/点击下方消息。
+                  归档会话不渲染（只读，发送窗由下方常规流 Alert 替代） */}
+              {!archived ? (
+                <div className="chat-panel__dock" ref={attachDock}>
+                  <div className="row-resizer" onMouseDown={onInputResizeDown} title="拖拽调整输入区高度" />
+                  <div className="chat-panel__composer" style={{ minHeight: inputHeight ?? undefined }}>
+                    <ChatInput
+                      sessionId={session.id}
+                      userId={session.user_id}
+                      status={stream.status}
+                      send={stream.send}
+                      cancel={handleCancel}
+                      voice={voice}
+                    />
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </div>
 
             {/* 输入：归档会话只读，不可继续对话（常规流布局，不参与玻璃悬浮） */}

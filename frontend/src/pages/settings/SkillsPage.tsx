@@ -1,7 +1,7 @@
 /* 技能管理页（DESIGN §6）—— 全局 skills 池共享，一个 skill = 一个子目录。
    上传支持目录结构：拖拽文件夹会递归展开，按相对路径（scripts/run.js）上传，
    后端在 <name>/ 下重建子目录并防目录穿越。
-   AgentConfig.skills 引用为 /skills/<name>/。 */
+   界面只展示技能名；描述来自 SKILL.md frontmatter（GET /skills/{name}/description）。 */
 import { App as AntApp, Button, Form, Input, Modal, Popconfirm, Table, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
@@ -9,6 +9,7 @@ import { FolderOpen, Plus, Trash2, Upload as UploadIcon } from 'lucide-react'
 import { useDeleteSkill, useSkills, useUploadSkill } from '@/hooks/useSkills'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
+import { SkillDescriptionText } from '@/components/skills/SkillDescriptionText'
 import { toastError } from '@/lib/antdStatic'
 import { fromDataTransfer, fromInputFiles, stripWrapperMatchingName, type FlatFileEntry } from '@/lib/flattenFiles'
 import type { SkillInfo } from '@/types'
@@ -129,7 +130,7 @@ export function SkillsPage(): ReactNode {
       title: '技能名',
       dataIndex: 'name',
       key: 'name',
-      render: (v: string) => <code>/skills/{v}/</code>,
+      render: (v: string) => <code>{v}</code>,
     },
     {
       title: '文件数',
@@ -155,7 +156,7 @@ export function SkillsPage(): ReactNode {
   return (
     <PageContainer
       title="技能列表"
-      subtitle="个人技能池，跨智能体共享；按 /skills/<name>/ 引用"
+      subtitle="个人技能池，跨智能体共享；描述取自技能内 SKILL.md"
       extra={
         <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
           上传技能
@@ -169,7 +170,22 @@ export function SkillsPage(): ReactNode {
       ) : !data?.length ? (
         <EmptyState title="暂无技能" extra={<Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>上传技能</Button>} />
       ) : (
-        <Table<SkillInfo> rowKey="name" columns={columns} dataSource={data} pagination={false} size="middle" />
+        <Table<SkillInfo>
+          rowKey="name"
+          columns={columns}
+          dataSource={data}
+          pagination={false}
+          size="middle"
+          expandable={{
+            rowExpandable: () => true,
+            // 行展开（+ 号，镜像 MCP 页 server 行展开工具的风格）→ 查看技能描述
+            expandedRowRender: (r) => (
+              <div style={{ padding: '4px 0 2px' }}>
+                <SkillDescriptionText name={r.name} full />
+              </div>
+            ),
+          }}
+        />
       )}
 
       <Modal

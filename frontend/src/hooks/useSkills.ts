@@ -9,6 +9,15 @@ export function useSkills() {
   return useQuery({ queryKey: queryKeys.skills, queryFn: skillsApi.list })
 }
 
+/** 技能描述（SKILL.md frontmatter description）；与技能列表共享失效键前缀 */
+export function useSkillDescription(name: string) {
+  return useQuery({
+    queryKey: queryKeys.skillDescription(name),
+    queryFn: () => skillsApi.description(name),
+    enabled: !!name,
+  })
+}
+
 export function useUploadSkill() {
   const qc = useQueryClient()
   return useMutation({

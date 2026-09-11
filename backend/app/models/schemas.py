@@ -276,6 +276,13 @@ class SkillInfo(BaseModel):
     file_count: int
 
 
+class SkillDetail(BaseModel):
+    """GET /skills/{name}/description —— 解析 SKILL.md frontmatter 的 description。"""
+
+    name: str
+    description: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Upload / attachment capability
 # ---------------------------------------------------------------------------

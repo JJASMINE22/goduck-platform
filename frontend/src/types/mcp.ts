@@ -49,3 +49,9 @@ export interface SkillInfo {
   name: string
   file_count: number
 }
+
+/** 技能描述（schemas.py SkillDetail，GET /skills/{name}/description 解析 SKILL.md frontmatter） */
+export interface SkillDetail {
+  name: string
+  description: string | null
+}

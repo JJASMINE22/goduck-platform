@@ -21,6 +21,7 @@ export const queryKeys = {
   models: ['models'] as const,
   modelsVision: ['models', { vision: true }] as const,
   skills: ['skills'] as const,
+  skillDescription: (name: string) => ['skills', name, 'description'] as const,
   knowledgeBases: ['knowledge-bases'] as const,
   kbDocuments: (kbId: string) => ['knowledge-bases', kbId, 'documents'] as const,
   attachmentCapability: (sessionId: string) =>

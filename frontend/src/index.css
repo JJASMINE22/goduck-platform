@@ -1638,6 +1638,12 @@ pre,
 .chat-panel__dock .chat-composer {
   pointer-events: auto;
 }
+/* 归档只读：玻璃 dock 整体不渲染（无发送窗，由常规流 Alert 告知只读）。
+   让位变量归零——阅读列底部 padding 与导航轨 bottom 收回紧凑值，
+   不再为不存在的悬浮 composer 预留 120px 兜底空档 */
+.chat-panel--archived {
+  --composer-h: 0px;
+}
 
 /* ===== 会话时间线非气泡卡：流体玻璃（Liquid Glass）=====
     代理气泡保持白底（长文可读性；用户气泡已在基础区玻璃化），其余卡片统一

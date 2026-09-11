@@ -139,7 +139,7 @@ export function NodeDetailPanel(): ReactNode {
           <Select
             mode="multiple"
             style={{ width: '100%' }}
-            placeholder="引用 /skills/<name>/"
+            placeholder="选择技能"
             value={node.skills ?? []}
             onChange={(v) => patch({ skills: v.length ? v : null })}
             options={skillOptions}
