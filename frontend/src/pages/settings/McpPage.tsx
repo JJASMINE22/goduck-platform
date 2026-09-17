@@ -32,7 +32,8 @@ import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
 import { formatDateTime } from '@/lib/format'
 import { toastError } from '@/lib/antdStatic'
-import type { McpKind, McpServerOut, ToolInfo } from '@/types'
+import { ApiError } from '@/api/client'
+import type { McpInUseDetail, McpKind, McpServerOut, ToolInfo } from '@/types'
 
 interface FormValues {
   name: string
@@ -134,7 +135,38 @@ export function McpPage(): ReactNode {
       okType: 'danger',
       okText: '删除',
       cancelText: '取消',
-      onOk: () => deleteServer.mutateAsync(record.id),
+      onOk: async () => {
+        try {
+          await deleteServer.mutateAsync(record.id)
+        } catch (e) {
+          // 409=仍有智能体引用其工具（后端按引用阻断）：列出引用方供手动解绑
+          if (e instanceof ApiError && e.status === 409) {
+            const detail = e.detail as McpInUseDetail | string
+            const refs =
+              typeof detail === 'object' && detail?.referencing_agents
+                ? detail.referencing_agents
+                : []
+            modal.warning({
+              title: '无法删除：仍有智能体在引用',
+              content: (
+                <div>
+                  <p>{typeof detail === 'object' ? detail.message : '请先在以下智能体中移除相关工具'}</p>
+                  {refs.length ? (
+                    <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+                      {refs.map((r) => (
+                        <li key={r.id}>
+                          {r.name} <code style={{ fontSize: 12 }}>{r.id.slice(0, 8)}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              ),
+            })
+          }
+          // 其它错误由全局兜底提示
+        }
+      },
     })
   }
 

@@ -44,6 +44,12 @@ export interface McpStatus {
   servers: McpServerStatus[]
 }
 
+/** 删除/改名被引用的 MCP server 时后端 409 detail（api/mcp.py delete/update） */
+export interface McpInUseDetail {
+  message: string
+  referencing_agents: Array<{ id: string; name: string }>
+}
+
 /** 技能（schemas.py SkillInfo） */
 export interface SkillInfo {
   name: string

@@ -20,17 +20,16 @@ export class ApiError extends Error {
 
 function deriveMessage(status: number, detail: unknown): string {
   if (typeof detail === 'string' && detail.length > 0) return detail
+  // FastAPI 422 校验错误聚合（detail 即 [{loc,msg,type}] 数组）
+  if (Array.isArray(detail)) {
+    return (detail as Array<Record<string, unknown>>)
+      .map((e) => e?.msg ?? '')
+      .filter(Boolean)
+      .join('; ')
+  }
   if (detail && typeof detail === 'object') {
     const obj = detail as Record<string, unknown>
-    // FastAPI 422 校验错误聚合
-    if (Array.isArray(obj.detail)) {
-      return (obj.detail as Array<Record<string, unknown>>)
-        .map((e) => e?.msg ?? '')
-        .filter(Boolean)
-        .join('; ')
-    }
-    // FastAPI HTTPException 标准形态 {"detail": "..."}：后端中文原因直接展示（准则 F6）
-    if (typeof obj.detail === 'string' && obj.detail) return obj.detail
+    // 结构化 detail（如删除被引用模型/MCP server 的 409 {message, referencing_agents}）
     if (typeof obj.message === 'string') return obj.message
   }
   const map: Record<number, string> = {
@@ -94,7 +93,13 @@ async function request<T>(
   if (!res.ok) {
     let detail: unknown = null
     try {
-      detail = await parseBody(res)
+      const body = await parseBody(res)
+      // FastAPI 错误统一包裹为 {"detail": ...}：解包一层保留真实 detail
+      //（string / {message,...} 结构体 / 422 数组），调用方直接按 detail 语义消费
+      detail =
+        body && typeof body === 'object' && !Array.isArray(body) && 'detail' in body
+          ? (body as { detail: unknown }).detail
+          : body
     } catch {
       /* 忽略解析失败，保留 status */
     }
