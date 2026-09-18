@@ -70,7 +70,12 @@ export function SessionsListPage(): ReactNode {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
-      render: (v: string | null, r) => v || <span style={{ color: 'var(--color-text-tertiary)' }}>未命名（{r.id.slice(0, 8)}）</span>,
+      render: (v: string | null, r) => (
+        <Flex align="center" gap={6}>
+          {r.kind === 'cron' ? <Tag color="geekblue">定时</Tag> : null}
+          {v || <span style={{ color: 'var(--color-text-tertiary)' }}>未命名（{r.id.slice(0, 8)}）</span>}
+        </Flex>
+      ),
     },
     { title: '智能体', dataIndex: 'agent_name', key: 'agent_name', render: (v: string | null) => v ?? '—' },
     {
@@ -95,7 +100,8 @@ export function SessionsListPage(): ReactNode {
           >
             {r.status === 'active' ? '打开' : '查看'}
           </Button>
-          {r.status === 'archived' ? (
+          {/* 任务会话生命周期归任务管理持有（后端归档/purge 409），此处不提供入口 */}
+          {r.kind === 'cron' ? null : r.status === 'archived' ? (
             <Popconfirm title="彻底删除？此操作不可恢复" onConfirm={() => handlePurge(r)} okText="彻底删除" cancelText="取消" okButtonProps={{ danger: true }}>
               <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
             </Popconfirm>
@@ -109,7 +115,8 @@ export function SessionsListPage(): ReactNode {
     },
   ]
 
-  const activeAgents = (agents.data ?? []).filter((a) => a.status === 'active')
+  // 建会话只列 chat 型（kind 隔离：cron 型智能体不可建聊天会话，后端 409 为本体）
+  const activeAgents = (agents.data ?? []).filter((a) => a.status === 'active' && a.kind !== 'cron')
 
   return (
     <PageContainer

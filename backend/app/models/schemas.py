@@ -25,6 +25,14 @@ class AgentCreate(BaseModel):
         "主代理须开启 allow_attachments 且基座 supports_vision=false 才允许设置"
         "（违反任一保存时 400）。",
     )
+    kind: Literal["chat", "cron"] = Field(
+        default="chat",
+        description=(
+            "用途类型：'chat'=聊天会话 | 'cron'=定时任务专用。"
+            "创建后不可变（方案 A）——转换走导出 YAML 重建。"
+            "决定可绑定面：chat 型不可建定时任务，cron 型不可建聊天会话。"
+        ),
+    )
     creator: str = Field(min_length=1)
 
 
@@ -63,6 +71,10 @@ class AgentOut(BaseModel):
     model_name: Optional[str] = None
     vision_model_id: Optional[uuid.UUID] = None
     vision_model_name: Optional[str] = None
+    kind: str = Field(
+        default="chat",
+        description="用途类型 'chat'|'cron'（创建后不可变）；前端据此过滤建任务下拉 + 类型徽标",
+    )
     status: str
     creator: str
     updater: Optional[str]
@@ -118,6 +130,10 @@ class SessionOut(BaseModel):
     thread_id: str
     title: Optional[str]
     status: str
+    kind: str = Field(
+        default="chat",
+        description="会话类型：'chat'=普通会话 | 'cron'=定时任务专用会话（只读，消息/回撤 409）",
+    )
     created_at: datetime
     updated_at: datetime
     agent_name: Optional[str] = None
@@ -525,6 +541,83 @@ class KbSearchResult(BaseModel):
     page: Optional[int] = None
     chunk_index: Optional[int] = None
     kb_id: Optional[uuid.UUID] = None
+
+
+# ---------------------------------------------------------------------------
+# Cron（定时任务）
+# ---------------------------------------------------------------------------
+class CronJobCreate(BaseModel):
+    user_id: str = Field(min_length=1)
+    agent_id: uuid.UUID = Field(..., description="绑定智能体（须为 active 状态）")
+    name: str = Field(min_length=1, max_length=100, description="任务名（同用户内唯一）")
+    prompt: str = Field(min_length=1, description="任务内容：每次触发注入的固定 user query")
+    interval_minutes: int = Field(
+        ...,
+        ge=1,
+        description="触发间隔（分钟）。业务下限见服务层校验（默认 ≥5，防高频烧配额）。",
+    )
+    start_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "首次运行时间（ISO 8601，建议带时区偏移；无时区按 UTC）。"
+            "None=立即（下个 tick 内触发首次）；过去时间自动夹到当前时刻。"
+            "interval 的相位以 start_at 为锚。"
+        ),
+    )
+
+    @field_validator("name", "prompt")
+    @classmethod
+    def _strip_blank(cls, v: str) -> str:
+        return v.strip()
+
+
+class CronJobUpdate(BaseModel):
+    """部分更新（exclude_unset 语义）：仅显式提供的字段生效。
+
+    调度规则：显式 start_at=该时刻首跑；仅改 interval=一个完整新间隔后首跑；
+    重新启用（enabled false→true）=一个间隔后首跑 + 复位熔断计数。
+    """
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    prompt: Optional[str] = Field(default=None, min_length=1)
+    interval_minutes: Optional[int] = Field(default=None, ge=1)
+    start_at: Optional[datetime] = None
+    enabled: Optional[bool] = None
+
+    @field_validator("name", "prompt")
+    @classmethod
+    def _strip_blank(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if isinstance(v, str) else v
+
+
+class CronJobOut(BaseModel):
+    id: uuid.UUID
+    user_id: str
+    agent_id: uuid.UUID
+    agent_name: Optional[str] = None
+    session_id: uuid.UUID
+    name: str
+    prompt: str
+    interval_minutes: int
+    start_at: datetime
+    enabled: bool
+    next_run_at: Optional[datetime] = None
+    last_run_at: Optional[datetime] = None
+    last_status: Optional[str] = None
+    last_error: Optional[str] = None
+    consecutive_failures: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class CronRunOut(BaseModel):
+    id: uuid.UUID
+    job_id: uuid.UUID
+    status: str
+    trigger: str
+    error: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
 
 
 # MessageOut references UploadOut (defined later in this module). Pydantic v2

@@ -103,6 +103,8 @@ class AppState:
         self.content_composer = None
         self.vision_describer = None
         self.stream_tracker = StreamTracker()
+        # cron scheduler — None when cron_enabled=false (lifespan wires it)
+        self.cron_scheduler = None
         # knowledge base (RAG) — None when kb_enabled=false (lazy, 503-gated)
         # embeddings 由 vector_factory 按 kb.dims 内部构建+缓存，不再单例持有
         self.vector_factory = None

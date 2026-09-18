@@ -51,6 +51,7 @@ export function AgentEditorPage(): ReactNode {
   const description = useAgentEditorStore((s) => s.description)
   const modelId = useAgentEditorStore((s) => s.modelId)
   const visionModelId = useAgentEditorStore((s) => s.visionModelId)
+  const kind = useAgentEditorStore((s) => s.kind)
   const errors = useAgentEditorStore((s) => s.validationErrors)
   const configDirty = useAgentEditorStore((s) => s.configDirty)
   const initNew = useAgentEditorStore((s) => s.initNew)
@@ -59,6 +60,7 @@ export function AgentEditorPage(): ReactNode {
   const setDescription = useAgentEditorStore((s) => s.setDescription)
   const setModelId = useAgentEditorStore((s) => s.setModelId)
   const setVisionModelId = useAgentEditorStore((s) => s.setVisionModelId)
+  const setKind = useAgentEditorStore((s) => s.setKind)
   const setValidation = useAgentEditorStore((s) => s.setValidation)
 
   const [histOpen, setHistOpen] = useState(false)
@@ -151,14 +153,19 @@ export function AgentEditorPage(): ReactNode {
           config,
           model_id: modelId,
           vision_model_id: effectiveVision,
+          kind,
           creator: user,
         })
         .then((detail) => navigate(`/agents/${detail.id}`))
       return
     }
+    // 更新不携带 kind：用途类型创建后不可变（后端 AgentUpdate 无此字段）
     modal.confirm({
       title: '确认更新智能体？',
-      content: '更新将级联删除该智能体的全部旧会话（配置历史保留可还原）。',
+      content:
+        kind === 'cron'
+          ? '更新将级联删除该智能体的全部旧会话，并自动停用绑定它的定时任务（确认后可重新启用）。配置历史保留可还原。'
+          : '更新将级联删除该智能体的全部旧会话（配置历史保留可还原）。',
       okText: '确认更新',
       cancelText: '取消',
       onOk: doUpdate,
@@ -287,6 +294,26 @@ export function AgentEditorPage(): ReactNode {
               placeholder="如 代码评审助手"
               style={{ width: 176, fontWeight: 600 }}
             />
+          </div>
+          {/* 用途类型：仅新建可选（创建后不可变）；编辑态显示徽标提示。
+              cron 型才可绑定定时任务，chat 型才可建聊天会话（绑定面互斥） */}
+          <div className="editor-field">
+            <span className="editor-field__label">用途</span>
+            {isCreate ? (
+              <Select
+                style={{ width: 150 }}
+                value={kind}
+                onChange={(v) => setKind(v)}
+                options={[
+                  { value: 'chat', label: '聊天会话' },
+                  { value: 'cron', label: '定时任务' },
+                ]}
+              />
+            ) : (
+              <Tag color={kind === 'cron' ? 'geekblue' : 'green'} style={{ marginInlineEnd: 0 }}>
+                {kind === 'cron' ? '定时任务（不可改）' : '聊天会话（不可改）'}
+              </Tag>
+            )}
           </div>
           <div className="editor-field">
             <span className="editor-field__label">描述</span>

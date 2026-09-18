@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS agent (
     config_json     JSONB   NOT NULL,
     model_id        UUID,
     vision_model_id UUID,                                  -- 下挂视觉模型（基座无视觉时的图像预消费）
+    -- 用途类型：'chat'=聊天会话 | 'cron'=定时任务专用。创建后不可变（方案 A）；
+    -- 转换走导出 YAML 重建。约束会话/任务两侧的绑定边界（session/cron_job 创建时校验）。
+    kind            VARCHAR NOT NULL DEFAULT 'chat',
     status          VARCHAR NOT NULL DEFAULT 'active',
     creator         VARCHAR NOT NULL,
     updater         VARCHAR,
@@ -122,6 +125,43 @@ CREATE TABLE IF NOT EXISTS upload (
 CREATE INDEX IF NOT EXISTS idx_upload_session ON upload(session_id);
 CREATE INDEX IF NOT EXISTS idx_upload_user ON upload(user_id);
 
+-- ============================ 定时任务（cron） ============================
+-- DB 为唯一真相源：scheduler 每 tick 轮询 due 行，无内存注册表。
+-- session 侧经 kind='cron' 鉴别（见 _MIGRATIONS），1:1 绑定任务专用会话。
+CREATE TABLE IF NOT EXISTS cron_job (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id             VARCHAR NOT NULL,
+    agent_id            UUID NOT NULL REFERENCES agent(id) ON DELETE CASCADE,
+    -- 专用任务会话（session.kind='cron'）。不设硬 FK：session 已由 agent 级联管
+    -- 理，交叉 FK 会引入级联顺序脆弱性；删除路径由 API 层守卫（kind='cron' 拒删）。
+    session_id          UUID NOT NULL,
+    name                VARCHAR NOT NULL,
+    prompt              TEXT NOT NULL,
+    interval_minutes    INT NOT NULL CHECK (interval_minutes >= 1),
+    start_at            TIMESTAMPTZ NOT NULL DEFAULT now(),   -- 首跑锚点（interval 相位锚）
+    enabled             BOOLEAN NOT NULL DEFAULT true,
+    next_run_at         TIMESTAMPTZ,                          -- NULL=暂停/完结；认领时原子推进
+    last_run_at         TIMESTAMPTZ,
+    last_status         VARCHAR,     -- running|ok|error|awaiting_approval
+    last_error          TEXT,
+    consecutive_failures INT NOT NULL DEFAULT 0,              -- 熔断计数（连续 error）
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_cron_job_due ON cron_job(next_run_at) WHERE enabled;
+
+CREATE TABLE IF NOT EXISTS cron_run (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id      UUID NOT NULL REFERENCES cron_job(id) ON DELETE CASCADE,
+    status      VARCHAR NOT NULL DEFAULT 'running',  -- running|ok|error|awaiting_approval
+    trigger     VARCHAR NOT NULL DEFAULT 'scheduled',-- scheduled|manual
+    error       TEXT,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_cron_run_job ON cron_run(job_id, started_at DESC);
+
 -- ============================ 知识库（RAG）状态卡 ============================
 -- 仅状态/元数据；chunk 文本/向量真值入 Elasticsearch（index = kb_<kb_id>）。
 CREATE TABLE IF NOT EXISTS knowledge_base (
@@ -177,6 +217,11 @@ _MIGRATIONS = [
     "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc_at TIMESTAMPTZ",
     # 会话级 token 用量累计（jsonb，固定五键，见 add_session_usage）
     "ALTER TABLE session ADD COLUMN IF NOT EXISTS usage_totals JSONB",
+    # 会话类型鉴别：'chat'=普通会话（默认，存量行自动归一） | 'cron'=定时任务专用会话
+    # （由 POST /cron/jobs 内部代建，消息/回撤接口对其 409，仅允许 HITL 审批 resume）
+    "ALTER TABLE session ADD COLUMN IF NOT EXISTS kind VARCHAR NOT NULL DEFAULT 'chat'",
+    # 智能体用途类型（'chat' | 'cron'，创建后不可变）；存量智能体归一为 chat
+    "ALTER TABLE agent ADD COLUMN IF NOT EXISTS kind VARCHAR NOT NULL DEFAULT 'chat'",
 ]
 
 # enable_thinking 三态化一次性迁移：旧 schema 为 NOT NULL 且旧语义 false=不注入；
@@ -265,19 +310,23 @@ async def create_agent(
     model_id: uuid.UUID,
     creator: str,
     vision_model_id: Optional[uuid.UUID] = None,
+    kind: str = "chat",
 ) -> dict:
-    """Atomically create agent + first history snapshot (action=create)."""
+    """Atomically create agent + first history snapshot (action=create).
+
+    kind 仅供创建时指定（'chat' | 'cron'），更新路径不接触该列（不可变）。
+    """
     async with pool.connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
                 try:
                     await cur.execute(
                         "INSERT INTO agent (name, description, config_json, model_id, "
-                        "vision_model_id, creator) "
-                        "VALUES (%s, %s, %s, %s, %s, %s) "
+                        "vision_model_id, kind, creator) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                         "RETURNING id, name, description, config_json, model_id, "
-                        "vision_model_id, status, creator, updater, created_at, updated_at",
-                        (name, description, Json(config_json), model_id, vision_model_id, creator),
+                        "vision_model_id, kind, status, creator, updater, created_at, updated_at",
+                        (name, description, Json(config_json), model_id, vision_model_id, kind, creator),
                     )
                 except UniqueViolation:
                     # 并发兜底：service 预检通过后、INSERT 落地前的同名竞态 → 归一 409
@@ -324,7 +373,7 @@ async def update_agent(
                         "name = COALESCE(%s, name), "
                         "updater = %s, updated_at = now() WHERE id = %s "
                         "RETURNING id, name, description, config_json, model_id, "
-                        "vision_model_id, status, creator, updater, created_at, updated_at",
+                        "vision_model_id, kind, status, creator, updater, created_at, updated_at",
                         (Json(config_json), model_id, vision_model_id, description, name, updater, agent_id),
                     )
                 except UniqueViolation:
@@ -349,11 +398,24 @@ async def update_agent(
                     (agent_id,),
                 )
                 archived = cur.rowcount
+
+                # 级联停用绑定该 agent 的定时任务：旧图上的 checkpoint 不可在新图恢复
+                # （会话已归档 409），继续触发只会连续失败烧钱。用户确认后可手动
+                # 重新启用（启用时自动复活会话行）。
+                await cur.execute(
+                    "UPDATE cron_job SET enabled = false, updated_at = now(), "
+                    "last_error = '绑定智能体已更新，任务已自动暂停；确认后可重新启用' "
+                    "WHERE agent_id = %s AND enabled",
+                    (agent_id,),
+                )
+                paused_cron = cur.rowcount
     if archived:
         logger.info(
             "agent %s updated; archived %d active sessions (checkpoints kept)",
             agent_id, archived,
         )
+    if paused_cron:
+        logger.info("agent %s updated; auto-paused %d cron jobs", agent_id, paused_cron)
     return agent
 
 
@@ -406,7 +468,7 @@ async def list_agents(pool: AsyncConnectionPool, include_archived: bool = False)
             where = "" if include_archived else " WHERE a.status != 'archived'"
             await cur.execute(
                 f"SELECT a.id, a.name, a.description, a.model_id, m.name AS model_name, "
-                f"a.vision_model_id, vm.name AS vision_model_name, "
+                f"a.vision_model_id, vm.name AS vision_model_name, a.kind, "
                 f"a.status, a.creator, a.updater, a.created_at, a.updated_at "
                 f"FROM agent a LEFT JOIN model m ON m.id = a.model_id "
                 f"LEFT JOIN model vm ON vm.id = a.vision_model_id{where} "
@@ -422,7 +484,7 @@ async def get_agent(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> Optional[
             await cur.execute(
                 "SELECT a.id, a.name, a.description, a.config_json, a.model_id, "
                 "m.name AS model_name, a.vision_model_id, vm.name AS vision_model_name, "
-                "a.status, a.creator, a.updater, "
+                "a.kind, a.status, a.creator, a.updater, "
                 "a.created_at, a.updated_at "
                 "FROM agent a LEFT JOIN model m ON m.id = a.model_id "
                 "LEFT JOIN model vm ON vm.id = a.vision_model_id WHERE a.id = %s",
@@ -436,8 +498,8 @@ async def get_agent_by_name(pool: AsyncConnectionPool, name: str) -> Optional[di
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, name, description, config_json, model_id, status, creator, updater, "
-                "created_at, updated_at FROM agent WHERE name = %s",
+                "SELECT id, name, description, config_json, model_id, kind, status, creator, "
+                "updater, created_at, updated_at FROM agent WHERE name = %s",
                 (name,),
             )
             row = await cur.fetchone()
@@ -456,14 +518,23 @@ async def list_active_agents(pool: AsyncConnectionPool) -> list[dict]:
 
 async def archive_agent(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> Optional[dict]:
     async with pool.connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                "UPDATE agent SET status = 'archived', updated_at = now() WHERE id = %s "
-                "RETURNING id, name, description, config_json, model_id, status, creator, updater, "
-                "created_at, updated_at",
-                (agent_id,),
-            )
-            row = await cur.fetchone()
+        async with conn.transaction():
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "UPDATE agent SET status = 'archived', updated_at = now() WHERE id = %s "
+                    "RETURNING id, name, description, config_json, model_id, kind, status, "
+                    "creator, updater, created_at, updated_at",
+                    (agent_id,),
+                )
+                row = await cur.fetchone()
+                if row is not None:
+                    # 级联停用：archived agent 不可再被调度触发（FK 级联仅在物理删除时生效）
+                    await cur.execute(
+                        "UPDATE cron_job SET enabled = false, updated_at = now(), "
+                        "last_error = '绑定智能体已归档，任务已自动暂停' "
+                        "WHERE agent_id = %s AND enabled",
+                        (agent_id,),
+                    )
     return row
 
 
@@ -516,6 +587,7 @@ async def create_session(
     user_id: str,
     thread_id: str,
     title: Optional[str],
+    kind: str = "chat",
 ) -> dict:
     """Insert a session row.
 
@@ -527,10 +599,11 @@ async def create_session(
         async with conn.cursor(row_factory=dict_row) as cur:
             try:
                 await cur.execute(
-                    "INSERT INTO session (agent_id, user_id, thread_id, title) "
-                    "VALUES (%s, %s, %s, %s) "
-                    "RETURNING id, agent_id, user_id, thread_id, title, status, created_at, updated_at",
-                    (agent_id, user_id, thread_id, title),
+                    "INSERT INTO session (agent_id, user_id, thread_id, title, kind) "
+                    "VALUES (%s, %s, %s, %s, %s) "
+                    "RETURNING id, agent_id, user_id, thread_id, title, status, kind, "
+                    "created_at, updated_at",
+                    (agent_id, user_id, thread_id, title, kind),
                 )
                 row = await cur.fetchone()
             except UniqueViolation as e:
@@ -578,7 +651,7 @@ async def list_sessions_by_user(
         async with conn.cursor(row_factory=dict_row) as cur:
             extra = "" if include_archived else " AND s.status != 'archived'"
             await cur.execute(
-                f"SELECT s.id, s.agent_id, s.user_id, s.thread_id, s.title, s.status, "
+                f"SELECT s.id, s.agent_id, s.user_id, s.thread_id, s.title, s.status, s.kind, "
                 f"s.created_at, s.updated_at, a.name AS agent_name "
                 f"FROM session s JOIN agent a ON a.id = s.agent_id "
                 f"WHERE s.user_id = %s{extra} ORDER BY s.updated_at DESC",
@@ -592,7 +665,7 @@ async def get_session(pool: AsyncConnectionPool, session_id: uuid.UUID) -> Optio
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, agent_id, user_id, thread_id, title, status, usage_totals, "
+                "SELECT id, agent_id, user_id, thread_id, title, status, kind, usage_totals, "
                 "created_at, updated_at FROM session WHERE id = %s",
                 (session_id,),
             )
@@ -1354,3 +1427,314 @@ async def list_agents_by_model(pool: AsyncConnectionPool, model_id: uuid.UUID) -
             )
             rows = await cur.fetchall()
     return rows
+
+
+# ============================ Cron ops =====================================
+# DB 为唯一真相源：本节函数是 scheduler / API 与 cron 表的全部契约。
+# 时间语义：next_run_at / start_at 均为 timestamptz（UTC 往返）；认领采用
+# "乐观并发推进"（WHERE next_run_at = 观察值），单进程下近乎免费，多副本天然防双触发。
+
+_CRON_JOB_COLUMNS = (
+    "j.id, j.user_id, j.agent_id, j.session_id, j.name, j.prompt, j.interval_minutes, "
+    "j.start_at, j.enabled, j.next_run_at, j.last_run_at, j.last_status, j.last_error, "
+    "j.consecutive_failures, j.created_at, j.updated_at, "
+    "a.name AS agent_name, s.thread_id"
+)
+
+
+async def create_cron_job(
+    pool: AsyncConnectionPool,
+    user_id: str,
+    agent_id: uuid.UUID,
+    name: str,
+    prompt: str,
+    interval_minutes: int,
+    start_at,
+    next_run_at,
+) -> dict:
+    """Atomically create the dedicated session (kind='cron') + the job row.
+
+    Job insert failure rolls the session back (same tx) — no orphan sessions.
+    UniqueViolation maps: (user_id, name) → FileExistsError；session 活跃标题
+    撞车（"[定时] name" 与用户手建会话同名）→ FileExistsError(title)。
+    """
+    thread_id = f"thread-{uuid.uuid4().hex}"
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor(row_factory=dict_row) as cur:
+                session = None
+                try:
+                    await cur.execute(
+                        "INSERT INTO session (agent_id, user_id, thread_id, title, kind) "
+                        "VALUES (%s, %s, %s, %s, 'cron') "
+                        "RETURNING id, agent_id, user_id, thread_id, title, status, kind",
+                        (agent_id, user_id, thread_id, f"[定时] {name}"),
+                    )
+                    session = await cur.fetchone()
+                    await cur.execute(
+                        "INSERT INTO cron_job (user_id, agent_id, session_id, name, prompt, "
+                        "interval_minutes, start_at, next_run_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                        "RETURNING id, session_id, next_run_at",
+                        (user_id, agent_id, session["id"], name, prompt,
+                         interval_minutes, start_at, next_run_at),
+                    )
+                    job = await cur.fetchone()
+                except UniqueViolation as e:
+                    constraint = getattr(e.diag, "constraint_name", "") or ""
+                    if constraint == "cron_job_user_id_name_key":
+                        raise FileExistsError(name)
+                    raise FileExistsError(f"[定时] {name}")
+                job["thread_id"] = session["thread_id"]
+    return job
+
+
+async def get_cron_job(pool: AsyncConnectionPool, job_id: uuid.UUID) -> Optional[dict]:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_CRON_JOB_COLUMNS} FROM cron_job j "
+                "JOIN agent a ON a.id = j.agent_id "
+                "LEFT JOIN session s ON s.id = j.session_id "
+                "WHERE j.id = %s",
+                (job_id,),
+            )
+            row = await cur.fetchone()
+    return row
+
+
+async def get_cron_job_by_user_name(
+    pool: AsyncConnectionPool, user_id: str, name: str
+) -> Optional[dict]:
+    """按 (user_id, name) 查任务（建/改名去重预检用）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, name FROM cron_job WHERE user_id = %s AND name = %s LIMIT 1",
+                (user_id, name),
+            )
+            return await cur.fetchone()
+
+
+async def list_cron_jobs_by_user(pool: AsyncConnectionPool, user_id: str) -> list[dict]:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_CRON_JOB_COLUMNS} FROM cron_job j "
+                "JOIN agent a ON a.id = j.agent_id "
+                "LEFT JOIN session s ON s.id = j.session_id "
+                "WHERE j.user_id = %s ORDER BY j.created_at DESC",
+                (user_id,),
+            )
+            rows = await cur.fetchall()
+    return rows
+
+
+async def update_cron_job(
+    pool: AsyncConnectionPool, job_id: uuid.UUID, fields: dict
+) -> Optional[dict]:
+    """Dynamic partial update（调用方保证字段合法，空 fields 直接返回当前行）。"""
+    if not fields:
+        return await get_cron_job(pool, job_id)
+    sets = ", ".join(f"{k} = %s" for k in fields)
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            try:
+                await cur.execute(
+                    f"UPDATE cron_job SET {sets}, updated_at = now() WHERE id = %s",
+                    (*fields.values(), job_id),
+                )
+            except UniqueViolation:
+                raise FileExistsError(fields.get("name", ""))
+    return await get_cron_job(pool, job_id)
+
+
+async def delete_cron_job(pool: AsyncConnectionPool, job_id: uuid.UUID) -> bool:
+    """Delete job (+ cascaded runs) and soft-archive its dedicated session.
+
+    会话保留为 archived：历史产出仍可浏览（checkpoints 未动），标题随归档释放。
+    """
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE session SET status = 'archived', updated_at = now() "
+                    "WHERE id = (SELECT session_id FROM cron_job WHERE id = %s) "
+                    "AND status = 'active'",
+                    (job_id,),
+                )
+                await cur.execute("DELETE FROM cron_job WHERE id = %s", (job_id,))
+                return cur.rowcount > 0
+
+
+async def due_cron_jobs(pool: AsyncConnectionPool) -> list[dict]:
+    """到期任务（scheduler 每 tick 调用）。thread_id 经 JOIN 带出供并发检查。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_CRON_JOB_COLUMNS} FROM cron_job j "
+                "JOIN agent a ON a.id = j.agent_id "
+                "LEFT JOIN session s ON s.id = j.session_id "
+                "WHERE j.enabled AND j.next_run_at IS NOT NULL AND j.next_run_at <= now() "
+                "ORDER BY j.next_run_at"
+            )
+            rows = await cur.fetchall()
+    return rows
+
+
+async def claim_cron_job(
+    pool: AsyncConnectionPool,
+    job_id: uuid.UUID,
+    observed_next_run_at,
+    new_next_run_at,
+) -> Optional[dict]:
+    """认领：原子推进 next_run_at 并置 running（乐观并发，竞态返回 None）。
+
+    认领先于执行（claim-then-execute）：崩溃时序上"丢一轮"优于"重复执行一轮"。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "UPDATE cron_job SET next_run_at = %s, last_run_at = now(), "
+                "last_status = 'running', updated_at = now() "
+                "WHERE id = %s AND enabled AND next_run_at = %s "
+                "RETURNING id",
+                (new_next_run_at, job_id, observed_next_run_at),
+            )
+            row = await cur.fetchone()
+    return row
+
+
+async def skip_cron_job(
+    pool: AsyncConnectionPool,
+    job_id: uuid.UUID,
+    observed_next_run_at,
+    new_next_run_at,
+) -> bool:
+    """跳过一个槽位（overlap / awaiting_approval / busy）：仅推进相位，不写 run 行。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE cron_job SET next_run_at = %s, updated_at = now() "
+                "WHERE id = %s AND next_run_at = %s",
+                (new_next_run_at, job_id, observed_next_run_at),
+            )
+            return cur.rowcount > 0
+
+
+async def finish_cron_job_run(
+    pool: AsyncConnectionPool,
+    job_id: uuid.UUID,
+    status: str,
+    error: Optional[str],
+    max_consecutive_failures: int,
+) -> None:
+    """运行结局回写：状态 + 熔断计数（连续 error 达阈值自动停用，需人工重启）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE cron_job SET "
+                "last_status = %s, "
+                "last_error = %s, "
+                "consecutive_failures = "
+                "    CASE WHEN %s = 'error' THEN consecutive_failures + 1 ELSE 0 END, "
+                "enabled = CASE WHEN %s = 'error' AND consecutive_failures + 1 >= %s "
+                "    THEN false ELSE enabled END, "
+                "updated_at = now() "
+                "WHERE id = %s",
+                (status, error, status, status, max_consecutive_failures, job_id),
+            )
+
+
+async def sync_cron_job_status(pool: AsyncConnectionPool, session_id: uuid.UUID, status: str) -> None:
+    """任务会话上的用户侧结局（HITL resume 完成后）回写任务状态，不产生 run 行。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE cron_job SET last_status = %s, updated_at = now() "
+                "WHERE session_id = %s",
+                (status, session_id),
+            )
+
+
+async def insert_cron_run(
+    pool: AsyncConnectionPool, job_id: uuid.UUID, trigger: str = "scheduled"
+) -> dict:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "INSERT INTO cron_run (job_id, trigger) VALUES (%s, %s) "
+                "RETURNING id, job_id, status, trigger, error, started_at, finished_at",
+                (job_id, trigger),
+            )
+            return await cur.fetchone()
+
+
+async def finish_cron_run(
+    pool: AsyncConnectionPool, run_id: uuid.UUID, status: str, error: Optional[str]
+) -> None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE cron_run SET status = %s, error = %s, finished_at = now() "
+                "WHERE id = %s",
+                (status, error, run_id),
+            )
+
+
+async def list_cron_runs(
+    pool: AsyncConnectionPool, job_id: uuid.UUID, limit: int = 50
+) -> list[dict]:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, job_id, status, trigger, error, started_at, finished_at "
+                "FROM cron_run WHERE job_id = %s ORDER BY started_at DESC LIMIT %s",
+                (job_id, limit),
+            )
+            rows = await cur.fetchall()
+    return rows
+
+
+async def pause_cron_jobs_on_non_cron_agents(pool: AsyncConnectionPool) -> int:
+    """启动规范化：停用绑定在 chat 型智能体上的存量任务（kind 隔离引入前的遗留）。
+
+    幂等（停用后 enabled=false 不再命中）；停用原因写入 last_error 供用户在
+    任务列表看到并处置（换绑 cron 型智能体或重建任务）。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE cron_job j SET enabled = false, updated_at = now(), "
+                "last_error = '绑定的智能体非定时任务类型（kind!=cron），任务已停用；"
+                "请换绑 cron 型智能体后重新启用' "
+                "FROM agent a WHERE a.id = j.agent_id AND a.kind != 'cron' AND j.enabled"
+            )
+            return cur.rowcount
+
+
+async def reactivate_cron_session(pool: AsyncConnectionPool, session_id: uuid.UUID) -> Optional[dict]:
+    """复活任务专用会话（任务重新启用时）。
+
+    标题撞车（暂停期间用户手建了同名活跃会话）自动降级为未命名，不让启用失败。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            try:
+                await cur.execute(
+                    "UPDATE session SET status = 'active', updated_at = now() "
+                    "WHERE id = %s AND status = 'archived' "
+                    "RETURNING id, agent_id, user_id, thread_id, title, status, kind",
+                    (session_id,),
+                )
+            except UniqueViolation:
+                logger.warning(
+                    "cron session %s title collides on reactivation; dropping title", session_id
+                )
+                await cur.execute(
+                    "UPDATE session SET status = 'active', title = NULL, updated_at = now() "
+                    "WHERE id = %s AND status = 'archived' "
+                    "RETURNING id, agent_id, user_id, thread_id, title, status, kind",
+                    (session_id,),
+                )
+            return await cur.fetchone()

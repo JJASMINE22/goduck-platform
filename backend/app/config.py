@@ -140,6 +140,42 @@ class Settings(BaseSettings):
     registry_max_entries: int = 16
     registry_ttl_seconds: int = 3600
 
+    # ---- 定时任务（cron jobs）----
+    cron_enabled: bool = Field(
+        default=True,
+        description="定时任务总开关：false 时不启动调度循环（cron 路由仍可管理任务，仅不触发）。",
+    )
+    cron_tick_seconds: int = Field(
+        default=30,
+        ge=5,
+        description="调度循环 tick 间隔（秒）。触发精度上限；DB 负载每 tick 一条索引查询，可忽略。",
+    )
+    cron_max_concurrency: int = Field(
+        default=1,
+        ge=1,
+        description="后台任务并发执行上限（信号量）。1=串行，防多个 LLM 长跑互相拖垮。",
+    )
+    cron_run_timeout_s: float = Field(
+        default=1800.0,
+        gt=0,
+        description="单次任务运行超时秒数；超时中止并计一次失败（30 分钟适配深度研究类长跑）。",
+    )
+    cron_max_consecutive_failures: int = Field(
+        default=5,
+        ge=1,
+        description="连续失败熔断阈值：达到后自动停用任务（enabled=false），需人工重新启用。",
+    )
+    cron_min_interval_minutes: int = Field(
+        default=5,
+        ge=1,
+        description="最小触发间隔（分钟）。防高频任务打爆 LLM 配额。",
+    )
+    cron_max_interval_minutes: int = Field(
+        default=525600,
+        ge=1,
+        description="最大触发间隔（分钟，默认一年上限）。",
+    )
+
     # ---- 语音输入（STT 触发会话，单 WS 全管线）----
     voice_enabled: bool = Field(
         default=False,

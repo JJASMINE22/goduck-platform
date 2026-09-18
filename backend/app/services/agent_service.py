@@ -56,6 +56,7 @@ class AgentService:
         model_id: uuid.UUID,
         creator: str,
         vision_model_id: Optional[uuid.UUID] = None,
+        kind: str = "chat",
     ) -> dict:
         valid, errs = self.validate_config(config)
         if not valid:
@@ -64,7 +65,7 @@ class AgentService:
             raise FileExistsError(name)  # router maps -> 409
         return await dbmod.create_agent(
             self.pool, name, description, config, model_id, creator,
-            vision_model_id=vision_model_id,
+            vision_model_id=vision_model_id, kind=kind,
         )
 
     async def update(
@@ -131,7 +132,14 @@ class AgentService:
         return await dbmod.list_history(self.pool, agent_id)
 
     async def export_yaml(self, agent_id: uuid.UUID) -> Optional[str]:
+        """导出配置 YAML，顶层内嵌 kind（重建时的用途类型种子）。
+
+        AgentConfig 对未知键 ignore（pydantic v2 默认），kind 内嵌不破坏
+        /agents/validate 的再校验；重建方读出 kind 后 pop 掉再提交即可。
+        """
         agent = await dbmod.get_agent(self.pool, agent_id)
         if agent is None:
             return None
-        return config_to_yaml(agent["config_json"])
+        config = dict(agent["config_json"] or {})
+        config["kind"] = agent["kind"]
+        return config_to_yaml(config)

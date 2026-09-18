@@ -39,6 +39,8 @@ async def create_session(body: SessionCreate, request: Request):
             status_code=409,
             detail=f"会话标题 '{body.title}' 已存在（同用户活跃会话内唯一；归档后可复用）",
         )
+    except PermissionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -60,19 +62,36 @@ async def get_session(session_id: uuid.UUID, request: Request):
 
 @router.delete("/{session_id}", response_model=SessionOut)
 async def archive_session(session_id: uuid.UUID, request: Request):
-    s = await _service(request).archive(session_id)
+    svc = _service(request)
+    s = await svc.get(session_id)
     if s is None:
         raise HTTPException(status_code=404, detail="session not found")
-    return s
+    _refuse_cron_session(s, action="归档")
+    return await svc.archive(session_id)
 
 
 @router.post("/{session_id}/purge", status_code=204)
 async def purge_session(session_id: uuid.UUID, request: Request):
     """Hard delete a session (physical) + checkpoint cleanup. Irreversible."""
-    deleted = await _service(request).delete(session_id)
+    svc = _service(request)
+    s = await svc.get(session_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    _refuse_cron_session(s, action="彻底删除")
+    deleted = await svc.delete(session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="session not found")
     return None
+
+
+def _refuse_cron_session(s: dict, *, action: str) -> None:
+    """任务会话的生命周期由任务管理（/cron/jobs）持有：删除任务时其专用会话
+    软归档保留产出。此处 409 防止用户侧误删导致任务触发撞 404（产品决策）。"""
+    if s.get("kind") == "cron":
+        raise HTTPException(
+            status_code=409,
+            detail=f"任务会话请从定时任务管理删除（{action}被拒绝）",
+        )
 
 
 @router.get("/{session_id}/history", response_model=list[MessageOut])
@@ -97,6 +116,7 @@ async def withdraw_turn(body: WithdrawRequest, session_id: uuid.UUID, request: R
     """
     st = _appstate(request)
     session, svc = await _load_session_or_404(request, session_id)
+    _refuse_cron_session(session, action="回撤消息")
 
     if st.stream_tracker.is_streaming(session["thread_id"]):
         raise HTTPException(status_code=409, detail="流式生成中，请先停止再回撤")

@@ -179,6 +179,9 @@ async def _load_session(st, session_id: uuid.UUID) -> tuple[dict, SessionService
         raise KeyError("session not found")
     if session["status"] == "archived":
         raise PermissionError("session archived")
+    if session.get("kind") == "cron":
+        # 任务会话只读：语音输入属"主动发言"，与 POST /messages 同拒（对齐 stream.py 守卫）
+        raise PermissionError("cron session is read-only")
     return session, svc
 
 

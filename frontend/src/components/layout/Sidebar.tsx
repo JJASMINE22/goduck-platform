@@ -1,6 +1,6 @@
 /* 侧边导航 —— 对应 DESIGN §9 路由结构。AntD Menu + react-router 导航。
    能力驱动（F2）：知识库菜单仅在后端 kb_enabled=true 时出现（单一真相源 /health）。 */
-import { Bot, BookOpen, Cpu, Database, MessagesSquare, Network } from 'lucide-react'
+import { Bot, BookOpen, CalendarClock, Cpu, Database, MessagesSquare, Network } from 'lucide-react'
 import { Menu } from 'antd'
 import type { MenuProps } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -24,6 +24,7 @@ function buildItems(kbEnabled: boolean): MenuItem[] {
   return [
     { key: '/agents', icon: icon(<Bot size={16} />), label: '智能体' },
     { key: '/sessions', icon: icon(<MessagesSquare size={16} />), label: '会话' },
+    { key: '/cron', icon: icon(<CalendarClock size={16} />), label: '定时任务' },
     { type: 'group', label: '设置', children: settings },
   ]
 }

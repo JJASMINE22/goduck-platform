@@ -36,6 +36,8 @@ export const queryKeys = {
     ['sessions', sessionId, 'workspace-preview', path] as const,
   shellCapability: (sessionId: string) =>
     ['sessions', sessionId, 'shell-capability'] as const,
+  cronJobs: (userId: string) => ['cron', 'jobs', { userId }] as const,
+  cronRuns: (jobId: string) => ['cron', 'jobs', jobId, 'runs'] as const,
 } as const
 
 export function createQueryClient(): QueryClient {

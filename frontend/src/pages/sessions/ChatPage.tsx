@@ -9,6 +9,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, FolderOpen, MessageSquare, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
+import { useCronJobs } from '@/hooks/useCron'
 import { useStreamChat } from '@/hooks/useStreamChat'
 import { useVoiceInput } from '@/hooks/useVoiceInput'
 import { useCapabilities } from '@/hooks/useCapabilities'
@@ -83,17 +84,34 @@ export function ChatPage(): ReactNode {
   const sessionId = id ?? ''
 
   const sessionQ = useSession(sessionId || null)
-  const historyQ = useSessionHistory(sessionId || null)
+  // 任务会话内容跟随：调度器执行无 SSE 通道，靠 /history 定期轮询显现新产出
+  const historyQ = useSessionHistory(
+    sessionId || null,
+    sessionQ.data?.kind === 'cron' ? 5_000 : undefined,
+  )
   const archiveSession = useArchiveSession()
   const { modal } = AntApp.useApp()
   // 会话数据上提：handleWithdraw（useCallback）需在早退分支之前定义（Hook 顺序稳定），
   // 引用随查询数据变化（React Query 结构共享，未变即同引用）
   const session = sessionQ.data
 
+  // 任务会话浏览态数据源：绑定任务行（last_status 驱动「任务运行中」徽标与
+  // HITL 重建信号）。非任务会话传 null（query disabled，不产生请求）。
+  const cronJobs = useCronJobs(session?.kind === 'cron' ? session.user_id : null, 5_000)
+  const cronJob = session?.kind === 'cron'
+    ? cronJobs.data?.find((j) => j.session_id === sessionId)
+    : undefined
+  const cronRunning = cronJob?.last_status === 'running'
+
   const stream = useStreamChat(sessionId || null)
-  // 语音输入：仅后端能力开启时预建 WS（与按键解耦）；推理闸门复用 stream.status
   const capabilities = useCapabilities()
-  const voice = useVoiceInput(sessionId || null, capabilities.voice_enabled)
+  // 语音输入：仅后端能力开启时预建 WS（与按键解耦）；推理闸门复用 stream.status。
+  // 预建连仅限可发言会话：任务会话（kind=cron）与归档会话会被后端 WS 守卫以
+  // error 帧拒绝（经共享 dispatch 落为「会话出错」横幅）——在源头即不连接。
+  const voice = useVoiceInput(
+    sessionId || null,
+    capabilities.voice_enabled && session?.kind === 'chat' && session?.status !== 'archived',
+  )
 
   /** 中止当前流（按来源路由，语音回合无法中止/回撤的冲突修复点）：
       语音发起 → WS cancel 帧（后端取消 astream、即时释放 withdraw 的 409 闸）；
@@ -237,12 +255,15 @@ export function ChatPage(): ReactNode {
   const forcedLoadRef = useRef(false)
   // 失效发起时刻：只接受此后完成的新快照，防 refetch 失败时把撤回前的旧缓存灌回
   const forcedAtRef = useRef(0)
+  // 任务会话内容跟随：上次已灌入快照的 dataUpdatedAt（0=仅记录基线未灌入）
+  const lastCronLoadAtRef = useRef(0)
 
   // 会话切换（或首次进入未绑定的会话）：重置 store；同会话往返：保留 live 状态
   useEffect(() => {
     retainedRef.current = useChatStore.getState().sessionId === sessionId
     forcedLoadRef.current = false
     forcedAtRef.current = 0
+    lastCronLoadAtRef.current = 0
     if (!retainedRef.current) reset()
   }, [sessionId, reset])
 
@@ -359,6 +380,72 @@ export function ChatPage(): ReactNode {
     forcedLoadRef.current = false
   }, [sessionId, historyQ.data, historyQ.dataUpdatedAt, historyQ.isFetching, loadHistory])
 
+  // —— 任务会话内容跟随（cron live-follow）——
+  // 调度器执行无 SSE sink（后端 cron_scheduler._invoke 直接消费事件流），浏览侧
+  // 无流式事件可收：不轮询则整个运行期间页面静止在进入时刻的快照。上方
+  // useSessionHistory 对任务会话已按 5s 轮询，此处把"新到达的快照"重灌进 store
+  // （checkpointer 以节点完成为粒度落盘——回复/工具卡逐步显现，非 token 级流式）。
+  // 同会话保留守卫（retainedRef）服务于 live 流场景，任务会话无本地流，重灌安全。
+  useEffect(() => {
+    if (!sessionId || session?.kind !== 'cron') return
+    if (!historyQ.data || historyQ.isFetching) return
+    if (lastCronLoadAtRef.current === 0) {
+      // 首个快照由上方挂载灌入路径负责，这里只记录基线时刻
+      lastCronLoadAtRef.current = historyQ.dataUpdatedAt
+      return
+    }
+    if (historyQ.dataUpdatedAt <= lastCronLoadAtRef.current) return
+    const st = useChatStore.getState()
+    if (st.sessionId !== sessionId) return
+    // 本地流式/待审批中不灌入（语义同上方挂载灌入守卫）；空快照不抹白
+    if (st.status === 'streaming' || st.status === 'interrupted') return
+    if (historyQ.data.length === 0) return
+    lastCronLoadAtRef.current = historyQ.dataUpdatedAt
+    const { messages, toolCalls } = buildHistoryReplay(historyQ.data)
+    loadHistory(sessionId, messages, toolCalls)
+    // 用量徽标以服务端计数落真值（usage 事件后端已即时入库）；工作区已挂载则
+    // 同步文件树（调度器落盘产物即时可见）
+    queryClient.invalidateQueries({ queryKey: queryKeys.session(sessionId) })
+    if (wsVisited) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceTree(sessionId) })
+    }
+  }, [
+    sessionId,
+    session?.kind,
+    historyQ.data,
+    historyQ.dataUpdatedAt,
+    historyQ.isFetching,
+    loadHistory,
+    queryClient,
+    wsVisited,
+  ])
+
+  // —— 任务会话浏览中命中 HITL：审批卡重建 ——
+  // 待审批状态本只存活于 live SSE 流（interrupt 事件）；调度器运行无此通道，
+  // 浏览中的用户不会收到 interrupt 事件。以任务状态 awaiting_approval 为信号，
+  // 补查 checkpointer 真值（GET /interrupt）重建审批卡（复用会话进入路径的守卫）。
+  useEffect(() => {
+    if (!sessionId || session?.kind !== 'cron') return
+    if (cronJob?.last_status !== 'awaiting_approval') return
+    const st = useChatStore.getState()
+    if (st.status !== 'idle' || st.pendingInterrupt) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const payload = await streamApi.getInterrupt(sessionId)
+        if (cancelled || !payload?.action_requests?.length) return
+        const cur = useChatStore.getState()
+        if (cur.status !== 'idle' || cur.pendingInterrupt) return
+        cur.setInterrupt(payload)
+      } catch {
+        /* 查询失败退化为下次状态变化再试（任务状态轮询会再次触发） */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, session?.kind, cronJob?.last_status])
+
   // 用户发起新动作（发消息 / resume 进入 streaming）才强制贴底。
   // 仅监听 status 边沿（idle/interrupted → streaming），而非消息/工具卡数量——
   // 后者在子代理/多线程流式中持续增长，若用作依赖会把"用户上滑浏览历史"
@@ -409,15 +496,21 @@ export function ChatPage(): ReactNode {
   useEffect(() => {
     const session = sessionQ.data
     const archived = session?.status === 'archived'
+    const isCron = session?.kind === 'cron'
+    // 任务会话与归档会话同态只读（composer 隐藏）；但任务会话保留工作区切换与
+    // HITL 审批入口（产出浏览与审批是只读/放行交互），归档则全收
+    const readOnly = archived || isCron
     const effView: ChatView = allowWorkspace && !archived ? wsView : 'chat'
     setHeader({
       title: (
         <Space>
-          <Button icon={<ArrowLeft size={14} />} onClick={() => navigate('/sessions')}>
+          <Button icon={<ArrowLeft size={14} />} onClick={() => navigate(isCron ? '/cron' : '/sessions')}>
             返回
           </Button>
           <Typography.Text strong>{session?.title || `会话 ${sessionId.slice(0, 8)}`}</Typography.Text>
           {session?.agent_name ? <Tag color="purple">{session.agent_name}</Tag> : null}
+          {isCron ? <Tag color="geekblue">定时任务·只读</Tag> : null}
+          {isCron && cronRunning ? <Tag color="processing">任务运行中</Tag> : null}
           {allowShell ? <Tag color="magenta">Shell</Tag> : null}
           {stream.status === 'streaming' ? <Tag color="processing">生成中</Tag> : null}
           {stream.status === 'interrupted' ? <Tag color="orange">待审批</Tag> : null}
@@ -447,23 +540,25 @@ export function ChatPage(): ReactNode {
               ]}
             />
           ) : null}
-          <Button
-            danger
-            icon={<Trash2 size={14} />}
-            onClick={() => {
-              if (!session) return
-              modal.confirm({
-                title: '归档该会话？',
-                content: '归档后无法继续对话。',
-                okType: 'danger',
-                okText: '归档',
-                cancelText: '取消',
-                onOk: () => archiveSession.mutateAsync(session.id).then(() => navigate('/sessions')),
-              })
-            }}
-          >
-            归档
-          </Button>
+          {!readOnly ? (
+            <Button
+              danger
+              icon={<Trash2 size={14} />}
+              onClick={() => {
+                if (!session) return
+                modal.confirm({
+                  title: '归档该会话？',
+                  content: '归档后无法继续对话。',
+                  okType: 'danger',
+                  okText: '归档',
+                  cancelText: '取消',
+                  onOk: () => archiveSession.mutateAsync(session.id).then(() => navigate('/sessions')),
+                })
+              }}
+            >
+              归档
+            </Button>
+          ) : null}
         </Space>
       ),
     })
@@ -482,7 +577,10 @@ export function ChatPage(): ReactNode {
   }
 
   const archived = session.status === 'archived'
-  // 渲染期兜底：能力被关闭 / 会话归档时强制回会话视图，避免停留在无切换入口的死角
+  const isCron = session.kind === 'cron'
+  // 只读 = 归档或任务会话（composer 隐藏、回撤禁用）；工作区切换仅归档时收起
+  //（任务会话保留产出浏览），HITL 审批卡仅归档时隐藏（任务会话审批是放行交互）
+  const readOnly = archived || isCron
   const effectiveView: ChatView = allowWorkspace && !archived ? wsView : 'chat'
 
   return (
@@ -505,7 +603,7 @@ export function ChatPage(): ReactNode {
           消息流与输入框之间的分隔条内化为卡片内部，默认隐形。 */}
       <Flex gap={12} style={{ flex: 1, minHeight: 0 }}>
         <section
-          className={archived ? 'chat-panel chat-panel--archived' : 'chat-panel'}
+          className={readOnly ? 'chat-panel chat-panel--archived' : 'chat-panel'}
           style={{ display: effectiveView === 'chat' ? 'flex' : 'none' }}
         >
           {/* body：滚动区 + 回合导航轨的定位上下文（轨不随内容滚、也不伸进 composer） */}
@@ -528,9 +626,9 @@ export function ChatPage(): ReactNode {
                 <TodoPanel />
                 <MessageList
                   sessionId={session.id}
-                  onWithdraw={handleWithdraw}
+                  onWithdraw={isCron ? undefined : handleWithdraw}
                   withdrawingId={withdrawingId}
-                  readOnly={archived}
+                  readOnly={readOnly}
                   onOpenFile={allowWorkspace ? openWorkspaceFile : undefined}
                 />
                 {!archived ? <HitlCard resume={stream.resume} /> : null}
@@ -543,8 +641,8 @@ export function ChatPage(): ReactNode {
               {/* 玻璃 dock：composer 悬浮于滚动区底部（流体玻璃取景消息流，
                   发送后消息从玻璃下滚过、模糊可见）；dock 本身不拦截指针，
                   宽屏两侧空白处可正常 hover/点击下方消息。
-                  归档会话不渲染（只读，发送窗由下方常规流 Alert 替代） */}
-              {!archived ? (
+                  归档/任务会话不渲染（只读，发送窗由下方常规流 Alert 替代） */}
+              {!readOnly ? (
                 <div className="chat-panel__dock" ref={attachDock}>
                   <div className="row-resizer" onMouseDown={onInputResizeDown} title="拖拽调整输入区高度" />
                   <div className="chat-panel__composer" style={{ minHeight: inputHeight ?? undefined }}>
@@ -561,10 +659,22 @@ export function ChatPage(): ReactNode {
               ) : null}
             </div>
 
-            {/* 输入：归档会话只读，不可继续对话（常规流布局，不参与玻璃悬浮） */}
-            {archived ? (
+            {/* 输入：归档/任务会话只读，不可发送（常规流布局，不参与玻璃悬浮）。
+                任务会话保留 HITL 审批能力说明（审批卡在消息流内，resume 已放行） */}
+            {readOnly ? (
               <div className="chat-panel__composer">
-                <Alert type="info" message="该会话已归档，仅支持查看历史记录，不可继续对话。" />
+                {isCron ? (
+                  <Alert
+                    type="info"
+                    message={
+                      cronRunning
+                        ? '任务正在后台运行，产出将以节点完成粒度自动刷新至本页（非逐字流式）；仅支持查看运行产出与 HITL 审批。'
+                        : '该会话由定时任务驱动，仅支持查看运行产出与 HITL 审批，不支持手动发送。'
+                    }
+                  />
+                ) : (
+                  <Alert type="info" message="该会话已归档，仅支持查看历史记录，不可继续对话。" />
+                )}
               </div>
             ) : null}
           </section>

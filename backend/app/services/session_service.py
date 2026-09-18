@@ -44,8 +44,12 @@ class SessionService:
         - 自传 thread_id：撞库即 400（thread_id 是 checkpointer 键，全局唯一）。
         - 预检（语义化 409/400）+ DB 部分唯一索引竞态兜底（见 db.create_session）。
         """
-        if await dbmod.get_agent(self.pool, agent_id) is None:
+        agent_row = await dbmod.get_agent(self.pool, agent_id)
+        if agent_row is None:
             raise KeyError(f"agent {agent_id} not found")
+        # kind 隔离（方案 A）：cron 型智能体不可建聊天会话（绑定面互斥）
+        if agent_row.get("kind") == "cron":
+            raise PermissionError("该智能体为定时任务专用（kind=cron），不能创建聊天会话")
         title = (title or "").strip() or None
         if title is not None:
             dup = await dbmod.get_active_session_by_user_title(self.pool, user_id, title)

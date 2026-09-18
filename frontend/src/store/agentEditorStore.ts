@@ -27,6 +27,8 @@ interface AgentEditorState {
   modelId: UUID | null
   /** 下挂视觉模型（基座无视觉时的图像预消费）；基座自带视觉时须为 null（后端 400 互斥） */
   visionModelId: UUID | null
+  /** 用途类型（仅新建草稿可改；创建后后端不可变，编辑态仅作展示） */
+  kind: 'chat' | 'cron'
   dirty: boolean
   /** 用户是否改动过「配置树」（节点增删 / 字段编辑 / 换父级）。
    *  顶层名称/描述/模型绑定不算配置改动，不置位。
@@ -53,6 +55,7 @@ interface AgentEditorState {
   setDescription: (v: string) => void
   setModelId: (v: UUID | null) => void
   setVisionModelId: (v: UUID | null) => void
+  setKind: (v: 'chat' | 'cron') => void
   setValidation: (errors: string[], mermaid: string | null) => void
   reset: () => void
 }
@@ -66,6 +69,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
     description: '',
     modelId: null,
     visionModelId: null,
+    kind: 'chat',
     dirty: false,
     configDirty: false,
     validationErrors: [],
@@ -80,6 +84,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
         s.description = ''
         s.modelId = null
         s.visionModelId = null
+        s.kind = 'chat'
         s.selectedNodeId = root.id
         s.dirty = false
         s.configDirty = false
@@ -97,6 +102,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
         s.description = detail.description ?? ''
         s.modelId = detail.model_id ?? null
         s.visionModelId = detail.vision_model_id ?? null
+        s.kind = detail.kind === 'cron' ? 'cron' : 'chat'
         s.selectedNodeId = root?.id ?? null
         s.dirty = false
         s.configDirty = false
@@ -173,6 +179,12 @@ export const useAgentEditorStore = create<AgentEditorState>()(
         s.dirty = true
       }),
 
+    setKind: (v) =>
+      set((s) => {
+        s.kind = v
+        s.dirty = true
+      }),
+
     setDescription: (v) =>
       set((s) => {
         s.description = v
@@ -205,6 +217,7 @@ export const useAgentEditorStore = create<AgentEditorState>()(
         s.description = ''
         s.modelId = null
         s.visionModelId = null
+        s.kind = 'chat'
         s.selectedNodeId = null
         s.dirty = false
         s.configDirty = false

@@ -109,9 +109,31 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             logger.warning("warmup agent '%s' failed (skipped): %s", a.get("name"), e)
 
+    # 10. Cron scheduler — DB 驱动 tick 循环（创建/更新任务落库即生效）
+    if settings.cron_enabled:
+        from app.services.cron_scheduler import CronScheduler
+
+        # kind 隔离引入前的遗留治理：停用仍绑在 chat 型智能体上的任务（幂等，
+        # 原因写入 last_error 供用户换绑后重新启用）
+        paused = await dbmod.pause_cron_jobs_on_non_cron_agents(st.pool)
+        if paused:
+            logger.warning("paused %d legacy cron job(s) bound to non-cron agents", paused)
+
+        st.cron_scheduler = CronScheduler(st)
+        await st.cron_scheduler.start()
+        logger.info(
+            "cron scheduler enabled (tick=%ss, max_concurrency=%d)",
+            settings.cron_tick_seconds, settings.cron_max_concurrency,
+        )
+    else:
+        logger.info("cron scheduler disabled (cron_enabled=false)")
+
     logger.info("goduck-platform started")
     yield
-    # shutdown: reverse-order cleanup
+    # shutdown: reverse-order cleanup — 调度器最先停（不再派发新运行），
+    # 宽限收割在飞运行后再拆基础设施。
+    if st.cron_scheduler is not None:
+        await st.cron_scheduler.shutdown()
     if st.ingest_pool is not None:
         await st.ingest_pool.shutdown()
     if st.vector_factory is not None:
@@ -131,7 +153,7 @@ def create_app() -> FastAPI:
         root_path=settings.root_path,
     )
 
-    from app.api import agents, mcp, models, sessions, skills, stream, uploads, workspace
+    from app.api import agents, cron, mcp, models, sessions, skills, stream, uploads, workspace
     from app.models.schemas import HealthResponse
 
     app.include_router(agents.router)
@@ -142,6 +164,7 @@ def create_app() -> FastAPI:
     app.include_router(uploads.router)
     app.include_router(models.router)
     app.include_router(workspace.router)
+    app.include_router(cron.router)
 
     # 知识库路由：仅 kb_enabled=true 时挂载（避免禁用时仍 import RAG 重依赖；
     # 禁用时 KB 接口 404、会话 knowledge-capability 返回 allow_knowledge=false）。

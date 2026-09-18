@@ -83,7 +83,7 @@ async def create_agent(body: AgentCreate, request: Request):
     try:
         agent = await svc.create(
             body.name, body.description, body.config, body.model_id, body.creator,
-            vision_model_id=body.vision_model_id,
+            vision_model_id=body.vision_model_id, kind=body.kind,
         )
     except FileExistsError:
         raise HTTPException(status_code=409, detail=f"agent '{body.name}' already exists")

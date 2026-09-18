@@ -20,6 +20,8 @@ export interface SessionOut {
   thread_id: string
   title?: string | null
   status: SessionStatus
+  /** 会话类型：'chat'=普通会话 | 'cron'=定时任务专用（只读 + HITL 审批） */
+  kind?: 'chat' | 'cron'
   created_at: ISODateTime
   updated_at: ISODateTime
   agent_name?: string | null

@@ -47,7 +47,8 @@ export const MessageList = memo(function MessageList({
   onOpenFile,
 }: {
   sessionId: UUID
-  onWithdraw: (messageId: string) => void
+  /** 回撤回调；任务会话（kind=cron）不提供（后端 409，readOnly 守卫下入口不渲染） */
+  onWithdraw?: (messageId: string) => void
   withdrawingId: string | null
   readOnly: boolean
   /** 文件变更卡片行点击 → 打开工作区并选中该文件（未开启 workspace 能力时不传，行不可点） */
@@ -130,7 +131,7 @@ const MessageBubble = memo(function MessageBubble({
 }: {
   msg: ChatMessage
   sessionId: UUID
-  onWithdraw: (messageId: string) => void
+  onWithdraw?: (messageId: string) => void
   withdrawingId: string | null
   readOnly: boolean
   streaming: boolean
@@ -184,7 +185,7 @@ const MessageBubble = memo(function MessageBubble({
               disabled={!!withdrawingId}
               loading={withdrawing}
               icon={!withdrawing ? <Undo2 size={12} /> : undefined}
-              onClick={() => onWithdraw(msg.id)}
+              onClick={() => onWithdraw?.(msg.id)}
             >
               {streaming && isLastUser ? '停止并回撤' : '回撤'}
             </Button>

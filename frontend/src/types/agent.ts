@@ -44,6 +44,8 @@ export interface AgentCreate {
   model_id: UUID
   /** 下挂视觉模型（基座无视觉时用于图像预消费）；基座自带视觉时禁止设置（后端 400） */
   vision_model_id?: UUID | null
+  /** 用途类型：'chat'=聊天会话 | 'cron'=定时任务专用。创建后不可变（后端 AgentUpdate 无此字段） */
+  kind?: 'chat' | 'cron'
   creator: string
 }
 
@@ -79,6 +81,8 @@ export interface AgentOut {
   /** 下挂视觉模型（基座无视觉时的图像预消费描述器） */
   vision_model_id?: UUID | null
   vision_model_name?: string | null
+  /** 用途类型 'chat'|'cron'（创建后不可变）；建任务下拉只列 cron 型，建会话只列 chat 型 */
+  kind?: 'chat' | 'cron'
   status: AgentStatus
   creator: string
   updater?: string | null

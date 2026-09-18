@@ -12,6 +12,7 @@ import { AgentsListPage } from '@/pages/agents/AgentsListPage'
 import { AgentEditorPage } from '@/pages/agents/AgentEditorPage'
 import { SessionsListPage } from '@/pages/sessions/SessionsListPage'
 import { ChatPage } from '@/pages/sessions/ChatPage'
+import { CronJobsPage } from '@/pages/cron/CronJobsPage'
 import { ModelsPage } from '@/pages/settings/ModelsPage'
 import { McpPage } from '@/pages/settings/McpPage'
 import { SkillsPage } from '@/pages/settings/SkillsPage'
@@ -32,6 +33,7 @@ function AppRoot(): ReactNode {
         <Route path="/agents/:id" element={<AgentEditorPage />} />
         <Route path="/sessions" element={<SessionsListPage />} />
         <Route path="/sessions/:id" element={<ChatPage />} />
+        <Route path="/cron" element={<CronJobsPage />} />
         <Route path="/settings/models" element={<ModelsPage />} />
         <Route path="/settings/mcp" element={<McpPage />} />
         <Route path="/settings/skills" element={<SkillsPage />} />

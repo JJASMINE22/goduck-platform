@@ -98,6 +98,14 @@ export function AgentsListPage(): ReactNode {
       },
     },
     {
+      title: '用途',
+      dataIndex: 'kind',
+      key: 'kind',
+      width: 100,
+      render: (v: string | undefined) =>
+        v === 'cron' ? <Tag color="geekblue">定时任务</Tag> : <Tag color="green">聊天会话</Tag>,
+    },
+    {
       title: '绑定模型',
       dataIndex: 'model_name',
       key: 'model_name',

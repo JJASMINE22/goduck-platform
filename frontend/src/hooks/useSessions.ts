@@ -22,7 +22,7 @@ export function useSession(id: UUID | null | undefined) {
   })
 }
 
-export function useSessionHistory(id: UUID | null | undefined) {
+export function useSessionHistory(id: UUID | null | undefined, refetchIntervalMs?: number) {
   return useQuery({
     queryKey: queryKeys.sessionHistory(id ?? ''),
     queryFn: () => sessionsApi.history(id!),
@@ -31,6 +31,8 @@ export function useSessionHistory(id: UUID | null | undefined) {
     // 默认 staleTime(30s) 会让"重新打开会话"复用进入时的过时快照（新会话即空快照），
     // 配合 ChatPage 的 isFetching 守卫，确保每次进入都拉取 checkpointer 最新真值。
     staleTime: 0,
+    // 任务会话（kind=cron）传入轮询间隔：调度器执行无 SSE 通道，靠周期快照跟进
+    ...(refetchIntervalMs ? { refetchInterval: refetchIntervalMs } : {}),
   })
 }
 

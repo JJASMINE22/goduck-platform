@@ -89,10 +89,21 @@ async def _persist_usage(pool, session_id: uuid.UUID, payload: dict) -> None:
         logger.warning("persist usage for session %s failed (skipped)", session_id, exc_info=True)
 
 
+def _refuse_cron_session(session: dict, *, action: str) -> None:
+    """任务会话（kind='cron'）只读守卫：内容由调度器注入，用户不可主动发言/
+    追问/回撤（产品决策）。HITL 审批（resume）是唯一放行的交互。"""
+    if session.get("kind") == "cron":
+        raise HTTPException(
+            status_code=409,
+            detail=f"任务会话由定时调度驱动，不支持{action}（HITL 审批除外）",
+        )
+
+
 @router.post("/{session_id}/messages")
 async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request: Request):
     st = get_appstate(request)
     session, svc = await _load_session_or_404(request, session_id)
+    _refuse_cron_session(session, action="手动发送消息")
     config = _config_for(session)
     agent = await _build_agent_or_409(st, session["agent_id"])
 
@@ -251,6 +262,7 @@ async def resume(session_id: uuid.UUID, body: ResumeRequest, request: Request):
 
     decisions = resolver.normalize_decisions(body.decisions)
     adapter = st.stream_adapter
+    is_cron_session = session.get("kind") == "cron"
 
     async def event_gen():
         thread_id = session["thread_id"]
@@ -260,6 +272,10 @@ async def resume(session_id: uuid.UUID, body: ResumeRequest, request: Request):
             async for ev in gen:
                 if ev.type == "usage":
                     await _persist_usage(st.pool, session["id"], ev.payload)
+                # 任务会话：审批流的终态同步回任务状态（done→恢复触发、
+                # interrupt→继续挂起、error→计失败），不产生 cron_run 行。
+                if is_cron_session and ev.type in ("done", "interrupt", "error"):
+                    await _sync_cron_job_status(st.pool, session["id"], ev.type)
                 yield ev.to_sse()
         finally:
             st.stream_tracker.release(thread_id)
@@ -268,3 +284,16 @@ async def resume(session_id: uuid.UUID, body: ResumeRequest, request: Request):
             await svc.touch(session["id"])
 
     return EventSourceResponse(event_gen())
+
+
+async def _sync_cron_job_status(pool, session_id: uuid.UUID, final_event: str) -> None:
+    """HITL 审批 resume 完成后，把结局映射回绑定任务的 last_status（best-effort）。"""
+    from app.services.cron_scheduler import _STATUS_BY_EVENT
+
+    mapped = _STATUS_BY_EVENT.get(final_event)
+    if mapped is None:
+        return
+    try:
+        await dbmod.sync_cron_job_status(pool, session_id, mapped)
+    except Exception:  # noqa: BLE001
+        logger.warning("sync cron job status after resume failed (session %s)", session_id)
