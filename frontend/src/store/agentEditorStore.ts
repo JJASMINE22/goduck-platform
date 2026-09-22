@@ -49,6 +49,10 @@ interface AgentEditorState {
   removeNode: (id: string) => void
   /** 就地合并字段 */
   updateFields: (id: string, patch: Partial<NodeFields>) => void
+  /** 关闭全树 cron 不兼容能力（allow_shell/shell_guard/interrupt_on +
+   *  根节点 allow_attachments/allow_knowledge）：切换为 cron 用途时预清除
+   *  （后端 validator 仍为最终权威，此处是编辑器侧的 UX 预防） */
+  clearCronIncompatibleCapabilities: () => void
   /** 换父级（重连）。守卫：根不动、自连/环阻断 */
   reparent: (id: string, newParentId: string) => void
   setName: (v: string) => void
@@ -153,6 +157,30 @@ export const useAgentEditorStore = create<AgentEditorState>()(
         const n = s.nodes?.find((x) => x.id === id)
         if (n) {
           Object.assign(n, patch)
+          s.dirty = true
+          s.configDirty = true
+        }
+      }),
+
+    clearCronIncompatibleCapabilities: () =>
+      set((s) => {
+        if (!s.nodes) return
+        let touched = false
+        for (const n of s.nodes) {
+          if (n.allow_shell || n.shell_guard || n.interrupt_on) {
+            n.allow_shell = false
+            n.shell_guard = false
+            n.interrupt_on = null
+            touched = true
+          }
+          // 附件/知识库为主代理（根节点）独有开关
+          if (n.is_main && (n.allow_attachments || n.allow_knowledge)) {
+            n.allow_attachments = false
+            n.allow_knowledge = false
+            touched = true
+          }
+        }
+        if (touched) {
           s.dirty = true
           s.configDirty = true
         }

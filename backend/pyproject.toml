@@ -17,6 +17,11 @@ dependencies = [
     "langchain-mcp-adapters>=0.1",
     "langgraph>=0.2",
     "langgraph-checkpoint-postgres>=2.0",
+    # Jev (TypeSafe System One) 官方 LangChain 集成：shell 守卫传输层
+    # (TypeSafeClassifier)。0.0.1a3 为预发布，上界 <0.0.2 防 alpha API 漂移
+    # （与 jev-1.13.0 锁版本的同一精神）；传递引入 httpx2（pydantic 出品的
+    # 新一代 HTTP 客户端），与既有 httpx 并存、互不干涉。
+    "langchain-typesafe>=0.0.1a3,<0.0.2",
     "deepagents>=0.7",
     "fastmcp>=2.0",
     "tavily-python>=0.5",

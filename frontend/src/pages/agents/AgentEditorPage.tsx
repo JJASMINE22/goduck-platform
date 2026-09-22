@@ -61,6 +61,9 @@ export function AgentEditorPage(): ReactNode {
   const setModelId = useAgentEditorStore((s) => s.setModelId)
   const setVisionModelId = useAgentEditorStore((s) => s.setVisionModelId)
   const setKind = useAgentEditorStore((s) => s.setKind)
+  const clearCronIncompatibleCapabilities = useAgentEditorStore(
+    (s) => s.clearCronIncompatibleCapabilities,
+  )
   const setValidation = useAgentEditorStore((s) => s.setValidation)
 
   const [histOpen, setHistOpen] = useState(false)
@@ -94,11 +97,12 @@ export function AgentEditorPage(): ReactNode {
   // —— 实时校验（防抖 600ms）：nodes → AgentConfig → /validate ——
   // 仅在「配置树已被改动」后触发：顶层名称/描述/模型改动不算配置改动，不打校验请求；
   // 未填 system_prompt 的空草稿不会即时弹红条，校验作为保存门禁而非持续报警（准则 F6）。
+  // usage 随 kind 盖章进根节点：后端「usage=cron ∧ 全树 allow_shell」校验需看到它。
   useEffect(() => {
     if (!nodes || !configDirty) return
     let config: AgentConfig
     try {
-      config = toConfigTree(nodes)
+      config = { ...toConfigTree(nodes), usage: kind }
     } catch {
       return
     }
@@ -113,13 +117,37 @@ export function AgentEditorPage(): ReactNode {
         })
     }, 600)
     return () => clearTimeout(t)
-  }, [nodes, configDirty, validate, setValidation])
+  }, [nodes, configDirty, kind, validate, setValidation])
+
+  // 切换为定时任务用途：既有配置含 cron 不兼容能力（shell/工具审批/附件/知识库）
+  // 时确认后预清除（后端 validator 仍为最终权威，覆盖 API 直写路径）
+  const handleKindChange = (v: 'chat' | 'cron') => {
+    const root = nodes?.find((n) => n.parentId === null)
+    const incompatible =
+      (nodes ?? []).some((n) => n.allow_shell || n.interrupt_on) ||
+      !!(root?.allow_attachments || root?.allow_knowledge)
+    if (v === 'cron' && incompatible) {
+      modal.confirm({
+        title: '切换为定时任务智能体？',
+        content:
+          '将关闭全部节点的 shell 与工具审批能力，并关闭附件、知识库能力（定时任务无人值守，无审批通道；附件/知识库暂不支持）。',
+        okText: '关闭这些能力',
+        cancelText: '取消',
+        onOk: () => {
+          clearCronIncompatibleCapabilities()
+          setKind(v)
+        },
+      })
+      return
+    }
+    setKind(v)
+  }
 
   const handleSave = () => {
     if (!nodes) return
     let config: AgentConfig
     try {
-      config = toConfigTree(nodes)
+      config = { ...toConfigTree(nodes), usage: kind }
     } catch {
       return toastError('配置无效：缺少主代理节点')
     }
@@ -296,14 +324,15 @@ export function AgentEditorPage(): ReactNode {
             />
           </div>
           {/* 用途类型：仅新建可选（创建后不可变）；编辑态显示徽标提示。
-              cron 型才可绑定定时任务，chat 型才可建聊天会话（绑定面互斥） */}
+              cron 型才可绑定定时任务，chat 型才可建聊天会话（绑定面互斥）；
+              切 cron 时若全树含 allow_shell 先确认再预清除 */}
           <div className="editor-field">
             <span className="editor-field__label">用途</span>
             {isCreate ? (
               <Select
                 style={{ width: 150 }}
                 value={kind}
-                onChange={(v) => setKind(v)}
+                onChange={(v) => handleKindChange(v)}
                 options={[
                   { value: 'chat', label: '聊天会话' },
                   { value: 'cron', label: '定时任务' },

@@ -9,6 +9,7 @@
 错误契约（镜像 agent/session 模式）：
 - KeyError → 404（agent / job 不存在）
 - FileExistsError → 409（任务名/会话标题冲突）
+- PermissionError → 409（绑定 allow_shell 智能体被拒：无人值守无审批通道）
 - ValueError → 422（业务校验：间隔边界、agent 归档等）
 """
 from __future__ import annotations
@@ -37,6 +38,8 @@ def _http_error(e: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=str(e))
     if isinstance(e, FileExistsError):
         return HTTPException(status_code=409, detail=f"任务名 '{e.args[0]}' 已存在（同用户内唯一）")
+    if isinstance(e, PermissionError):
+        return HTTPException(status_code=409, detail=str(e))
     return HTTPException(status_code=422, detail=str(e))
 
 
@@ -56,7 +59,7 @@ async def create_cron_job(body: CronJobCreate, request: Request):
             interval_minutes=body.interval_minutes,
             start_at=body.start_at,
         )
-    except (KeyError, FileExistsError, ValueError) as e:
+    except (KeyError, FileExistsError, ValueError, PermissionError) as e:
         raise _http_error(e)
     return await svc.get(job["id"])
 
@@ -95,7 +98,7 @@ async def update_cron_job(job_id: uuid.UUID, body: CronJobUpdate, request: Reque
             interval_provided="interval_minutes" in provided,
             start_at_provided="start_at" in provided,
         )
-    except (KeyError, FileExistsError, ValueError) as e:
+    except (KeyError, FileExistsError, ValueError, PermissionError) as e:
         raise _http_error(e)
     if job is None:
         raise HTTPException(status_code=404, detail="cron job not found")

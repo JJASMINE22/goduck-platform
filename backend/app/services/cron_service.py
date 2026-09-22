@@ -24,9 +24,19 @@ from typing import Optional
 from psycopg_pool import AsyncConnectionPool
 
 from app.config import Settings
+from app.core.schema_utils import cron_unattended_violations, tree_allows_shell
 from app.models import db as dbmod
 
 logger = logging.getLogger(__name__)
+
+_CRON_SHELL_REFUSAL = (
+    "定时任务不允许绑定开启 shell 能力的智能体（无人值守无审批通道）"
+)
+
+_CRON_UNATTENDED_REFUSAL = (
+    "定时任务不允许绑定开启工具审批/附件/知识库能力的智能体"
+    "（无人值守无审批通道，附件/知识库暂不支持）"
+)
 
 
 def normalize_start_at(start_at: Optional[datetime], now: datetime) -> datetime:
@@ -95,6 +105,20 @@ class CronService:
             raise ValueError(
                 f"智能体 '{agent_row['name']}' 为聊天会话类型（kind=chat），"
                 "定时任务须绑定 cron 型智能体（创建智能体时选定，不可变）"
+            )
+        # shell 禁令（绑定门以能力为准、不以声明为准——递归整树复查，覆盖
+        # usage=chat 配置与 YAML 直写路径；PermissionError → API 409）
+        if tree_allows_shell(agent_row.get("config_json") or {}):
+            raise PermissionError(
+                f"智能体 '{agent_row['name']}' 的配置树含 allow_shell 节点。{_CRON_SHELL_REFUSAL}"
+            )
+        # 无人值守禁用能力（审批/附件/知识库）同款整树复查（validator 为第一道门，
+        # 此处覆盖先绑定后改配置的时间差与直写 DB 旁路）
+        violations = cron_unattended_violations(agent_row.get("config_json") or {})
+        if violations:
+            raise PermissionError(
+                f"智能体 '{agent_row['name']}' 的配置树含 "
+                f"{'、'.join(violations)}。{_CRON_UNATTENDED_REFUSAL}"
             )
 
         # 同用户任务名唯一预检（竞态兜底在 db 层 UniqueViolation → FileExistsError）
@@ -204,6 +228,18 @@ class CronService:
             raise ValueError(f"智能体 '{agent_row['name']}' 已归档，不能启用/触发定时任务")
         if agent_row.get("kind") != "cron":
             raise ValueError("绑定的智能体非定时任务类型（kind!=cron），请换绑后再启用")
+        # 时间差防御：先建任务、后改 agent 开 shell —— 重新启用时复查配置树
+        if tree_allows_shell(agent_row.get("config_json") or {}):
+            raise PermissionError(
+                f"智能体 '{agent_row['name']}' 的配置树含 allow_shell 节点。{_CRON_SHELL_REFUSAL}"
+            )
+        # 时间差防御（同上）：审批/附件/知识库禁用能力复查
+        violations = cron_unattended_violations(agent_row.get("config_json") or {})
+        if violations:
+            raise PermissionError(
+                f"智能体 '{agent_row['name']}' 的配置树含 "
+                f"{'、'.join(violations)}。{_CRON_UNATTENDED_REFUSAL}"
+            )
 
     async def _rename_session_title(self, session_id: uuid.UUID, name: str) -> None:
         """专用会话标题跟随任务名。标题唯一索引撞车（用户手建了同名会话）时

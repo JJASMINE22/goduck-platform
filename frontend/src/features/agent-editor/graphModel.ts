@@ -59,6 +59,9 @@ export function toConfigTree(nodes: AgentGraphNode[]): AgentConfig {
       allow_attachments: node.allow_attachments,
       allow_knowledge: node.allow_knowledge,
       allow_shell: node.allow_shell,
+      shell_guard: node.shell_guard,
+      // 用途声明仅根节点携带（子代理 undefined → 序列化时丢弃）
+      usage: node.parentId === null ? node.usage : undefined,
       task_planning: node.task_planning,
     }
     cfg.subagents = kids.length ? kids.map(build) : []

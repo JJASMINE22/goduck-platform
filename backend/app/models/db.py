@@ -196,6 +196,29 @@ CREATE TABLE IF NOT EXISTS kb_document (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_kbdoc_kb ON kb_document(kb_id);
+
+-- ============================ Jev Shell 守卫审计 ============================
+-- append-only：每条非白名单 execute 命令一行（含 Jev 调用失败行）。Jev 无
+-- rationale 输出，此表是唯一审计与灰度标定数据源（分歧样本 = 判决与人工
+-- 决议相左的行）。增长可控（每命令一行），暂不做清理任务，按需归档。
+CREATE TABLE IF NOT EXISTS jev_decision (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- 可空且不设 FK 级联：审计数据独立于会话生命周期（会话删除后审计仍可追溯）
+    session_id      UUID,
+    thread_id       VARCHAR NOT NULL,
+    agent_id        UUID NOT NULL,
+    tool_call_id    VARCHAR NOT NULL,
+    mode            VARCHAR NOT NULL,               -- shadow | enforce
+    source          VARCHAR NOT NULL,               -- rule_whitelist | rule_blacklist | jev | unavailable
+    verdict         VARCHAR NOT NULL,               -- auto_run | ask_human
+    command         TEXT NOT NULL,
+    state_rendered  TEXT,                           -- 实际发送的 state（截断后）
+    answers         JSONB,                          -- Jev 原始返回（概率+置信度+usage）
+    latency_ms      INT,
+    model           VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_jev_decision_agent ON jev_decision(agent_id, created_at DESC);
 """
 
 # Idempotent column migrations for pre-existing tables (CREATE TABLE IF NOT
@@ -1738,3 +1761,53 @@ async def reactivate_cron_session(pool: AsyncConnectionPool, session_id: uuid.UU
                     (session_id,),
                 )
             return await cur.fetchone()
+
+
+async def enabled_cron_jobs_with_agent_config(pool: AsyncConnectionPool) -> list[dict]:
+    """启用中任务 + 其 agent 的 config_json（启动期 shell 能力扫描用）。
+
+    含 config 树即可在应用层递归判 allow_shell，无需逐任务二次查询。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT j.id, j.name, j.agent_id, a.config_json "
+                "FROM cron_job j JOIN agent a ON a.id = j.agent_id "
+                "WHERE j.enabled"
+            )
+            return await cur.fetchall()
+
+
+# ============================ Jev decision audit ops =======================
+
+
+async def insert_jev_decision(
+    pool: AsyncConnectionPool,
+    *,
+    session_id: Optional[uuid.UUID],
+    thread_id: str,
+    agent_id: uuid.UUID,
+    tool_call_id: str,
+    mode: str,
+    source: str,
+    verdict: str,
+    command: str,
+    state_rendered: Optional[str],
+    answers: Optional[dict],
+    latency_ms: Optional[int],
+    model: Optional[str],
+) -> None:
+    """写入一行 shell 守卫审计（append-only；由 JevAuditSink 后台任务调用）。
+
+    失败由调用方 suppress——审计缺失不阻断 HITL 主链路（门控本身 fail-closed）。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO jev_decision (session_id, thread_id, agent_id, tool_call_id, "
+                "mode, source, verdict, command, state_rendered, answers, latency_ms, model) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (session_id, thread_id, agent_id, tool_call_id, mode, source, verdict,
+                 command, state_rendered, Json(answers) if answers is not None else None,
+                 latency_ms, model),
+            )

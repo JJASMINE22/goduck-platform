@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -136,6 +136,50 @@ class Settings(BaseSettings):
     # 页文本层字符数低于该阈值 → 视为扫描页触发 OCR（原生文本层页零成本直通）。
     kb_pdf_ocr_min_chars: int = Field(default=16, ge=1)
 
+    # ---- Jev Shell 守卫（allow_shell HITL 减负；plan: jev-shell-guard）----
+    # 判决只决定"是否跳过人工"，HITL 保持 fail-closed 基底：Jev 不可用/超时/解析
+    # 失败一律回落"每条问人"（= 现状行为），绝无 fail-open 分支。
+    jev_enabled: bool = Field(
+        default=False,
+        description="Jev 守卫总开关：false 时构建回落 interrupt_on={'execute': True}（现状），"
+        "一切注入逻辑不生效。",
+    )
+    typesafe_api_key: str = Field(
+        default="",
+        description="TypeSafe AI API key（jev_enabled=true 时必填；缺失→不启用+启动警告，不崩）。",
+    )
+    jev_base_url: str = Field(
+        default="https://api.typesafe.ai",
+        description="TypeSafe REST 端点根（POST {base}/v1/systemone）。",
+    )
+    jev_model: str = Field(
+        default="jev-1.13.0",
+        description="Jev 模型版本。锁具体版本号、不用 jev-latest 别名（防静默行为漂移）。",
+    )
+    jev_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="同步调用硬超时（秒）。when/description 在 after_model 内同步执行，"
+        "超时即 fail-closed 问人。",
+    )
+    jev_mode: str = Field(
+        default="shadow",
+        description="shadow=只记录标注、行为与现状一致（灰度观察）；enforce=灰区放行生效。"
+        "必须用 shadow 期分歧样本重标定 jev_safe_threshold 后才可切 enforce。",
+    )
+    jev_safe_threshold: float = Field(
+        default=0.6,
+        ge=0.5,
+        le=1.0,
+        description="自动放行阈值 T：概率落在安全侧且该题置信度达标的票数全过才放行。"
+        "占位值，切 enforce 前须重标定。",
+    )
+    jev_state_max_chars: int = Field(
+        default=4000,
+        ge=200,
+        description="state 渲染截断上限（字符，含近期命令历史；API 上限 64k）。",
+    )
+
     # ---- AgentRegistry cache tuning ----
     registry_max_entries: int = 16
     registry_ttl_seconds: int = 3600
@@ -217,6 +261,15 @@ class Settings(BaseSettings):
     )
 
     # ---- Derived path properties (resolved relative to local_root) ----
+    @field_validator("jev_mode")
+    @classmethod
+    def _validate_jev_mode(cls, v: str) -> str:
+        """枚举收口（fail-fast）：拼错 mode 名不得静默按 shadow/enforce 之外的语义运行。"""
+        allowed = {"shadow", "enforce"}
+        if v not in allowed:
+            raise ValueError(f"jev_mode 须为 {'/'.join(sorted(allowed))}（当前 {v!r}）")
+        return v
+
     @property
     def local_dir(self) -> Path:
         root = Path(self.local_root)

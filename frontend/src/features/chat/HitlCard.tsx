@@ -139,6 +139,24 @@ function ActionDecisionCard({
           工具调用待审批：<code>{name}</code>
         </Typography.Text>
       </Flex>
+      {action.description ? (
+        <pre
+          style={{
+            margin: '0 0 8px',
+            padding: '6px 8px',
+            background: 'var(--color-bg-container)',
+            border: '1px solid var(--color-border-soft)',
+            borderRadius: 6,
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+            color: 'var(--color-text-secondary)',
+          }}
+        >
+          {action.description}
+        </pre>
+      ) : null}
       <pre
         style={{
           margin: '0 0 12px',

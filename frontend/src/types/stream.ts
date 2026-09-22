@@ -129,6 +129,9 @@ export type UsageTotals = Omit<UsagePayload, 'id'>
 export interface ActionRequest {
   name: string
   args: Record<string, unknown>
+  /** 审批请求说明（InterruptOnConfig.description 工厂产物；如 Jev 概率标注）。
+   *  TypedDict 原样透传（stream_adapter._extract_interrupt 无过滤），契约纯增量。 */
+  description?: string
 }
 
 /** deepagents review_configs[i]：单条 action_request 的审核约束 */

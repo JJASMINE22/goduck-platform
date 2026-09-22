@@ -11,6 +11,8 @@ export interface CapabilitiesState {
   ready: boolean
   kb_enabled: boolean
   voice_enabled: boolean
+  /** Jev shell 守卫可用（编辑器 shell_guard 开关可见性） */
+  jev_enabled: boolean
 }
 
 export function useCapabilities(): CapabilitiesState {
@@ -25,5 +27,6 @@ export function useCapabilities(): CapabilitiesState {
     ready: !!cap,
     kb_enabled: !!cap?.kb_enabled,
     voice_enabled: !!cap?.voice_enabled,
+    jev_enabled: !!cap?.jev_enabled,
   }
 }

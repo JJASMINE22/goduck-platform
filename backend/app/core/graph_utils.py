@@ -11,15 +11,18 @@ Two creation paths both supported (plan handover):
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from deepagents import CompiledSubAgent, create_deep_agent
 from langchain.agents.middleware.types import AgentMiddleware
 from langgraph.graph.state import CompiledStateGraph
 
 from app.core.core_utils import _build_backend, build_rubric_middleware, build_todo_middleware
-from app.core.schema_utils import AgentConfig
+from app.core.schema_utils import AgentConfig, _tree_interrupt_labels
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,6 +37,66 @@ class BuildContext:
     memories_dir: str = ""
     workspace_dir: str = ""
     skills_dir: str = ""
+    # Jev shell 守卫工厂（构建期注入，None=能力未启用/未开守卫）。
+    # 每次调用产出独立的 (when, description) 闭包对（含独立缓存），供本节点
+    # interrupt_on["execute"] 使用；阈值随闭包烘焙（TTL 内改配置不生效，plan §三）。
+    jev_gate_factory: Optional[Callable[[], tuple[Callable, Callable]]] = None
+
+
+def _strip_cron_unattended(root: AgentConfig) -> None:
+    """usage=cron 构建期兜底剥离（validator 为第一道门，此处覆盖直写 DB 等旁路）。
+
+    就地清空全树 interrupt_on 与 allow_knowledge：无人值守运行期不触发 HITL
+    中断（interrupt 事件在 cron 下无消费方），不注入 KB 检索纪律提示（固定
+    prompt 无锚点表，注入反而诱导编造 kb_ids）。剥离发生时打 warning
+    （fail-visible）。allow_attachments 不参与图构建，无需剥离。
+    """
+    labels = _tree_interrupt_labels(root)
+    if root.allow_knowledge:
+        labels.append("allow_knowledge")
+    if not labels:
+        return
+
+    def walk(node: AgentConfig) -> None:
+        node.interrupt_on = None
+        node.allow_knowledge = False
+        for sa in node.subagents or []:
+            walk(sa)
+
+    walk(root)
+    logger.warning(
+        "usage=cron agent: stripped unattended-forbidden capabilities at build (%s); "
+        "fix the agent config to silence this",
+        "; ".join(labels),
+    )
+
+
+def resolve_execute_interrupt(
+    cfg_allow_shell: bool,
+    cfg_shell_guard: bool,
+    jev_gate_factory: Optional[Callable[[], tuple[Callable, Callable]]],
+) -> Optional[dict]:
+    """计算 execute 的 interrupt_on 覆盖项（纯函数，便于单测）。
+
+    Returns:
+        None: 未开启 allow_shell（不注入，execute 键不存在）。
+        {"execute": True}: 原行为兜底（守卫未开 / Jev 能力未启用）。
+        {"execute": {allowed_decisions/when/description}}: 守卫生效——
+        值升级为 dict 形态，键永存（无条目=默认自动放行，execute 键不可删）。
+        allowed_decisions 收窄为三态（去掉 respond：shell 审批无"代答"语义）。
+    """
+    if not cfg_allow_shell:
+        return None
+    if cfg_shell_guard and jev_gate_factory is not None:
+        when_fn, desc_fn = jev_gate_factory()
+        return {
+            "execute": {
+                "allowed_decisions": ["approve", "edit", "reject"],
+                "when": when_fn,
+                "description": desc_fn,
+            }
+        }
+    return {"execute": True}
 
 
 def _has_skills_anywhere(agent_config: AgentConfig) -> bool:
@@ -121,6 +184,9 @@ def create_agent_recursive(
     """
     assert isinstance(agent_config, AgentConfig)
     assert ctx is not None, "BuildContext (ctx) is required"
+    # usage=cron 兜底剥离（仅根进入：递归调用 is_main=False 自然跳过）
+    if agent_config.is_main and agent_config.usage == "cron":
+        _strip_cron_unattended(agent_config)
     tools = tools or []
     _cp = ctx.checkpointer
 
@@ -130,6 +196,7 @@ def create_agent_recursive(
     cfg_allow_shell = agent_config.allow_shell
     cfg_task_planning = agent_config.task_planning
     cfg_allow_knowledge = getattr(agent_config, "allow_knowledge", False)
+    cfg_shell_guard = getattr(agent_config, "shell_guard", False)
     cfg_has_skills = _has_skills_anywhere(agent_config)
 
     # rubric middleware comes from config, independent of agent tools; read from
@@ -192,11 +259,14 @@ def create_agent_recursive(
     agent_tools = [t for t in tools if t.name in agent_config.get("tool_names", [])]
     agent_skills = agent_config.get("skills", None)
     interrupt_on = agent_config.get("interrupt_on", None)
-    # 强制 execute HITL：allow_shell 一开，每条 shell 命令必须人工审批（Route B
+    # 强制 execute HITL：allow_shell 一开，每条 shell 命令必须过审（Route B
     # 唯一靠谱的护栏）。execute 由 middleware 自动注册、不在 tool_names，故前端
-    # interrupt UI 无法勾选——必须在此自动注入。
-    if cfg_allow_shell:
-        interrupt_on = {**(interrupt_on or {}), "execute": True}
+    # interrupt UI 无法勾选——必须在此自动注入。shell_guard 开启且 Jev 能力可用时
+    # 值升级为 dict 形态（when 门控），否则保持 True（现状兜底）。语义：值升级，
+    # 键永存（interrupt_on 无条目=默认自动放行，execute 键不可删）。
+    overlay = resolve_execute_interrupt(cfg_allow_shell, cfg_shell_guard, ctx.jev_gate_factory)
+    if overlay is not None:
+        interrupt_on = {**(interrupt_on or {}), **overlay}
 
     # Middleware mounting strategy:
     # - tool-related middleware (e.g. error handling) only when tools exist (preserves HITL)
@@ -267,6 +337,9 @@ def create_agent_dictionary(
     """
     assert isinstance(agent_config, AgentConfig)
     assert ctx is not None, "BuildContext (ctx) is required"
+    # usage=cron 兜底剥离（本函数只以根节点进入）
+    if agent_config.is_main and agent_config.usage == "cron":
+        _strip_cron_unattended(agent_config)
     tools = tools or []
     _cp = ctx.checkpointer
 
@@ -276,6 +349,7 @@ def create_agent_dictionary(
     cfg_allow_shell = agent_config.allow_shell
     cfg_task_planning = agent_config.task_planning
     cfg_allow_knowledge = getattr(agent_config, "allow_knowledge", False)
+    cfg_shell_guard = getattr(agent_config, "shell_guard", False)
     cfg_has_skills = _has_skills_anywhere(agent_config)
 
     # main agent rubric (from config), decoupled from tools
@@ -329,9 +403,10 @@ def create_agent_dictionary(
     main_agent_skills = agent_config.get("skills", None)
     main_agent_interrupt_on = agent_config.get("interrupt_on", None)
     # 强制 execute HITL（同 create_agent_recursive；Route B 唯一靠谱护栏）。
-    
-    if cfg_allow_shell:
-        main_agent_interrupt_on = {**(main_agent_interrupt_on or {}), "execute": True}
+    # shell_guard + Jev 可用时值升级为 when 门控（dict 形态），否则 True 兜底。
+    overlay = resolve_execute_interrupt(cfg_allow_shell, cfg_shell_guard, ctx.jev_gate_factory)
+    if overlay is not None:
+        main_agent_interrupt_on = {**(main_agent_interrupt_on or {}), **overlay}
 
     tool_middleware = middleware if main_agent_tools and middleware else ()
     main_middleware: list = (

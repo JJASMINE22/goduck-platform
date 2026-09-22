@@ -33,6 +33,9 @@ export interface AgentConfig {
   allow_attachments?: boolean
   allow_knowledge?: boolean // 会话内知识库（RAG）开关，仅主代理
   allow_shell?: boolean // 本地 shell 执行（execute 工具）开关，主代理与子代理均可设（与 workspace 同构，per-node）
+  shell_guard?: boolean // Jev shell 守卫开关（仅 allow_shell=true 且后端 jev_enabled 时生效；白名单直通 + 灰区概率门控）
+  /** 用途声明（仅根节点可设，随 config_json 持久化，纯元数据）。'cron'=定时任务智能体，全树禁 allow_shell */
+  usage?: 'chat' | 'cron'
   task_planning?: boolean // 任务规划（TodoListMiddleware / write_todos）开关，per-node 不继承，主/子代理均可设
 }
 

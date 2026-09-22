@@ -10,8 +10,10 @@
   错过 N 个槽位不补发，最多在恢复后跑一次。
 - tick 与执行解耦：tick 只做判断+认领+派发（毫秒级返回），执行在独立 task
   里过信号量（全局并发上限）+ per-job 运行锁（防重叠）。
-- 无人值守 HITL：后台运行命中 interrupt 时挂起（last_status='awaiting_approval'），
-  后续槽位持续跳过；用户经 /sessions/{id}/resume 现有闭环补批后自动恢复触发。
+- 无人值守禁 HITL：cron 智能体配置层已禁 interrupt_on（validator 拒绝 +
+  构建期剥离双保险），运行期不应出现中断；万一旁路触发按 error run 计
+  （fail-visible）。tick 门②/run_now 对 awaiting_approval 的挂起检查保留为
+  防御性遗留（兼容直写 DB 等异常路径，经 /sessions/{id}/resume 补批后恢复）。
 - 每轮处女线程（fresh context）：注入前重置专用线程（adelete_thread 硬删
   messages/摘要侧通道/files/checkpoint_writes），模型只见系统提示+平台记忆+
   本轮 prompt——轮次相互独立，累积历史只会线性抬高输入成本、并让旧轮产出
@@ -31,6 +33,7 @@ from typing import Optional
 
 from langgraph.graph.state import CompiledStateGraph
 
+from app.core.schema_utils import cron_unattended_violations, tree_allows_shell
 from app.core.user_scoped_backend import user_workspace_path
 from app.deps import AppState, SimpleUser
 from app.models import db as dbmod
@@ -42,10 +45,11 @@ except ImportError:  # pragma: no cover - depends on installed versions
 
 logger = logging.getLogger(__name__)
 
-# 流终止事件（done/interrupt/error）→ 任务运行状态
+# 流终止事件（done/error）→ 任务运行状态。interrupt 不在此映射：cron 已禁
+# HITL（validator + 构建期剥离双保险），万一仍出现中断按 error 兜底
+# （fail-visible，见 _invoke），绝不进入 awaiting_approval 挂起。
 _STATUS_BY_EVENT = {
     "done": "ok",
-    "interrupt": "awaiting_approval",
     "error": "error",
 }
 
@@ -127,7 +131,8 @@ class CronScheduler:
             if jid in self._running:
                 await self._skip(job, now, "overlap: 上次运行尚未结束")
                 continue
-            # ② HITL 挂起：等用户审批期间不再注入新轮次（新轮次会取消待审批）
+            # ② HITL 挂起（防御性遗留门：interrupt 已映射 error，正常路径不再
+            # 产生该状态；保留兜底直写 DB / 旁路异常，避免无人消费的挂起僵尸）
             if job["last_status"] == "awaiting_approval":
                 await self._skip(job, now, "awaiting_approval: 等待用户审批挂起中")
                 continue
@@ -171,6 +176,14 @@ class CronScheduler:
         thread_id = job.get("thread_id")
         if thread_id and self.st.stream_tracker.is_streaming(thread_id):
             return False, "任务会话正被占用（审批流进行中），请稍后重试"
+        # 无人值守禁用能力（纵深第三层，fail-closed：手动路径直接 409）：
+        # shell / 工具审批 / 附件 / 知识库
+        violations = await self._agent_unattended_violations(job["agent_id"])
+        if violations:
+            return False, (
+                f"绑定智能体配置树含无人值守禁用能力（{'、'.join(violations)}），"
+                "任务不可执行（请关闭对应能力或换绑）"
+            )
         self._dispatch(job, trigger="manual")
         return True, "started"
 
@@ -197,10 +210,23 @@ class CronScheduler:
                 )
         status, err = "error", None
         try:
-            async with self._sem:
-                status, err = await asyncio.wait_for(
-                    self._invoke(job), timeout=self.settings.cron_run_timeout_s
+            # 触发前防御复查（plan §七.2，纵深第三层）：无人值守禁用能力
+            # （shell/审批/附件/知识库）。不静默跳过——计为 error run
+            # （fail-visible），连续失败照常熔断。
+            violations = await self._agent_unattended_violations(job["agent_id"])
+            if violations:
+                status, err = (
+                    "error",
+                    (
+                        f"绑定智能体配置树含无人值守禁用能力（{'、'.join(violations)}），"
+                        "任务不可执行（请关闭对应能力或换绑后重试）"
+                    ),
                 )
+            else:
+                async with self._sem:
+                    status, err = await asyncio.wait_for(
+                        self._invoke(job), timeout=self.settings.cron_run_timeout_s
+                    )
         except asyncio.TimeoutError:
             status, err = "error", f"运行超时（>{int(self.settings.cron_run_timeout_s)}s）已中止"
         except Exception as e:  # noqa: BLE001 — 单任务失败熔断不外溢
@@ -220,11 +246,25 @@ class CronScheduler:
             else:
                 logger.info("cron job '%s' run finished (%s)", job.get("name"), status)
 
+    async def _agent_unattended_violations(self, agent_id: uuid.UUID) -> list[str]:
+        """防御性复查 agent 当前配置树的无人值守禁用能力（以能力为准，不以
+        声明为准）：shell + 审批/附件/知识库。agent 行缺失按"无违规"处理——
+        后续 get_or_build 自会以 KeyError 计为 error run，此处不重复拦截。"""
+        row = await dbmod.get_agent(self.st.pool, agent_id)
+        if row is None:
+            return []
+        config = row.get("config_json") or {}
+        violations = cron_unattended_violations(config)
+        if tree_allows_shell(config):
+            violations.append("allow_shell")
+        return violations
+
     async def _invoke(self, job: dict) -> tuple[str, Optional[str]]:
         """一次任务执行：取图 → 会话保障 → 线程重置 → 与普通会话完全同构的注入。
 
         消费 StreamAdapter 事件流（无 SSE sink）：usage 即时入库、终态事件
-        （done/interrupt/error 契约）映射为任务状态。文件变更徽标/摘要等
+        （done/interrupt/error 契约）映射为任务状态（interrupt 计为 error：
+        cron 禁 HITL，中断无人消费）。文件变更徽标/摘要等
         中间件行为与用户会话零差异（_run 内部 activate 的 collector 照常工作）。
 
         上下文策略（与聊天会话的分野）：每轮注入前重置线程
@@ -270,6 +310,17 @@ class CronScheduler:
 
         # 契约：流必以 done | interrupt | error 收尾；防御性兜底到 error。
         ftype = final.type if final is not None else "error"
+        if ftype == "interrupt":
+            # cron 已禁 HITL（validator 拒绝 + 构建期剥离双保险），此处为旁路
+            # 兜底：中断在无人值守下无消费方，计为 error run（fail-visible），
+            # 绝不进入 awaiting_approval 挂起（会无限跳槽成僵尸任务）。
+            return (
+                "error",
+                (
+                    "运行触发了工具审批中断（cron 智能体已禁用 HITL），"
+                    "请检查智能体配置的 interrupt_on"
+                ),
+            )
         status = _STATUS_BY_EVENT.get(ftype, "error")
         err = final.payload.get("message") if (final is not None and ftype == "error") else None
         return status, err

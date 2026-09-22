@@ -24,6 +24,7 @@ from app.core.core_utils import ToolErrorHandlingMiddleware
 from app.core.graph_utils import BuildContext, create_agent_recursive
 from app.core.schema_utils import AgentConfig
 from app.models import db as dbmod
+from app.services.jev_client import JevAuditSink
 from app.services.mcp_lifecycle import MCPLifecycle
 from app.services.model_store import ModelStore
 
@@ -41,6 +42,7 @@ class AgentRegistry:
         store,
         mcp_lifecycle: MCPLifecycle,
         model_store: ModelStore,
+        jev_audit: Optional[JevAuditSink] = None,
     ):
         self.pool = pool
         self.settings = settings
@@ -48,11 +50,22 @@ class AgentRegistry:
         self.store = store
         self.mcp = mcp_lifecycle
         self.model_store = model_store
+        self.jev_audit = jev_audit
         self._cache: OrderedDict[str, tuple[CompiledStateGraph, float]] = OrderedDict()
         self._locks: dict[str, asyncio.Lock] = {}
         self._guard = asyncio.Lock()
 
-    def _ctx(self, model) -> BuildContext:
+    def _jev_gate_factory(self, agent_id: uuid.UUID):
+        """Jev 守卫工厂（jev_enabled=false / key 缺失 / 审计未就绪时返回 None，
+        构建回落 {'execute': True} 现状行为）。agent_id 烘焙进闭包供审计列。"""
+        s = self.settings
+        if not (s.jev_enabled and s.typesafe_api_key and self.jev_audit is not None):
+            return None
+        from app.core.jev_gate import build_shell_guard
+
+        return lambda: build_shell_guard(s, self.jev_audit.submit, agent_id)
+
+    def _ctx(self, model, agent_id: Optional[uuid.UUID] = None) -> BuildContext:
         s = self.settings
         return BuildContext(
             model=model,
@@ -63,6 +76,7 @@ class AgentRegistry:
             memories_dir=str(s.memories_dir),
             workspace_dir=str(s.workspace_dir),
             skills_dir=str(s.skills_dir),
+            jev_gate_factory=self._jev_gate_factory(agent_id) if agent_id else None,
         )
 
     async def get_or_build(self, agent_id: uuid.UUID) -> CompiledStateGraph:
@@ -103,7 +117,7 @@ class AgentRegistry:
             agent_config,
             all_tools,
             middleware=middleware,
-            ctx=self._ctx(model),
+            ctx=self._ctx(model, agent_id=agent_id),
         )
         logger.info("built agent '%s' (id=%s)", agent_row["name"], agent_id)
         return agent

@@ -110,6 +110,8 @@ class AppState:
         self.vector_factory = None
         self.knowledge_service = None
         self.ingest_pool = None
+        # Jev shell 守卫审计 sink — None when jev 未启用/key 缺失（lifespan 装配）
+        self.jev_audit = None
 
     async def startup(self) -> None:
         s = self.settings

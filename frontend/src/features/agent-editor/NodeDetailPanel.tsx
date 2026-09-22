@@ -1,11 +1,14 @@
 /* 节点详情面板（右侧）—— 编辑画布上选中的节点字段。
    按 selectedNodeId 从 store 取节点，updateFields(id, patch) 就地合并。
    主代理独有 memory/allow_attachments；子代理独有 name/description/is_dicted；workspace 主子代理均可。
+   cron 用途智能体全树隐藏 shell / 工具审批开关，主代理隐藏附件/知识库开关
+   （无人值守无审批通道；附件/知识库暂不支持。后端 validator 为最终权威）。
    最终合法性以后端 /validate 为准（准则 F6）。 */
 import { Button, Flex, Input, Select, Switch, Tag, TreeSelect, Typography } from 'antd'
 import { type ReactNode } from 'react'
-import { MousePointerClick, Trash2 } from 'lucide-react'
+import { MousePointerClick, ShieldCheck, Trash2 } from 'lucide-react'
 import { useAgentEditorStore } from '@/store/agentEditorStore'
+import { useCapabilities } from '@/hooks/useCapabilities'
 import { useMcpTools } from '@/hooks/useMcp'
 import { useSkills } from '@/hooks/useSkills'
 import { RubricEditor } from './RubricEditor'
@@ -17,8 +20,10 @@ export function NodeDetailPanel(): ReactNode {
   const selectedId = useAgentEditorStore((s) => s.selectedNodeId)
   const updateFields = useAgentEditorStore((s) => s.updateFields)
   const removeNode = useAgentEditorStore((s) => s.removeNode)
+  const kind = useAgentEditorStore((s) => s.kind)
   const tools = useMcpTools()
   const skills = useSkills()
+  const capabilities = useCapabilities()
 
   const node = nodes?.find((n) => n.id === selectedId) ?? null
 
@@ -146,25 +151,35 @@ export function NodeDetailPanel(): ReactNode {
           />
         </Field>
 
-        <Field label="工具调用审批（interrupt_on，仅已选工具）">
-          <TreeSelect
-            treeCheckable
-            showCheckedStrategy={TreeSelect.SHOW_CHILD}
-            maxTagCount={2}
-            style={{ width: '100%' }}
-            placeholder={interruptTreeData.length ? '勾选需要人工审批的工具（按 server 折叠）' : '请先在上方选择工具'}
-            value={interruptKeys}
-            onChange={(v) => {
-              const arr = (v as string[]) ?? []
-              patch({ interrupt_on: arr.length ? Object.fromEntries(arr.map((k) => [k, true])) : null })
-            }}
-            treeData={interruptTreeData}
-            showSearch
-            treeNodeFilterProp="label"
-            allowClear
-            disabled={!interruptTreeData.length}
-          />
-        </Field>
+        {/* cron 用途智能体不提供工具审批：全树隐藏（主/子代理节点一致），
+            原位提示（后端 validator 拒绝 usage=cron ∧ interrupt_on，为最终权威） */}
+        {kind === 'cron' ? (
+          <Field label="工具调用审批（interrupt_on，仅已选工具）">
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              定时任务智能体不提供工具审批（无人值守，工具自动执行）
+            </Typography.Text>
+          </Field>
+        ) : (
+          <Field label="工具调用审批（interrupt_on，仅已选工具）">
+            <TreeSelect
+              treeCheckable
+              showCheckedStrategy={TreeSelect.SHOW_CHILD}
+              maxTagCount={2}
+              style={{ width: '100%' }}
+              placeholder={interruptTreeData.length ? '勾选需要人工审批的工具（按 server 折叠）' : '请先在上方选择工具'}
+              value={interruptKeys}
+              onChange={(v) => {
+                const arr = (v as string[]) ?? []
+                patch({ interrupt_on: arr.length ? Object.fromEntries(arr.map((k) => [k, true])) : null })
+              }}
+              treeData={interruptTreeData}
+              showSearch
+              treeNodeFilterProp="label"
+              allowClear
+              disabled={!interruptTreeData.length}
+            />
+          </Field>
+        )}
 
         {isMain ? (
           <>
@@ -176,17 +191,36 @@ export function NodeDetailPanel(): ReactNode {
                 </Typography.Text>
               </Flex>
             </Field>
-            <Field label="附件能力（allow_attachments，仅主代理）">
-              <Flex align="center" gap={8}>
-                <Switch checked={!!node.allow_attachments} onChange={(v) => patch({ allow_attachments: v })} />
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  开启后才可下挂视觉模型（基座无视觉时图像经其描述预消费）
-                </Typography.Text>
-              </Flex>
-            </Field>
-            <Field label="知识库能力（allow_knowledge，仅主代理）">
-              <Switch checked={!!node.allow_knowledge} onChange={(v) => patch({ allow_knowledge: v })} />
-            </Field>
+            {kind === 'cron' ? (
+              <>
+                {/* cron 用途智能体不提供附件/知识库（任务输入为固定 prompt，
+                    无消息装配通道；后端 validator 为最终权威） */}
+                <Field label="附件能力（allow_attachments，仅主代理）">
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    定时任务智能体不支持附件能力（任务输入为固定 prompt）
+                  </Typography.Text>
+                </Field>
+                <Field label="知识库能力（allow_knowledge，仅主代理）">
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    定时任务智能体暂不支持知识库能力
+                  </Typography.Text>
+                </Field>
+              </>
+            ) : (
+              <>
+                <Field label="附件能力（allow_attachments，仅主代理）">
+                  <Flex align="center" gap={8}>
+                    <Switch checked={!!node.allow_attachments} onChange={(v) => patch({ allow_attachments: v })} />
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      开启后才可下挂视觉模型（基座无视觉时图像经其描述预消费）
+                    </Typography.Text>
+                  </Flex>
+                </Field>
+                <Field label="知识库能力（allow_knowledge，仅主代理）">
+                  <Switch checked={!!node.allow_knowledge} onChange={(v) => patch({ allow_knowledge: v })} />
+                </Field>
+              </>
+            )}
           </>
         ) : (
           <Field label="dicted 模式（仅子代理）">
@@ -208,21 +242,51 @@ export function NodeDetailPanel(): ReactNode {
           </Flex>
         </Field>
 
-        <Field label="Shell 执行（allow_shell）">
-          <Flex vertical gap={4}>
-            <Flex align="center" gap={8}>
-              <Switch checked={!!node.allow_shell} onChange={(v) => patch({ allow_shell: v })} />
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                开启后获得 execute 工具（per-user 工作目录，每条命令强制人工审批）。主代理与子代理均可设。
-              </Typography.Text>
+        {/* cron 用途智能体不提供 shell 能力：全树隐藏开关（主/子代理节点一致），
+            原位提示（后端 validator 拒绝 usage=cron ∧ allow_shell，为最终权威） */}
+        {kind === 'cron' ? (
+          <Field label="Shell 执行（allow_shell）">
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              定时任务智能体不提供 shell 能力（无人值守无审批通道）
+            </Typography.Text>
+          </Field>
+        ) : (
+          <Field label="Shell 执行（allow_shell）">
+            <Flex vertical gap={4}>
+              <Flex align="center" gap={8}>
+                <Switch
+                  checked={!!node.allow_shell}
+                  onChange={(v) => patch({ allow_shell: v, shell_guard: v ? node.shell_guard : false })}
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  开启后获得 execute 工具（per-user 工作目录，每条命令强制人工审批）。主代理与子代理均可设。
+                </Typography.Text>
+              </Flex>
+              {node.allow_shell ? (
+                <Typography.Text type="warning" style={{ fontSize: 12 }}>
+                  ⚠ 本地 shell 非安全边界：命令可访问宿主机任意路径（含其他用户文件与系统密钥），仅适用于单信任域部署。
+                </Typography.Text>
+              ) : null}
+              {/* shell_guard：allow_shell 开启 ∧ 后端 jev 能力可用时可见（DESIGN F2 能力驱动） */}
+              {node.allow_shell && capabilities.jev_enabled ? (
+                <Flex align="flex-start" gap={8} style={{ marginTop: 4 }}>
+                  <Switch
+                    size="small"
+                    checked={!!node.shell_guard}
+                    onChange={(v) => patch({ shell_guard: v })}
+                  />
+                  <Flex align="center" gap={4}>
+                    <ShieldCheck size={13} />
+                    <Typography.Text style={{ fontSize: 12 }}>
+                      Jev 守卫：只读命令直通；灰区命令按校准概率门控（shadow 仅标注 / enforce
+                      高置信自动放行）；包安装与判定失败一律问人。
+                    </Typography.Text>
+                  </Flex>
+                </Flex>
+              ) : null}
             </Flex>
-            {node.allow_shell ? (
-              <Typography.Text type="warning" style={{ fontSize: 12 }}>
-                ⚠ 本地 shell 非安全边界：命令可访问宿主机任意路径（含其他用户文件与系统密钥），仅适用于单信任域部署。
-              </Typography.Text>
-            ) : null}
-          </Flex>
-        </Field>
+          </Field>
+        )}
 
         {!node.is_dicted ? (
           <Field label="动态分发（dynamic_dispatch）">

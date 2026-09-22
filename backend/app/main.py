@@ -46,6 +46,26 @@ async def lifespan(app: FastAPI):
     # 4. AgentRegistry (lazy build, depends on checkpointer/store/mcp/model_store)
     from app.services.agent_registry import AgentRegistry
 
+    # 4a. Jev shell 守卫审计（先于 registry：gate factory 需要 submit 回调）。
+    #     仅 jev 启用且 key 就绪时启动 drainer；否则 registry 不注入 gate
+    #     （构建回落 {"execute": True} 现状行为，健康能力位同步 false）。
+    st.jev_audit = None
+    jev_capable = settings.jev_enabled and bool(settings.typesafe_api_key)
+    if settings.jev_enabled and not settings.typesafe_api_key:
+        logger.warning(
+            "jev_enabled=true but TYPESAFE_API_KEY missing — shell guard NOT active "
+            "(execute HITL stays fully manual)"
+        )
+    if jev_capable:
+        from app.services.jev_client import JevAuditSink
+
+        st.jev_audit = JevAuditSink()
+        await st.jev_audit.start(st.pool)
+        logger.info(
+            "jev shell guard active (mode=%s threshold=%.2f model=%s)",
+            settings.jev_mode, settings.jev_safe_threshold, settings.jev_model,
+        )
+
     st.agent_registry = AgentRegistry(
         pool=st.pool,
         settings=settings,
@@ -53,6 +73,7 @@ async def lifespan(app: FastAPI):
         store=st.store,
         mcp_lifecycle=st.mcp_lifecycle,
         model_store=st.model_store,
+        jev_audit=st.jev_audit,
     )
     # 5. StreamAdapter (max_invoke_retries from config)
     from app.services.stream_adapter import StreamAdapter
@@ -119,6 +140,20 @@ async def lifespan(app: FastAPI):
         if paused:
             logger.warning("paused %d legacy cron job(s) bound to non-cron agents", paused)
 
+        # shell 禁令存量治理（plan §七.3）：已绑定 allow_shell 智能体的存量任务
+        # 仅 WARNING（不自动删除，由用户改绑/关闭 shell）；后续每次触发仍会被
+        # 调度器防御复查拦截并计为失败 run（fail-visible）。
+        from app.core.schema_utils import tree_allows_shell
+
+        for row in await dbmod.enabled_cron_jobs_with_agent_config(st.pool):
+            if tree_allows_shell(row.get("config_json") or {}):
+                logger.warning(
+                    "cron job '%s' (id=%s) is bound to agent %s whose config enables "
+                    "allow_shell — unattended shell is refused; runs will fail until "
+                    "the agent's shell capability is removed or the job rebinds",
+                    row.get("name"), row.get("id"), row.get("agent_id"),
+                )
+
         st.cron_scheduler = CronScheduler(st)
         await st.cron_scheduler.start()
         logger.info(
@@ -138,6 +173,8 @@ async def lifespan(app: FastAPI):
         await st.ingest_pool.shutdown()
     if st.vector_factory is not None:
         st.vector_factory.close()
+    if st.jev_audit is not None:
+        await st.jev_audit.shutdown()
     await st.mcp_lifecycle.shutdown()
     await st.model_store.shutdown()
     await st.shutdown()
@@ -195,6 +232,7 @@ def create_app() -> FastAPI:
             "capabilities": {
                 "kb_enabled": settings.kb_enabled,
                 "voice_enabled": settings.voice_enabled and bool(settings.assemblyai_api_key),
+                "jev_enabled": settings.jev_enabled and bool(settings.typesafe_api_key),
             },
         }
 

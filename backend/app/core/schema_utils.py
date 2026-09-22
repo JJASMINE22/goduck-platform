@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -60,7 +60,11 @@ class AgentConfig(BaseModel):
         "主代理与子代理均可开启：开启后该节点获得独立磁盘后端，与主代理共用同一磁盘"
         "目录，写入即落盘、跨代理可见。旧配置的非空 str 自动迁移为 True。",
     )
-    interrupt_on: Optional[Dict[str, bool]] = Field(default=None)
+    interrupt_on: Optional[Dict[str, bool]] = Field(
+        default=None,
+        description="工具使用审批（HITL）映射：工具名 → 是否需要人工审批。仅真值条目生效"
+        "（False=显式不审批）。usage=cron 整树禁用（无人值守无审批通道，工具自动执行）。",
+    )
     is_main: bool = False
     is_dicted: bool = False
     subagents: Optional[List[AgentConfig]] = None
@@ -87,6 +91,21 @@ class AgentConfig(BaseModel):
         "per-node：设了该开关的节点获得自己的 UserScopedLocalShellBackend）。"
         "True 时挂载 per-user cwd 后端，并强制 interrupt_on={'execute': True} 每条命令人工审批。"
         "注意：dicted 子代理共享父代理 backend（随父生效），compiled 子代理独立（需自身开启）。",
+    )
+    shell_guard: bool = Field(
+        default=False,
+        description="是否启用 Jev shell 守卫（allow_shell 的 HITL 减负）。仅在 allow_shell=True 且"
+        "后端 jev_enabled 时生效：只读白名单静默直通；灰区命令由 Jev 概率门控决定"
+        "'是否跳过人工'（shadow 只记录标注、enforce 高置信常规范围自动放行）；"
+        "包安装/高危/判定失败一律问人（fail-closed）。dicted 叶子共享父 backend，不生效。",
+    )
+    usage: Literal["chat", "cron"] = Field(
+        default="chat",
+        description="用途声明（仅根节点/主代理可设，随 config_json 持久化，纯元数据不参与图构建）。"
+        "'cron'=定时任务智能体：无人值守无审批通道，全树禁止 allow_shell 与 interrupt_on，"
+        "根节点禁止 allow_attachments/allow_knowledge（定时任务输入为固定 prompt，附件/知识库"
+        "通道暂不设计）。"
+        "绑定层以 agent.kind 为准（cron_service 仍独立复查配置树，覆盖先绑定后改配置的时间差）。",
     )
     task_planning: bool = Field(
         default=False,
@@ -142,6 +161,45 @@ class AgentConfig(BaseModel):
                 raise ValueError("子代理不能设置 allow_attachments 附件能力")
             if self.allow_knowledge:
                 raise ValueError("子代理不能设置 allow_knowledge 知识库能力")
+            if self.usage != "chat":
+                raise ValueError(
+                    "子代理不能设置 usage 用途声明（仅主代理/根节点可设，整树共用）"
+                )
+
+        if self.shell_guard and not self.allow_shell:
+            raise ValueError(
+                f"{'主代理' if self.is_main else f'子代理 {self.name!r}'} 启用了 shell_guard"
+                " 但未开启 allow_shell（守卫只对 execute 命令有意义）"
+            )
+
+        # cron 用途整树禁 shell（无人值守 + 非沙箱 + HITL 死锁三重矛盾）。
+        # 在根 validator 完成整树检查（子代理节点自身看不到兄弟节点）。
+        if self.is_main and self.usage == "cron" and _tree_allows_shell_node(self):
+            raise ValueError(
+                "定时任务智能体（usage=cron）不允许任何节点开启 allow_shell"
+                "（无人值守无审批通道）"
+            )
+
+        # cron 用途收紧（同 shell 禁令的根 validator 整树检查）：无人值守下
+        # HITL 只会永久挂起任务，故禁 interrupt_on；附件/知识库依赖会话消息
+        # 装配通道（固定 prompt 无此通道），暂不设计，故禁两开关。
+        if self.is_main and self.usage == "cron":
+            if self.allow_attachments:
+                raise ValueError(
+                    "定时任务智能体（usage=cron）不允许开启 allow_attachments 附件能力"
+                    "（任务输入为固定 prompt，无附件通道）"
+                )
+            if self.allow_knowledge:
+                raise ValueError(
+                    "定时任务智能体（usage=cron）不允许开启 allow_knowledge 知识库能力"
+                    "（定时任务暂不支持知识库，待后续版本设计）"
+                )
+            hitl_labels = _tree_interrupt_labels(self)
+            if hitl_labels:
+                raise ValueError(
+                    "定时任务智能体（usage=cron）不允许配置工具使用审批（interrupt_on，"
+                    "无人值守无审批通道，工具一律自动执行）：" + "；".join(hitl_labels)
+                )
 
         if self.is_main and self.is_dicted:
             raise ValueError("主代理(is_main=True)不能为 dicted 模式")
@@ -203,6 +261,74 @@ class AgentConfig(BaseModel):
 
 
 # ======================== Loaders ========================
+
+def _tree_allows_shell_node(node: "AgentConfig") -> bool:
+    """递归检查 AgentConfig 树上任一节点 allow_shell=True。"""
+    if node.allow_shell:
+        return True
+    return any(_tree_allows_shell_node(sa) for sa in (node.subagents or []))
+
+
+def _node_interrupt_tools(node: "AgentConfig") -> list[str]:
+    """节点上取值为真的 interrupt_on 工具名（False 条目=显式不审批，无 HITL 语义）。"""
+    io = node.interrupt_on
+    if not io:
+        return []
+    return sorted(k for k, v in io.items() if v)
+
+
+def _tree_interrupt_labels(node: "AgentConfig") -> list[str]:
+    """递归收集树上配置了工具审批的节点描述（"主代理: t1,t2" / "子代理 'n': t1"）。"""
+    labels: list[str] = []
+    tools = _node_interrupt_tools(node)
+    if tools:
+        label = "主代理" if node.is_main else f"子代理 {node.name!r}"
+        labels.append(f"{label}: {','.join(tools)}")
+    for sa in node.subagents or []:
+        labels.extend(_tree_interrupt_labels(sa))
+    return labels
+
+
+def tree_allows_shell(config: dict) -> bool:
+    """递归检查 config_json（dict 形态）树上任一节点 allow_shell 为真。
+
+    绑定层（cron_service/cron_scheduler/启动扫描）的共享判定：以能力为准、
+    不以声明为准——覆盖"先绑定后改配置"的时间差与 usage=chat 智能体被复用
+    的情况（plan §七.③）。对畸形输入（非 dict/缺键）返回 False（视为无 shell）。
+    """
+    if not isinstance(config, dict):
+        return False
+    if config.get("allow_shell"):
+        return True
+    return any(tree_allows_shell(sa) for sa in (config.get("subagents") or [])
+               if isinstance(sa, dict))
+
+
+def cron_unattended_violations(config: dict) -> list[str]:
+    """config_json（dict 形态）树上收集 cron 无人值守禁用能力（审批/附件/知识库）。
+
+    与 tree_allows_shell 同角色：绑定层（cron_service/cron_scheduler）以能力为准的
+    共享判定，覆盖"先绑定后改配置"的时间差与直写 DB 旁路（validator 为第一道门）。
+    返回人类可读的违规描述列表，空列表=干净；对畸形输入（非 dict/缺键）返回 []。
+    注意：不含 allow_shell——shell 由 tree_allows_shell 单独判定（历史消息契约不变）。
+    """
+    violations: list[str] = []
+    if not isinstance(config, dict):
+        return violations
+    io = config.get("interrupt_on")
+    if isinstance(io, dict):
+        tools = sorted(k for k, v in io.items() if v)
+        if tools:
+            violations.append(f"interrupt_on({','.join(tools)})")
+    if config.get("allow_attachments"):
+        violations.append("allow_attachments")
+    if config.get("allow_knowledge"):
+        violations.append("allow_knowledge")
+    for sa in config.get("subagents") or []:
+        if isinstance(sa, dict):
+            violations.extend(cron_unattended_violations(sa))
+    return violations
+
 
 def load_config_from_yaml(path: str | Path) -> dict:
     p = Path(path)

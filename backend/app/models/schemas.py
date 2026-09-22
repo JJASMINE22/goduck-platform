@@ -401,6 +401,11 @@ class Capabilities(BaseModel):
 
     kb_enabled: bool
     voice_enabled: bool = False
+    jev_enabled: bool = Field(
+        default=False,
+        description="Jev shell 守卫可用（jev_enabled 且 TYPESAFE_API_KEY 已配）。"
+        "驱动智能体编辑器 shell_guard 开关可见性。",
+    )
 
 
 class HealthResponse(BaseModel):
