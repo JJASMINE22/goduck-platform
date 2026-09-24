@@ -1,19 +1,33 @@
-"""Jev shell 守卫：`interrupt_on["execute"]` 的 when/description 工厂（plan §五）。
+"""Jev shell 守卫 + rubric 门控判决（plan: jev-rubric-grader-gate）。
 
-三级判决（对一条 execute tool_call）：
-  L1 确定性规则（零成本零误判，先于 Jev）：
-    - 白名单（只读直通）→ when=False 静默放行，不调 Jev；
-    - 黑名单（高危模式）→ 跳过 Jev 直接 when=True，description 强标注。
-  L2 Jev（白黑之间灰区）：state=当前命令+近期 execute 历史 → 一次并行问全 →
+两个出口共用 JevClient 与审计纪律，判决语义各自独立：
+
+  出口一（既有，契约零变化）：`build_shell_guard` → interrupt_on["execute"] 的
+  when/description 工厂。三级判决（对一条 execute tool_call）：
+    L1 确定性规则（零成本零误判，先于 Jev）：
+      - 白名单（只读直通）→ when=False 静默放行，不调 Jev；
+      - 黑名单（高危模式）→ 跳过 Jev 直接 when=True，description 强标注。
+    L2 Jev（白黑之间灰区）：state=当前命令+近期 execute 历史 → 一次并行问全 →
     本地布尔合成（无二次网络调用）：
-    - shadow：恒 when=True（行为=现状），判决落库 + description 概率标注；
-    - enforce：高置信"常规范围"（工作区写入/脚本运行，非包安装）→ when=False
-      静默放行；其余一切（模糊/危险/包安装/失败）→ when=True。
-  JevUnavailable → when=True（fail-closed = 现状行为）。
+      - shadow：恒 when=True（行为=现状），判决落库 + description 概率标注；
+      - enforce：高置信"常规范围"（工作区写入/脚本运行，非包安装）→ when=False
+        静默放行；其余一切（模糊/危险/包安装/失败）→ when=True。
+    JevUnavailable → when=True（fail-closed = 现状行为）。
 
-缓存契约（plan R7）：`when` 与 `description` 是 HumanInTheLoopMiddleware 的两次
-独立同步调用（_should_interrupt → when 先写缓存；_create_action_and_config →
-description 后读缓存），以 tool_call_id 为键，严禁对同一调用判两次 Jev。
+  出口二：`build_rubric_judge` → RubricJudge（judge/ajudge 双入口），供 rubric
+  门控 mixin 在 `_invoke_grader`/`_ainvoke_grader` 覆写中调用。先验门控语义
+  （每次评分前分诊，含首评 iteration 0；两态 llm|jev 配置即契约，单一"满足时
+  通过"极性）：
+    - 全部准则 P≥t ∧ conf≥t → fast_pass（合成 satisfied，跳过 LLM grader）；
+      首评无上游冻结名单时，合成响应以结构化准则原文兜底，冻结名单由此锚定；
+    - 其余一切（含 JevUnavailable）→ 灰区/不可用 → 委派 LLM grader（fail-closed
+      = 纯 llm 行为，绝不抛出——异常会触发上游 grader_error 终态）；
+    - mode=shadow：恒委派 LLM，判决只落审计（阈值校准/分歧率统计用）。
+
+缓存契约：shell 守卫以 tool_call_id 为键（when/description 双调用契约，plan R7）；
+rubric 判决以 (grading_run_id, thread_id, iteration) 为键——thread_id 入键防
+run_id 丢失时跨会话碰撞（实测 iter≥1 偶发空 run_id）；覆盖重试由 L1 correction
+直通规避，缓存兜底防同键重复判两次。
 """
 from __future__ import annotations
 
@@ -310,13 +324,12 @@ def build_shell_guard(
             "latency_ms": decision.latency_ms,
             "model": decision.model,
         }
+        logger.info(
+            "jev gate | agent=%s verdict=%s source=%s cmd=%r",
+            agent_id, record["verdict"], decision.source, command[:120],
+        )
         if audit_sink is not None:
             audit_sink(record)
-        else:
-            logger.info(
-                "jev gate | agent=%s verdict=%s source=%s cmd=%r",
-                agent_id, record["verdict"], decision.source, command[:120],
-            )
 
     def _judge(command: str, req: Any) -> GuardDecision:
         # L1 白名单：只读直通（不调 Jev；source=rule_whitelist 落库供灰度对账）
@@ -385,3 +398,252 @@ def build_shell_guard(
         return "Shell 命令执行需要人工审批"
 
     return when, description
+
+
+# ---------------------------------------------------------------------------
+# Rubric 门控判决器（出口二，plan: jev-rubric-grader-gate）
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RubricDecision:
+    """一次 rubric 门控判决（缓存 + 审计的载荷）。
+
+    `fast_pass` 只在 `source == "jev"` 时有意义；`unavailable` 一律
+    fast_pass=False（调用方委派 LLM grader，fail-closed）。
+    """
+
+    source: str  # jev | unavailable
+    fast_pass: bool = False
+    annotation: str | None = None  # 概率摘要（合成 GraderResponse.explanation 用）
+    state_rendered: str | None = None
+    answers: dict | None = None
+    raw: dict | None = None
+    latency_ms: int | None = None
+    model: str | None = None
+
+
+def _synthesize_rubric(answers: dict, crit_meta: dict[str, dict]) -> bool:
+    """本地布尔合成（无二次网络调用）——单一语义：满足时通过。
+
+    每条准则一个 noul 题（statement=达标断言，P(yes) 高=满足）：
+    全部准则 P ≥ t ∧ conf ≥ t → fast_pass；任一不达标 → 灰区委派 LLM。
+    危险类要求以正向达标式书写（"引用真实来源"而非"不编造"），措辞方向
+    与判定方向天然一致，无极性登记负担。
+    """
+    for qid, meta in crit_meta.items():
+        ans = answers.get(qid) or {}
+        t = float(meta["threshold"])
+        p = float(ans.get("noul", 0.0))
+        conf = float(ans.get("confidence", 0.0))
+        if not (p >= t and conf >= t):
+            return False
+    return True
+
+
+def _format_rubric_probs(answers: dict, crit_meta: dict[str, dict]) -> str:
+    """逐题概率摘要（审计日志与合成 explanation 共用）。"""
+    return " ".join(
+        f"{qid}={float((answers.get(qid) or {}).get('noul', 0.0)):.2f}"
+        f"/conf={float((answers.get(qid) or {}).get('confidence', 0.0)):.2f}"
+        for qid in crit_meta
+    )
+
+
+class RubricJudge:
+    """rubric 先验门控判决器（每 rubric 节点一个实例，随图构建烘焙问题集/阈值/mode）。
+
+    判决缓存以 (grading_run_id, thread_id, iteration) 为键——对应 shell 守卫
+    tool_call_id 的"同一调用严禁判两次"纪律。fail-closed：client 任何异常统一
+    归一为 `RubricDecision(source="unavailable")`（调用方据此委派 LLM grader），
+    绝不向上抛出——异常会触发上游 `after_agent` 的 grader_error 终态。
+
+    mode（enforce|shadow）只约束调用方是否允许快道短路，判决与审计两路径
+    逐字段一致——shadow 是校准态：判了、落审计、不改变行为。
+
+    state 不截断（回合完整性优先）：超长 state 由 API 拒绝 → JevUnavailable →
+    委派 LLM——宁可不判，不发残卷。审计中的 state_rendered 为全量原文。
+    """
+
+    def __init__(
+        self,
+        client,
+        audit_submit: Callable[[dict], None] | None,
+        agent_id: uuid.UUID,
+        questions: dict,
+        crit_meta: dict[str, dict],
+        mode: str = "enforce",
+    ):
+        self._client = client
+        self._audit_submit = audit_submit
+        self._agent_id = agent_id
+        self._questions = questions
+        self._crit_meta = crit_meta
+        self._mode = mode
+        self._cache: OrderedDict[tuple, RubricDecision] = OrderedDict()
+        self._cache_lock = threading.Lock()
+
+    @property
+    def mode(self) -> str:
+        """运行态（enforce|shadow）：shadow 下调用方不得快道短路（只判只落审计）。"""
+        return self._mode
+
+    @property
+    def criteria_statements(self) -> list[str]:
+        """准则原文列表（合成 GraderResponse 的兜底名字，防御性用途）。"""
+        return [m["statement"] for m in self._crit_meta.values()]
+
+    # ---------------- 缓存（同 shell 守卫纪律：同键只判一次） ----------------
+    def _cache_get(self, key: tuple) -> RubricDecision | None:
+        with self._cache_lock:
+            return self._cache.get(key)
+
+    def _cache_put(self, key: tuple, decision: RubricDecision) -> None:
+        with self._cache_lock:
+            self._cache[key] = decision
+            while len(self._cache) > _CACHE_MAX_ENTRIES:
+                self._cache.popitem(last=False)
+
+    # ---------------- 判决（同步/异步双入口，语义逐字段一致） ----------------
+    def _finalize(
+        self,
+        state_text: str,
+        verdict: JevVerdict,
+        key: tuple,
+        thread_id: str,
+    ) -> RubricDecision:
+        fast_pass = _synthesize_rubric(verdict.answers, self._crit_meta)
+        annotation = _format_rubric_probs(verdict.answers, self._crit_meta)
+        tail = "全准则达标 → 建议快道放行" if fast_pass else "未达快道阈值 → 委派 LLM grader"
+        return RubricDecision(
+            source="jev",
+            fast_pass=fast_pass,
+            annotation=f"[Jev] {annotation} → {tail}",
+            state_rendered=state_text,
+            answers=verdict.answers,
+            raw=verdict.raw,
+            latency_ms=verdict.latency_ms,
+            model=verdict.model,
+        )
+
+    def _unavailable(self, state_text: str, err: Exception) -> RubricDecision:
+        logger.warning("jev rubric judge unavailable (fail-closed → delegate LLM): %s", err)
+        return RubricDecision(
+            source="unavailable",
+            annotation=f"[Jev 不可用，委派 LLM grader] {err}",
+            state_rendered=state_text,
+        )
+
+    def _audit(self, decision: RubricDecision, key: tuple, thread_id: str) -> None:
+        verdict = "auto_pass" if decision.fast_pass else "ask_llm"
+        record = {
+            "decision_type": "rubric",
+            "session_id": None,  # 会话行与 thread 的映射在业务层，门控层只有 thread_id
+            "thread_id": thread_id or "unknown",
+            "agent_id": self._agent_id,
+            # 复用 NOT NULL 列承载判决键（rubric 判决无 tool_call 概念）；
+            # run_id 丢失（空串）时回退 thread_id，保键可读且非空
+            "tool_call_id": f"rubric:{key[0] or thread_id}:{key[-1]}",
+            "mode": self._mode,
+            "source": decision.source,
+            "verdict": verdict,
+            "command": None,
+            "state_rendered": decision.state_rendered,
+            "answers": {**(decision.answers or {}), "_raw": decision.raw}
+            if decision.answers is not None
+            else None,
+            "latency_ms": decision.latency_ms,
+            "model": decision.model,
+        }
+        logger.info(
+            "jev rubric gate | agent=%s verdict=%s source=%s key=%r%s",
+            self._agent_id, verdict, decision.source, key,
+            f" | {decision.annotation}" if decision.annotation else "",
+        )
+        if self._audit_submit is not None:
+            self._audit_submit(record)
+
+    def judge(
+        self,
+        state_text: str,
+        key: tuple,
+        thread_id: str = "",
+    ) -> RubricDecision:
+        """同步判决（`_invoke_grader` 覆写调用）。缓存命中直接返回。"""
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        try:
+            verdict = self._client.judge(state_text, self._questions)
+        except JevUnavailable as e:
+            decision = self._unavailable(state_text, e)
+        else:
+            decision = self._finalize(state_text, verdict, key, thread_id)
+        self._cache_put(key, decision)
+        self._audit(decision, key, thread_id)
+        return decision
+
+    async def ajudge(
+        self,
+        state_text: str,
+        key: tuple,
+        thread_id: str = "",
+    ) -> RubricDecision:
+        """异步判决（`_ainvoke_grader` 覆写调用，走 classifier.ainvoke 不阻塞 loop）。"""
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        try:
+            verdict = await self._client.ajudge(state_text, self._questions)
+        except JevUnavailable as e:
+            decision = self._unavailable(state_text, e)
+        else:
+            decision = self._finalize(state_text, verdict, key, thread_id)
+        self._cache_put(key, decision)
+        self._audit(decision, key, thread_id)
+        return decision
+
+
+def build_rubric_judge(
+    settings: Any,
+    audit_submit: Callable[[dict], None] | None,
+    agent_id: uuid.UUID,
+    questions: dict,
+    crit_meta: dict[str, dict],
+) -> RubricJudge:
+    """构建 rubric 门控判决器（与 build_shell_guard 平行的出口）。
+
+    Args:
+        settings: Settings（client/阈值随构建烘焙，改配置需重启或等 registry
+            TTL 过期——与 shell 守卫同语义；state 不截断，超限走 API 异常回退）。
+        audit_submit: 审计回调（dict → None）；None 时只打日志不落库。
+        agent_id: 构建期烘焙（审计表 NOT NULL 列）。
+        questions: 按节点 criteria 渲染的问题集（langchain_typesafe Question 对象）。
+        crit_meta: 逐题合成元数据（polarity/qtype/threshold/veto/pass_option/
+            statement），由 core_utils.render_jev_criteria 产出。
+    """
+    client = JevClient(
+        base_url=settings.jev_base_url,
+        api_key=settings.typesafe_api_key,
+        model=settings.jev_model,
+        timeout_s=settings.jev_timeout_seconds,
+    )
+    # 阈值三级解析的最后一跳：行级 ← 节点级（render_jev_criteria 已消费）←
+    # 平台级默认（此处烘焙）。crit_meta 为浅拷贝，不污染调用方。
+    default_t = float(getattr(settings, "jev_rubric_pass_threshold", 0.9))
+    resolved_meta = {
+        qid: (
+            {**meta, "threshold": default_t}
+            if meta.get("threshold") is None
+            else {**meta, "threshold": float(meta["threshold"])}
+        )
+        for qid, meta in crit_meta.items()
+    }
+    return RubricJudge(
+        client,
+        audit_submit,
+        agent_id,
+        questions,
+        resolved_meta,
+        mode=getattr(settings, "jev_rubric_mode", "enforce"),
+    )

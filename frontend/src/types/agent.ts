@@ -3,12 +3,27 @@
    AgentConfig 是配置树「唯一真相」（DESIGN 准则 F1）。 */
 import type { ISODateTime, UUID } from './common'
 
+/** 一条结构化判决准则（grader=jev 时渲染为 Jev 二元问题，与后端 JevCriterion 对齐）。
+ *  单一"满足时通过"语义：statement 为可判真假的达标断言（非否定句），P(yes) 高 = 满足。 */
+export interface JevCriterion {
+  /** 陈述性达标断言：可从当前回合 transcript 判真假，如"回答中每个统计数据均标注了来源" */
+  statement: string
+  /** 行级阈值覆盖（0.5 ≤ t < 1，P 与 conf 双轴同值）；缺省回落节点级→平台级 */
+  threshold?: number | null
+}
+
 /** 后端 RubricConfig（schema_utils.py）—— 节点级评分自评 */
 export interface RubricConfig {
   content?: string | null
   fixed?: boolean
   max_iterations?: number // 1..20
   grader_tool_names?: string[]
+  /** grader 模式：llm=现状 LLM 评审；jev=JEV 门控分诊（需 criteria 与平台能力） */
+  grader?: 'llm' | 'jev'
+  /** 结构化判决准则集（grader=jev 必填） */
+  criteria?: JevCriterion[] | null
+  /** 节点级快道阈值（0.5 ≤ t < 1，P 与 conf 双轴同值）；缺省回落平台级 */
+  pass_threshold?: number | null
 }
 
 /**

@@ -55,15 +55,43 @@ class AgentRegistry:
         self._locks: dict[str, asyncio.Lock] = {}
         self._guard = asyncio.Lock()
 
-    def _jev_gate_factory(self, agent_id: uuid.UUID):
-        """Jev 守卫工厂（jev_enabled=false / key 缺失 / 审计未就绪时返回 None，
-        构建回落 {'execute': True} 现状行为）。agent_id 烘焙进闭包供审计列。"""
+    def _jev_capable(self) -> bool:
+        """平台级 Jev 能力判定（双出口共用）：开关 ∧ key ∧ 审计 drainer 就绪。"""
         s = self.settings
-        if not (s.jev_enabled and s.typesafe_api_key and self.jev_audit is not None):
+        return bool(s.jev_enabled and s.typesafe_api_key and self.jev_audit is not None)
+
+    def _jev_gate_factory(self, agent_id: uuid.UUID):
+        """Jev 守卫工厂（能力缺失时返回 None，构建回落 {'execute': True} 现状
+        行为）。agent_id 烘焙进闭包供审计列。"""
+        if not self._jev_capable():
             return None
         from app.core.jev_gate import build_shell_guard
 
+        s = self.settings
         return lambda: build_shell_guard(s, self.jev_audit.submit, agent_id)
+
+    def _jev_rubric_factory(self, agent_id: uuid.UUID):
+        """Jev rubric 门控工厂（能力缺失/jev_rubric_enabled=false 时返回 None，
+        构建回落 llm 路径 + build_rubric_middleware 侧 warning）。
+
+        签名 factory(rubric_cfg) -> RubricJudge：节点级 questions/thresholds 在
+        消费点经 rubric_cfg 渲染（两级烘焙——平台参数随工厂闭包，节点参数随
+        消费点），同一 agent 树中 llm/jev 子代理可混布。"""
+        s = self.settings
+        if not (self._jev_capable() and s.jev_rubric_enabled):
+            return None
+        from app.core.core_utils import render_jev_criteria
+        from app.core.jev_gate import build_rubric_judge
+
+        audit_submit = self.jev_audit.submit
+
+        def factory(rubric_cfg):
+            questions, crit_meta = render_jev_criteria(
+                rubric_cfg.criteria or [], rubric_cfg.pass_threshold
+            )
+            return build_rubric_judge(s, audit_submit, agent_id, questions, crit_meta)
+
+        return factory
 
     def _ctx(self, model, agent_id: Optional[uuid.UUID] = None) -> BuildContext:
         s = self.settings
@@ -77,6 +105,7 @@ class AgentRegistry:
             workspace_dir=str(s.workspace_dir),
             skills_dir=str(s.skills_dir),
             jev_gate_factory=self._jev_gate_factory(agent_id) if agent_id else None,
+            jev_rubric_factory=self._jev_rubric_factory(agent_id) if agent_id else None,
         )
 
     async def get_or_build(self, agent_id: uuid.UUID) -> CompiledStateGraph:

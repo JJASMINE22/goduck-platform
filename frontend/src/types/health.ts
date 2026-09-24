@@ -8,6 +8,8 @@ export interface Capabilities {
   voice_enabled: boolean
   /** Jev shell 守卫可用（jev_enabled 且 TYPESAFE_API_KEY 已配；编辑器 shell_guard 开关可见性） */
   jev_enabled: boolean
+  /** Jev rubric 门控可用（jev 基础能力 ∧ jev_rubric_enabled；编辑器 grader=jev 模式可见性） */
+  jev_rubric_enabled: boolean
 }
 
 export interface HealthStatus {

@@ -180,6 +180,33 @@ class Settings(BaseSettings):
         description="state 渲染截断上限（字符，含近期命令历史；API 上限 64k）。",
     )
 
+    # ---- Jev Rubric 门控（grader 分诊；plan: jev-rubric-grader-gate）----
+    # 两态 grader(llm|jev) 的平台侧总控：jev 不可用时节点配置 grader=jev 也
+    # 回落 llm 并打构建期 warning（fail-visible）。阈值配置即契约——无 shadow
+    # 态，首个生产值建议保守起步，靠审计（灰区轮 JEV+LLM 双判决）后验调优。
+    jev_rubric_enabled: bool = Field(
+        default=False,
+        description="rubric 门控总开关：false 时 jev_rubric_factory 不注入，"
+        "grader='jev' 的节点构建回落 llm 路径（一键回退保险丝，不动 agent 配置）。",
+    )
+    jev_rubric_pass_threshold: float = Field(
+        default=0.9,
+        ge=0.5,
+        lt=1.0,
+        description="rubric 快道默认阈值 T（P 与 conf 双轴同值）。三级解析："
+        "行级 criterion.threshold ← 节点级 pass_threshold ← 本值。保守值=快道"
+        "收窄、灰区为主（LLM 兜底），观察审计分歧率后再下调。",
+    )
+    jev_rubric_mode: str = Field(
+        default="enforce",
+        description=(
+            "rubric 门控运行态：enforce=满足侧快道生效（每次评分前分诊，含首评 iter=0；"
+            "全准则 P/conf 达标即合成 satisfied 跳过 LLM grader）；shadow=只判只落审计、"
+            "恒委派 LLM（校准/分歧率统计用，行为与纯 llm 一致）。误放行风险由 per-agent "
+            "grader=jev 自愿承担；shadow 为全局回退保险丝（不动 agent 配置）。"
+        ),
+    )
+
     # ---- AgentRegistry cache tuning ----
     registry_max_entries: int = 16
     registry_ttl_seconds: int = 3600
@@ -268,6 +295,15 @@ class Settings(BaseSettings):
         allowed = {"shadow", "enforce"}
         if v not in allowed:
             raise ValueError(f"jev_mode 须为 {'/'.join(sorted(allowed))}（当前 {v!r}）")
+        return v
+
+    @field_validator("jev_rubric_mode")
+    @classmethod
+    def _validate_jev_rubric_mode(cls, v: str) -> str:
+        """枚举收口（fail-fast），语义同 _validate_jev_mode。"""
+        allowed = {"shadow", "enforce"}
+        if v not in allowed:
+            raise ValueError(f"jev_rubric_mode 须为 {'/'.join(sorted(allowed))}（当前 {v!r}）")
         return v
 
     @property

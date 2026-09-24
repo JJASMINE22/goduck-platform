@@ -12,17 +12,49 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+class JevCriterion(BaseModel):
+    """一条结构化判决准则（grader=jev 时渲染为 Jev 二元问题）。
+
+    仅"满足时通过"语义：statement 是可从对话记录判真假的**达标断言**——
+    P(yes) 高 = 准则满足。危险类要求写成正向达标式（"引用真实检索结果"
+    而非"不编造"），措辞方向与判定方向天然一致，无极性登记心智负担。
+    """
+
+    statement: str = Field(
+        min_length=1,
+        description="陈述性达标断言：可从当前回合 transcript 判真假，"
+        "如'回答中每个统计数据均标注了来源'（非形容词、非否定句）。",
+    )
+    threshold: Optional[float] = Field(
+        default=None,
+        ge=0.5,
+        lt=1.0,
+        description="行级阈值覆盖（P 与 conf 双轴同值）；缺省回落节点级 pass_threshold"
+        "→平台级全局默认。",
+    )
+
+
 class RubricConfig(BaseModel):
     """Per-agent-node rubric self-evaluation config.
 
     Mounted where it lives, it grades where it lives:
     - main gateway: grades final user-facing reply (incl. subagent tool messages).
     - subagent: self-evaluates inside its own graph; only handed back to parent once satisfied.
+
+    grader 两态（plan: jev-rubric-grader-gate）：
+    - llm（默认）：现状 LLM grader 子代理评审，行为不变；
+    - jev：JEV 门控分诊——高置信达标（全部准则 P/conf 过阈值）合成 satisfied
+      跳过 LLM grader；灰区/不可用/带取证工具/覆盖重试一律委派 LLM（fail-closed）。
+      需后端 jev 能力（jev_rubric_enabled ∧ TYPESAFE_API_KEY），缺失时构建回落
+      llm 并告警。
     """
 
     content: Optional[str] = Field(
         default=None,
-        description="评分准则文本。为空则该节点不启用 rubric。",
+        description="评分准则文本（LLM grader 的评审依据）。为空且无 criteria 则该节点"
+        "不启用 rubric；grader=jev 且 fixed=true 时可只写 criteria（平台自动"
+        "序列化为准则文本，单一真相源）。与 criteria 并存时 content 为 LLM 评审"
+        "真相、criteria 为 JEV 快道预筛（分歧最坏=多一次 LLM 调用，不损害正确性）。",
     )
     fixed: bool = Field(
         default=False,
@@ -37,8 +69,38 @@ class RubricConfig(BaseModel):
     )
     grader_tool_names: List[str] = Field(
         default_factory=list,
-        description="grader 可调用的取证工具名 (从 GRADER_TOOL_REGISTRY 解析), 与主代理工具集无关。",
+        description="grader 可调用的取证工具名 (从 GRADER_TOOL_REGISTRY 解析), 与主代理工具集无关。"
+        "非空时 JEV 门控不参与（证据型评审不可概率短路，构建期直通 LLM）。",
     )
+    grader: Literal["llm", "jev"] = Field(
+        default="llm",
+        description="grader 模式：llm=现状 LLM 评审；jev=JEV 门控分诊（前置要求本节点"
+        "rubric 启用——content 或 criteria 至少一项非空）。",
+    )
+    criteria: Optional[List[JevCriterion]] = Field(
+        default=None,
+        description="结构化判决准则集（grader=jev 必填）。逐条渲染为 Jev 问题，"
+        "首评（iteration 0）仍由 LLM grader 枚举冻结准则集，冻结后 JEV 快道生效。",
+    )
+    pass_threshold: Optional[float] = Field(
+        default=None,
+        ge=0.5,
+        lt=1.0,
+        description="节点级快道阈值（P 与 conf 双轴同值，即'倾向性'：高=保守多走灰区，"
+        "低=激进多走快道）；缺省回落平台级全局默认。行级 threshold 可再覆盖。",
+    )
+
+    @model_validator(mode="after")
+    def _validate_grader_mode(self) -> "RubricConfig":
+        if self.grader == "jev":
+            if not self.criteria:
+                raise ValueError(
+                    "grader='jev' 需要配置 criteria（结构化判决准则集，"
+                    "JEV 只能对已枚举的命题出题）"
+                )
+            if not ((self.content or "").strip() or self.criteria):
+                raise ValueError("grader='jev' 前提是 rubric 启用（content 或 criteria 非空）")
+        return self
 
 
 class AgentConfig(BaseModel):

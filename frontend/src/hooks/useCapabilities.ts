@@ -13,6 +13,8 @@ export interface CapabilitiesState {
   voice_enabled: boolean
   /** Jev shell 守卫可用（编辑器 shell_guard 开关可见性） */
   jev_enabled: boolean
+  /** Jev rubric 门控可用（编辑器 rubric grader=jev 模式可见性） */
+  jev_rubric_enabled: boolean
 }
 
 export function useCapabilities(): CapabilitiesState {
@@ -28,5 +30,6 @@ export function useCapabilities(): CapabilitiesState {
     kb_enabled: !!cap?.kb_enabled,
     voice_enabled: !!cap?.voice_enabled,
     jev_enabled: !!cap?.jev_enabled,
+    jev_rubric_enabled: !!cap?.jev_rubric_enabled,
   }
 }

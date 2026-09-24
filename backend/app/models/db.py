@@ -197,10 +197,12 @@ CREATE TABLE IF NOT EXISTS kb_document (
 );
 CREATE INDEX IF NOT EXISTS idx_kbdoc_kb ON kb_document(kb_id);
 
--- ============================ Jev Shell 守卫审计 ============================
--- append-only：每条非白名单 execute 命令一行（含 Jev 调用失败行）。Jev 无
--- rationale 输出，此表是唯一审计与灰度标定数据源（分歧样本 = 判决与人工
--- 决议相左的行）。增长可控（每命令一行），暂不做清理任务，按需归档。
+-- ============================ Jev 判决审计（shell 守卫 + rubric 门控）============================
+-- append-only：每条 Jev 判决一行（含调用失败行）。Jev 无 rationale 输出，此表是
+-- 唯一审计与灰度标定数据源（分歧样本 = 判决与人工决议/LLM verdict 相左的行）。
+-- decision_type 区分两类判决：shell_guard（每条非白名单 execute 命令一行）/
+-- rubric（每轮 rubric 门控一行，command 为空、tool_call_id 承载判决键
+-- rubric:{grading_run_id}:{iteration}）。增长可控，暂不做清理任务，按需归档。
 CREATE TABLE IF NOT EXISTS jev_decision (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -208,11 +210,12 @@ CREATE TABLE IF NOT EXISTS jev_decision (
     session_id      UUID,
     thread_id       VARCHAR NOT NULL,
     agent_id        UUID NOT NULL,
-    tool_call_id    VARCHAR NOT NULL,
-    mode            VARCHAR NOT NULL,               -- shadow | enforce
-    source          VARCHAR NOT NULL,               -- rule_whitelist | rule_blacklist | jev | unavailable
-    verdict         VARCHAR NOT NULL,               -- auto_run | ask_human
-    command         TEXT NOT NULL,
+    tool_call_id    VARCHAR NOT NULL,               -- shell: execute 调用 id；rubric: 判决键
+    decision_type   VARCHAR NOT NULL DEFAULT 'shell_guard',  -- shell_guard | rubric
+    mode            VARCHAR NOT NULL,               -- shadow | enforce | triage
+    source          VARCHAR NOT NULL,               -- rule_* | jev | unavailable
+    verdict         VARCHAR NOT NULL,               -- auto_run | ask_human | auto_pass | ask_llm
+    command         TEXT,                           -- shell 守卫的被判命令；rubric 判决无命令（NULL）
     state_rendered  TEXT,                           -- 实际发送的 state（截断后）
     answers         JSONB,                          -- Jev 原始返回（概率+置信度+usage）
     latency_ms      INT,
@@ -245,6 +248,11 @@ _MIGRATIONS = [
     "ALTER TABLE session ADD COLUMN IF NOT EXISTS kind VARCHAR NOT NULL DEFAULT 'chat'",
     # 智能体用途类型（'chat' | 'cron'，创建后不可变）；存量智能体归一为 chat
     "ALTER TABLE agent ADD COLUMN IF NOT EXISTS kind VARCHAR NOT NULL DEFAULT 'chat'",
+    # jev_decision 双用途化（rubric 门控，plan: jev-rubric-grader-gate）：
+    # decision_type 鉴别判决来源；command 放开 NOT NULL（rubric 判决无命令）。
+    # DROP NOT NULL 天然幂等，重复执行无害。
+    "ALTER TABLE jev_decision ADD COLUMN IF NOT EXISTS decision_type VARCHAR NOT NULL DEFAULT 'shell_guard'",
+    "ALTER TABLE jev_decision ALTER COLUMN command DROP NOT NULL",
 ]
 
 # enable_thinking 三态化一次性迁移：旧 schema 为 NOT NULL 且旧语义 false=不注入；
@@ -1791,23 +1799,27 @@ async def insert_jev_decision(
     mode: str,
     source: str,
     verdict: str,
-    command: str,
-    state_rendered: Optional[str],
-    answers: Optional[dict],
-    latency_ms: Optional[int],
-    model: Optional[str],
+    command: Optional[str] = None,
+    state_rendered: Optional[str] = None,
+    answers: Optional[dict] = None,
+    latency_ms: Optional[int] = None,
+    model: Optional[str] = None,
+    decision_type: str = "shell_guard",
 ) -> None:
-    """写入一行 shell 守卫审计（append-only；由 JevAuditSink 后台任务调用）。
+    """写入一行 Jev 判决审计（append-only；由 JevAuditSink 后台任务调用）。
 
-    失败由调用方 suppress——审计缺失不阻断 HITL 主链路（门控本身 fail-closed）。
+    双用途：decision_type='shell_guard'（execute 命令门控，command 必填）/
+    'rubric'（grader 分诊，command 为空、tool_call_id 承载判决键
+    rubric:{grading_run_id}:{iteration}）。失败由调用方 suppress——审计缺失
+    不阻断门控主链路（门控本身 fail-closed）。
     """
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "INSERT INTO jev_decision (session_id, thread_id, agent_id, tool_call_id, "
-                "mode, source, verdict, command, state_rendered, answers, latency_ms, model) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (session_id, thread_id, agent_id, tool_call_id, mode, source, verdict,
-                 command, state_rendered, Json(answers) if answers is not None else None,
-                 latency_ms, model),
+                "decision_type, mode, source, verdict, command, state_rendered, answers, latency_ms, model) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (session_id, thread_id, agent_id, tool_call_id, decision_type, mode,
+                 source, verdict, command, state_rendered,
+                 Json(answers) if answers is not None else None, latency_ms, model),
             )

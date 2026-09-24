@@ -1,7 +1,7 @@
 """Jev (TypeSafe System One) client + shell-guard audit sink.
 
 传输层基于 LangChain 官方集成 langchain-typesafe（`TypeSafeClassifier`，
-Runnable invoke/ainvoke），本模块是其同步门面：保留 `judge(state) → JevVerdict`
+Runnable invoke/ainvoke），本模块是其门面：保留 `judge(state) → JevVerdict`
 契约与 fail-closed 语义，上层（jev_gate / 审计 / 测试）零改动。
 
 官方库与手写客户端的三处差异，均由本门面吸收：
@@ -13,6 +13,12 @@ Runnable invoke/ainvoke），本模块是其同步门面：保留 `judge(state) 
 - 异常体系为 TypeSafeError 层级 → 统一映射 JevUnavailable；分类器懒构造，
   构造失败（如配置非法）也按"当次不可用"处理，绝不让门控炸掉图构建。
 
+问题集参数化（rubric 门控复用同一 client）：
+- `judge/ajudge/normalize_answers` 均接受 `questions=None`（缺省=模块级
+  QUESTIONS，shell 守卫行为逐字节不变）；rubric 门控传入按节点配置渲染的
+  问题集。同步路径走 invoke（when() 契约所迫）；异步路径走 aainvoke→ainvoke，
+  供 rubric 的 `_ainvoke_grader` 覆写使用（不阻塞事件循环）。
+
 Wire contract（https://docs.typesafe.ai/api，与手写时代逐字段一致）：
     POST {base}/v1/systemone
     Authorization: Bearer <key>
@@ -20,8 +26,8 @@ Wire contract（https://docs.typesafe.ai/api，与手写时代逐字段一致）
     → { "model": "...", "answers": {...}, "usage": {...} }
 
 其余不变的事实：
-- 门控在 after_model 内同步执行，故走 invoke（同步）+ 硬超时；无重试——一次未命中
-  即 fail-closed 问人（plan R1/R5）。
+- shell 门控在 after_model 内同步执行，故走 invoke（同步）+ 硬超时；无重试——
+  一次未命中即 fail-closed 问人（plan R1/R5）。
 - 每次调用（成功或失败）产出一条审计记录；异步 DB 写经 `JevAuditSink`
   （有界队列 + drainer 任务）解耦。
 """
@@ -123,16 +129,25 @@ def _number(value: Any) -> float:
     return n
 
 
-def normalize_answers(response: ClassifierResponse) -> dict[str, dict[str, Any]]:
+def normalize_answers(
+    response: ClassifierResponse,
+    questions: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
     """把 ClassifierResponse 的 answers 归一为逐题 {type, ..., confidence}。
 
     官方库的 pydantic 校验已吸收大部分畸形防御面；本函数补齐库不约束的
     三个契约：答案覆盖全部问题、答案 type 与问题 type 匹配、choice 概率
     ∈ [0,1]（probabilities 字段在库侧无数值界约束）。
     任何违反 → JevUnavailable（fail-closed）。
+
+    Args:
+        response: TypeSafeClassifier 的原始响应。
+        questions: 参与本次判定的问题集；None=模块级 QUESTIONS（shell 守卫）。
+            rubric 门控传入按节点渲染的问题集，答案覆盖按该集合校验。
     """
+    qs = questions if questions is not None else QUESTIONS
     out: dict[str, dict[str, Any]] = {}
-    for qid, question in QUESTIONS.items():
+    for qid, question in qs.items():
         answer = response.answers.get(qid)
         if answer is None:
             raise JevUnavailable(f"答案缺失: {qid}")
@@ -194,9 +209,17 @@ class JevClient:
                 raise JevUnavailable(f"TypeSafe 客户端构建失败: {type(e).__name__}: {e}") from e
         return self._classifier
 
-    def judge(self, state: str) -> JevVerdict:
-        """一次并行求值全部问题；任何失败统一抛 JevUnavailable。"""
-        request: ClassifierRequest = {"state": state, "questions": QUESTIONS}
+    def judge(self, state: str, questions: dict[str, Any] | None = None) -> JevVerdict:
+        """一次并行求值全部问题（同步）；任何失败统一抛 JevUnavailable。
+
+        Args:
+            state: 送判状态文本。
+            questions: 问题集；None=模块级 QUESTIONS（shell 守卫，行为不变）。
+        """
+        request: ClassifierRequest = {
+            "state": state,
+            "questions": questions if questions is not None else QUESTIONS,
+        }
         started = time.perf_counter()
         try:
             response = self._get_classifier().invoke(request)
@@ -206,7 +229,33 @@ class JevClient:
             raise JevUnavailable(f"TypeSafe 调用异常: {type(e).__name__}: {e}") from e
         latency_ms = int((time.perf_counter() - started) * 1000)
         return JevVerdict(
-            answers=normalize_answers(response),
+            answers=normalize_answers(response, questions),
+            raw=_raw_payload(response),
+            latency_ms=latency_ms,
+            model=response.model or self._model,
+        )
+
+    async def ajudge(self, state: str, questions: dict[str, Any] | None = None) -> JevVerdict:
+        """`judge` 的异步镜像：走 classifier.ainvoke（httpx2.AsyncClient）。
+
+        供 rubric 门控的 `_ainvoke_grader` 覆写使用——该方法运行在事件循环
+        上，同步 invoke 会阻塞 loop 最长 timeout 秒。异常映射与 `judge`
+        完全一致（任何失败统一 JevUnavailable，门控侧 fail-closed 委派）。
+        """
+        request: ClassifierRequest = {
+            "state": state,
+            "questions": questions if questions is not None else QUESTIONS,
+        }
+        started = time.perf_counter()
+        try:
+            response = await self._get_classifier().ainvoke(request)
+        except TypeSafeError as e:
+            raise JevUnavailable(f"TypeSafe 调用失败(异步): {e}") from e
+        except Exception as e:  # fail-closed：意外异常同样归一为不可用
+            raise JevUnavailable(f"TypeSafe 调用异常(异步): {type(e).__name__}: {e}") from e
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        return JevVerdict(
+            answers=normalize_answers(response, questions),
             raw=_raw_payload(response),
             latency_ms=latency_ms,
             model=response.model or self._model,
@@ -219,12 +268,27 @@ class JevClient:
                 self._classifier.client.close()
 
 
+def _strip_nuls(value: Any) -> Any:
+    """递归剔除字符串中的 NUL(0x00) 字节（PostgreSQL text 列拒收）。"""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {k: _strip_nuls(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_nuls(v) for v in value]
+    return value
+
+
 class JevAuditSink:
     """有界内存队列 + 异步 drainer：同步门控路径 → 异步 DB 写。
 
     `submit` 在 when() 内同步调用（事件循环线程），必须零阻塞：队满丢弃并告警
     （审计缺失可接受——门控本身 fail-closed，不依赖审计落地）。drainer 由
     main lifespan 启动/停止，单任务串行写库。
+
+    入队前剔除文本中的 NUL(0x00)：PostgreSQL text 字段拒收 NUL，MCP 工具
+    返回的转写常夹带 NUL——不清洗会导致整条审计记录 insert 失败被丢弃
+    （实测：电商抓取类会话全部丢行）。
     """
 
     def __init__(self, max_pending: int = 2000):
@@ -242,6 +306,7 @@ class JevAuditSink:
 
     def submit(self, record: dict) -> None:
         """入队一条审计记录（非阻塞；满则丢弃计数）。"""
+        record = _strip_nuls(record)
         with self._lock:
             if len(self._records) >= self._max_pending:
                 self._dropped += 1

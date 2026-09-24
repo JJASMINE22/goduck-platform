@@ -41,6 +41,12 @@ class BuildContext:
     # 每次调用产出独立的 (when, description) 闭包对（含独立缓存），供本节点
     # interrupt_on["execute"] 使用；阈值随闭包烘焙（TTL 内改配置不生效，plan §三）。
     jev_gate_factory: Optional[Callable[[], tuple[Callable, Callable]]] = None
+    # Jev rubric 门控工厂（构建期注入，None=能力未启用）。
+    # 签名 factory(rubric_cfg) -> RubricJudge：节点级 questions/thresholds 在
+    # 消费点（build_rubric_middleware）经 rubric_cfg 渲染，平台级参数
+    # （client/审计/全局阈值）随工厂闭包烘焙——两级烘焙，混合树天然支持
+    # （llm 子代理与 jev 子代理并存）。plan: jev-rubric-grader-gate。
+    jev_rubric_factory: Optional[Callable] = None
 
 
 def _strip_cron_unattended(root: AgentConfig) -> None:
@@ -202,7 +208,7 @@ def create_agent_recursive(
     # rubric middleware comes from config, independent of agent tools; read from
     # the strongly-typed object BEFORE to_dict().
     rubric_middleware = build_rubric_middleware(
-        agent_config.rubric, ctx.model, workspace_root=ctx.workspace_dir
+        agent_config.rubric, ctx.model, workspace_root=ctx.workspace_dir, ctx=ctx
     )
 
     agent_config = agent_config.to_dict()
@@ -354,7 +360,7 @@ def create_agent_dictionary(
 
     # main agent rubric (from config), decoupled from tools
     main_rubric_middleware = build_rubric_middleware(
-        agent_config.rubric, ctx.model, workspace_root=ctx.workspace_dir
+        agent_config.rubric, ctx.model, workspace_root=ctx.workspace_dir, ctx=ctx
     )
 
     agent_config = agent_config.to_dict()
@@ -376,6 +382,7 @@ def create_agent_dictionary(
                 _RC.model_validate(sub_rubric_cfg),
                 ctx.model,
                 workspace_root=ctx.workspace_dir,
+                ctx=ctx,
             )
         sub_middleware: list = (
             [*base_middleware, sub_rubric_middleware]

@@ -65,6 +65,11 @@ async def lifespan(app: FastAPI):
             "jev shell guard active (mode=%s threshold=%.2f model=%s)",
             settings.jev_mode, settings.jev_safe_threshold, settings.jev_model,
         )
+        if settings.jev_rubric_enabled:
+            logger.info(
+                "jev rubric gate active (pass_threshold=%.2f)",
+                settings.jev_rubric_pass_threshold,
+            )
 
     st.agent_registry = AgentRegistry(
         pool=st.pool,
@@ -233,6 +238,11 @@ def create_app() -> FastAPI:
                 "kb_enabled": settings.kb_enabled,
                 "voice_enabled": settings.voice_enabled and bool(settings.assemblyai_api_key),
                 "jev_enabled": settings.jev_enabled and bool(settings.typesafe_api_key),
+                "jev_rubric_enabled": (
+                    settings.jev_enabled
+                    and bool(settings.typesafe_api_key)
+                    and settings.jev_rubric_enabled
+                ),
             },
         }
 

@@ -1,9 +1,15 @@
 /* Rubric 编辑器（复用于主代理 / 子代理）—— 对应后端 RubricConfig。
-   value 为 null 表示该节点不启用 rubric；开关切换启用/关闭。 */
-import { Card, Flex, Input, InputNumber, Select, Switch } from 'antd'
+   value 为 null 表示该节点不启用 rubric；开关切换启用/关闭。
+   grader=jev（JEV 门控分诊）：准则清单（statement + 行级阈值）+ 节点阈值 +
+   真值表预览；能力位（jev_rubric_enabled）驱动模式可见性。 */
+import { Card, Empty, Flex, Input, InputNumber, Select, Switch, Tag, Tooltip, Typography, Button } from 'antd'
 import { type ReactNode } from 'react'
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
+import { useCapabilities } from '@/hooks/useCapabilities'
 import { useMcpTools } from '@/hooks/useMcp'
 import type { RubricConfig } from '@/types'
+
+const { Text } = Typography
 
 export function RubricEditor({
   value,
@@ -15,10 +21,20 @@ export function RubricEditor({
   title?: string
 }): ReactNode {
   const tools = useMcpTools()
+  const caps = useCapabilities()
   const enabled = !!value
   const cur: RubricConfig = value ?? { content: '', fixed: false, max_iterations: 3, grader_tool_names: [] }
+  const isJev = cur.grader === 'jev'
+  const criteria = cur.criteria ?? []
 
   const patch = (p: Partial<RubricConfig>) => onChange({ ...cur, ...p })
+
+  const patchCriterion = (i: number, p: Partial<{ statement: string; threshold: number | null }>) => {
+    patch({ criteria: criteria.map((c, idx) => (idx === i ? { ...c, ...p } : c)) })
+  }
+
+  // 客户端校验（镜像后端 validator：后端为准，此处为即时反馈）
+  const criteriaValid = criteria.length > 0 && criteria.every((c) => (c.statement || '').trim())
 
   return (
     <Card size="small" title={title}>
@@ -34,10 +50,14 @@ export function RubricEditor({
             rows={4}
             value={cur.content ?? ''}
             onChange={(e) => patch({ content: e.target.value })}
-            placeholder="评分准则文本（grader 据此评审节点输出）"
+            placeholder={
+              isJev
+                ? '评分准则文本（可留空：未填时以下方准则清单序列化生成，LLM 与 JEV 评同一份）'
+                : '评分准则文本（grader 据此评审节点输出）'
+            }
             style={{ marginBottom: 8 }}
           />
-          <Flex gap={24} wrap>
+          <Flex gap={24} wrap style={{ marginBottom: 8 }}>
             <Flex align="center" gap={6}>
               <span style={{ fontSize: 13 }}>常驻：</span>
               <Switch checked={!!cur.fixed} onChange={(v) => patch({ fixed: v })} />
@@ -55,12 +75,128 @@ export function RubricEditor({
               />
             </Flex>
           </Flex>
+          <Flex align="center" gap={8} wrap>
+            <span style={{ fontSize: 13 }}>grader 模式：</span>
+            <Select
+              style={{ width: 220 }}
+              value={cur.grader ?? 'llm'}
+              onChange={(v) => patch({ grader: v })}
+              options={[
+                { value: 'llm', label: 'LLM 评审（默认）' },
+                {
+                  value: 'jev',
+                  label: 'JEV 门控（快道分诊）',
+                  disabled: !caps.jev_rubric_enabled,
+                },
+              ]}
+            />
+            {!caps.jev_rubric_enabled && (
+              <Tooltip title="后端未启用 JEV rubric 门控（JEV_RUBRIC_ENABLED/TYPESAFE_API_KEY）">
+                <Tag color="default">平台能力未启用</Tag>
+              </Tooltip>
+            )}
+            {isJev && (
+              <Flex align="center" gap={6}>
+                <Tooltip title="节点级快道阈值（P 与置信度双轴同值）：高=保守多走灰区（LLM 兜底），低=激进多走快道。行级阈值可逐条覆盖；缺省用平台全局值">
+                  <span style={{ fontSize: 13 }}>快道阈值：</span>
+                </Tooltip>
+                <InputNumber
+                  min={0.5}
+                  max={0.99}
+                  step={0.05}
+                  value={cur.pass_threshold ?? undefined}
+                  placeholder="平台默认"
+                  onChange={(v) => patch({ pass_threshold: typeof v === 'number' ? v : null })}
+                />
+              </Flex>
+            )}
+          </Flex>
+          {isJev && (
+            <div style={{ marginTop: 12 }}>
+              <Flex align="center" justify="space-between" style={{ marginBottom: 4 }}>
+                <span style={{ fontSize: 13 }}>达标准则（须全部满足）：</span>
+                <Button
+                  size="small"
+                  icon={<PlusOutlined />}
+                  onClick={() => patch({ criteria: [...criteria, { statement: '' }] })}
+                >
+                  添加准则
+                </Button>
+              </Flex>
+              {criteria.length === 0 ? (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description={
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      写正向达标断言（不写否定句），示例见输入框占位
+                    </Text>
+                  }
+                />
+              ) : (
+                <Flex vertical gap={8}>
+                  {criteria.map((c, i) => (
+                    <Flex key={i} gap={8} align="center">
+                      <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)', minWidth: 44 }}>
+                        准则 {i + 1}
+                      </span>
+                      <Input
+                        value={c.statement}
+                        onChange={(e) => patchCriterion(i, { statement: e.target.value })}
+                        placeholder="达标断言，如：回答中每个统计数据均标注了来源"
+                        style={{ flex: 1 }}
+                      />
+                      <Tooltip title="行级阈值覆盖（P 与 conf 双轴同值），留空继承节点/平台阈值">
+                        <InputNumber
+                          min={0.5}
+                          max={0.99}
+                          step={0.05}
+                          size="small"
+                          value={c.threshold ?? undefined}
+                          placeholder="阈值"
+                          onChange={(v) => patchCriterion(i, { threshold: typeof v === 'number' ? v : null })}
+                        />
+                      </Tooltip>
+                      <Button
+                        size="small"
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={() => patch({ criteria: criteria.filter((_, idx) => idx !== i) })}
+                      />
+                    </Flex>
+                  ))}
+                </Flex>
+              )}
+              {!criteriaValid && (
+                <div style={{ marginTop: 4 }}>
+                  <Text type="danger" style={{ fontSize: 12 }}>
+                    jev 模式需要至少一条非空达标准则
+                  </Text>
+                </div>
+              )}
+              <Card size="small" style={{ marginTop: 8 }}>
+                <Flex vertical gap={2}>
+                  <Text style={{ fontSize: 12 }}>门控规则（首评冻结准则后生效）</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    · 快道放行：全部准则 P≥t 且 conf≥t，跳过 LLM 评审
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    · 阈值 t：行级 → 节点
+                    {cur.pass_threshold != null ? `（现值 ${cur.pass_threshold}）` : ''} → 平台默认
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    · 其余一律走 LLM 评审兜底（含 JEV 不可用）
+                  </Text>
+                </Flex>
+              </Card>
+            </div>
+          )}
           <div style={{ marginTop: 8 }}>
             <span style={{ fontSize: 13 }}>grader 取证工具：</span>
             <Select
               mode="multiple"
               style={{ width: '100%', marginTop: 4 }}
-              placeholder="选择 grader 可调用的工具"
+              placeholder="选择 grader 可调用的工具（非空时 JEV 门控不参与——证据型评审不可概率短路）"
               value={cur.grader_tool_names ?? []}
               onChange={(v) => patch({ grader_tool_names: v })}
               options={(tools.data ?? []).map((t) => ({ value: t.name, label: t.name }))}
