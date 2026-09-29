@@ -7,10 +7,13 @@
 
    因此本卡逐条渲染每个待审批工具调用，各自独立审核（approve/edit/reject/respond），
    收齐全部 N 条决策后才整体 resume。allowed_decisions（来自 review_configs[i]）
-   用于动态启用/禁用对应按钮，尊重服务端配置。 */
+   用于动态启用/禁用对应按钮，尊重服务端配置。
+
+   Jev 标注：action.description 为守卫工厂产物时经 JevVerdictPanel 结构化渲染
+   （源徽标 + 四维概率计量条 + 结论文案），其余形态回落纯文本。 */
 import { Button, Flex, Input, Space, Tag, Typography } from 'antd'
 import { type ReactNode, useMemo, useState } from 'react'
-import { Check, Edit3, MessageCircleReply, X } from 'lucide-react'
+import { Check, Edit3, MessageCircleReply, ShieldAlert, ShieldCheck, ShieldOff, X } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type {
   ActionRequest,
@@ -53,6 +56,140 @@ function committedTagColor(t: DecisionType): string {
 function initDecisions(payload: InterruptPayload | undefined): (Decision | null)[] {
   const n = payload?.action_requests?.length ?? 0
   return Array.from({ length: n }, () => null)
+}
+
+/* —— Jev 守卫判决面板（HITL 卡内嵌）——
+   后端 description 工厂（jev_gate.build_shell_guard）产出三种标注形态：
+   [Jev] 四维概率串 → 结论 ｜ [规则] 高危模式命中 ｜ [Jev 不可用] 回落说明。
+   命中即渲染结构化面板（源徽标 + 概率计量条 + 结论文案），其余任意
+   description 回落纯文本（契约纯增量：非 Jev 审批说明不受影响）。
+   计量条语义色仅作读数倾向提示——权威结论以 tail 文案为准（阈值烘焙在
+   服务端，前端不重复判定）；system 为反向题（低=安全）。 */
+type JevProbKey = 'routine' | 'system' | 'safe' | 'conf'
+
+const JEV_ANNOTATION_RE =
+  /^\[Jev\]\s+routine=(nan|[0-9.]+)\s+system=(nan|[0-9.]+)\s+safe=(nan|[0-9.]+)\s+conf=(nan|[0-9.]+)\s+→\s+(.+)$/
+const RULE_ANNOTATION_RE = /^\[规则\]\s*命中高危命令模式：(.+?)——必须人工审批$/
+const UNAVAILABLE_ANNOTATION_RE = /^\[Jev 不可用，回落人工审批\]\s*(.*)$/
+
+const JEV_METERS: Record<JevProbKey, { label: string; polarity: 'pos' | 'rev' | 'conf' }> = {
+  routine: { label: '常规范围', polarity: 'pos' },
+  system: { label: '系统触及', polarity: 'rev' },
+  safe: { label: '安全档位', polarity: 'pos' },
+  conf: { label: '置信度', polarity: 'conf' },
+}
+
+function parseProb(raw: string): number | null {
+  if (raw === 'nan') return null
+  const v = Number.parseFloat(raw)
+  return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : null
+}
+
+/** 计量条填充色：正向题高=绿、反向题（system）低=绿/高=红、置信度恒主蓝 */
+function meterFill(polarity: 'pos' | 'rev' | 'conf', v: number | null): string {
+  if (v === null) return 'transparent'
+  if (polarity === 'conf') return 'var(--color-primary)'
+  if (polarity === 'pos') return v >= 0.75 ? 'var(--color-success)' : 'var(--color-warning)'
+  return v <= 0.25 ? 'var(--color-success)' : v >= 0.75 ? 'var(--color-danger)' : 'var(--color-warning)'
+}
+
+function JevVerdictPanel({ description }: { description: string }): ReactNode {
+  const parsed = useMemo(() => {
+    const jev = JEV_ANNOTATION_RE.exec(description)
+    if (jev) {
+      const [, routine, system, safe, conf, tail] = jev
+      return {
+        kind: 'jev' as const,
+        probs: {
+          routine: parseProb(routine),
+          system: parseProb(system),
+          safe: parseProb(safe),
+          conf: parseProb(conf),
+        },
+        tail: tail.trim(),
+        pass: tail.startsWith('建议放行'),
+      }
+    }
+    const rule = RULE_ANNOTATION_RE.exec(description)
+    if (rule) return { kind: 'rule' as const, label: rule[1].trim() }
+    const down = UNAVAILABLE_ANNOTATION_RE.exec(description)
+    if (down) return { kind: 'unavailable' as const, reason: down[1].trim() }
+    return { kind: 'plain' as const }
+  }, [description])
+
+  if (parsed.kind === 'plain') {
+    return (
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '0 0 8px' }}>
+        {description}
+      </Typography.Paragraph>
+    )
+  }
+
+  if (parsed.kind === 'rule') {
+    return (
+      <div className="jev-verdict">
+        <div className="jev-verdict__header">
+          <span className="jev-verdict__badge jev-verdict__badge--rule">
+            <ShieldAlert size={13} /> 规则引擎
+          </span>
+          <span className="jev-verdict__tail jev-verdict__tail--danger">
+            命中高危命令模式：{parsed.label}——必须人工审批
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  if (parsed.kind === 'unavailable') {
+    return (
+      <div className="jev-verdict">
+        <div className="jev-verdict__header">
+          <span className="jev-verdict__badge jev-verdict__badge--down">
+            <ShieldOff size={13} /> Jev 不可用
+          </span>
+          <span className="jev-verdict__tail jev-verdict__tail--ask">
+            回落人工审批{parsed.reason ? `（${parsed.reason}）` : ''}
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="jev-verdict">
+      <div className="jev-verdict__header">
+        <span className="jev-verdict__badge jev-verdict__badge--jev">
+          <ShieldCheck size={13} /> Jev 守卫判决
+        </span>
+        <span
+          className={`jev-verdict__tail ${parsed.pass ? 'jev-verdict__tail--pass' : 'jev-verdict__tail--ask'}`}
+        >
+          {parsed.tail}
+        </span>
+      </div>
+      <div className="jev-verdict__meters">
+        {(Object.keys(JEV_METERS) as JevProbKey[]).map((k) => {
+          const { label, polarity } = JEV_METERS[k]
+          const v = parsed.probs[k]
+          return (
+            <div key={k} className="jev-verdict__meter">
+              <span className="jev-verdict__label">{label}</span>
+              <span className="jev-verdict__track">
+                <span
+                  className="jev-verdict__fill"
+                  style={{
+                    width: v === null ? 0 : `${Math.round(v * 100)}%`,
+                    background: meterFill(polarity, v),
+                  }}
+                />
+              </span>
+              <span className="jev-verdict__value">{v === null ? '—' : v.toFixed(2)}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 /** 单个 action_request 的决策卡：选模式→（如需）填参/留言→确认。
@@ -139,24 +276,7 @@ function ActionDecisionCard({
           工具调用待审批：<code>{name}</code>
         </Typography.Text>
       </Flex>
-      {action.description ? (
-        <pre
-          style={{
-            margin: '0 0 8px',
-            padding: '6px 8px',
-            background: 'var(--color-bg-container)',
-            border: '1px solid var(--color-border-soft)',
-            borderRadius: 6,
-            fontFamily: 'var(--font-mono)',
-            fontSize: 12,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
-            color: 'var(--color-text-secondary)',
-          }}
-        >
-          {action.description}
-        </pre>
-      ) : null}
+      {action.description ? <JevVerdictPanel description={action.description} /> : null}
       <pre
         style={{
           margin: '0 0 12px',

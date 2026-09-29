@@ -82,6 +82,9 @@ function bufferToken(t: PendingToken): void {
 }
 
 export function dispatchStreamEvent(e: SSEEvent): void {
+  const store = useChatStore.getState()
+  // 观察流水位记录（重挂增量对齐用；POST/GET/语音三路事件同源记录）
+  if (e.id) store.setLastEventId(e.id)
   // token 入缓冲延后落地；其余事件先冲刷，保证顺序与到达严格一致（见文件头）
   if (e.type === 'token') {
     const p = e.payload as unknown as TokenPayload
@@ -94,7 +97,18 @@ export function dispatchStreamEvent(e: SSEEvent): void {
     return
   }
   flushPendingTokens()
-  const store = useChatStore.getState()
+  // 观察流重挂（GET 重放）时 store 可能仍在 idle：内容事件到达即进入
+  // streaming，输入锁与「生成中」状态随重放恢复（POST/语音路径事件到达前
+  // 已置 streaming，此处守卫天然空转）
+  if (
+    store.status === 'idle' &&
+    (e.type === 'agent_message' || e.type === 'thinking' || e.type === 'tool_call' ||
+      e.type === 'tool_result' || e.type === 'todos' || e.type === 'file_change' ||
+      e.type === 'usage')
+  ) {
+    store.setStatus('streaming')
+    store.setStreamSource('sse')
+  }
   switch (e.type) {
     case 'status': {
       // 附件预消费进度（非错误型）：parsing/skipped 映射临时徽标；parsed 不展示
@@ -173,6 +187,16 @@ export function dispatchStreamEvent(e: SSEEvent): void {
       store.setStreamError(p.message ?? '会话出错')
       break
     }
+    case 'canceled':
+      // run 被显式取消（本页 / 他处触发 POST /cancel、语音 cancel 帧）：
+      // 与手动中止同落态（markTurnInterrupted 幂等，不叠加提示条）
+      store.finalizeStreaming()
+      store.setParseStatus(null)
+      store.clearTodos()
+      store.markTurnInterrupted()
+      store.setStatus('idle')
+      store.setStreamSource(null)
+      break
     default:
       break
   }

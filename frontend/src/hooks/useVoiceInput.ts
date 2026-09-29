@@ -10,8 +10,8 @@
     - agent 事件经共享 dispatchStreamEvent 写入（渲染与 SSE 完全一致）；
     - stt_empty：复位麦克风（无消息无 astream，草稿保留待继续编辑）；error：现有
       error 落态 + 复位（草稿同样保留）。
-    - 推理期中止（cancelStream）：cancel 帧 → 后端取消 astream 并释放 withdraw 闸，
-      本地落态由调用方完成（与手打 SSE abort 同语义，无终态帧）。
+    - 推理期中止（cancelStream）：cancel 帧 → 后端取消 run 并广播 canceled
+      终态帧（与手打 SSE 的 POST /cancel 同契约；本地落态由 dispatch 统一处理）。
     采麦：AudioWorklet 直出 Float32 → 主线程降采样 16kHz → Int16 PCM，100ms/帧上行。 */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { asSSEEvent, VoiceConnection } from '@/api/voice'
@@ -147,13 +147,17 @@ export function useVoiceInput(sessionId: UUID | null, enabled: boolean): UseVoic
         break
       }
       default: {
-        // agent 事件（token/tool_call/.../done/interrupt/error）：与 SSE 同源分发
+        // agent 事件（token/tool_call/.../done/interrupt/error/canceled）：与 SSE
+        // 同源分发。终态/中断后麦克风视作复位（interrupt 时 HITL 卡接管输入；
+        // canceled/error 复位后再按 start 由后端"超越"语义开新回合，或 release
+        // 收口旧回合）
         const sse = asSSEEvent(frame)
         if (!sse) return
         dispatchStreamEvent(sse)
-        // 终态/中断后麦克风视作复位（interrupt 时 HITL 卡接管输入；
-        // error 复位后再按 start 由后端"超越"语义开新回合，或 release 收口旧回合）
-        if (sse.type === 'done' || sse.type === 'error' || sse.type === 'interrupt') {
+        if (
+          sse.type === 'done' || sse.type === 'error' || sse.type === 'interrupt' ||
+          sse.type === 'canceled'
+        ) {
           const cur = useChatStore.getState()
           if (cur.voiceState !== 'idle') cur.setVoiceState('idle')
         }

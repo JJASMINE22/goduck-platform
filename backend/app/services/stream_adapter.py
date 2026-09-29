@@ -35,7 +35,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph.state import CompiledStateGraph
@@ -98,7 +99,7 @@ def _stream_id(chunk, meta: dict, agent_path: str) -> str:
     return f"{agent_path}:{meta.get('langgraph_node', '?')}:{meta.get('langgraph_step', '?')}"
 
 
-def _normalize_todos(raw: Any) -> Optional[list[dict]]:
+def _normalize_todos(raw: Any) -> list[dict] | None:
     """Normalize a `todos` state-channel value into [{content, status}] dicts.
 
     TodoListMiddleware persists todos in graph state; versions differ on entry
@@ -183,7 +184,7 @@ def _has_interrupt(state) -> bool:
     return False
 
 
-def _usage_from_message(msg) -> Optional[dict]:
+def _usage_from_message(msg) -> dict | None:
     """Normalize a message's usage_metadata into the fixed five-key shape.
 
     Source keys vary across langchain-core versions / providers:
@@ -239,10 +240,10 @@ class StreamAdapter:
         agent: CompiledStateGraph,
         content: str | list,
         config: dict,
-        rubric: Optional[str] = None,
-        upload_ids: Optional[list[str]] = None,
-        raw_content: Optional[str] = None,
-        kb_ids: Optional[list[str]] = None,
+        rubric: str | None = None,
+        upload_ids: list[str] | None = None,
+        raw_content: str | None = None,
+        kb_ids: list[str] | None = None,
     ) -> AsyncIterator[SSEEvent]:
         """Stream a fresh user message. Yields until done / interrupt / error.
 
@@ -397,6 +398,11 @@ class StreamAdapter:
                         yield SSEEvent(type="done", payload={})
                         return
         except Exception as e:
+            if isinstance(e.__context__, GeneratorExit):
+                # 关闭途中（aclose/asyncgen 终结器）抛出的清理异常：此时生成器
+                # 正在处理 GeneratorExit，再 yield 是非法的（"async generator
+                # ignored GeneratorExit"）。原样上抛交给关闭方，不走 error floor。
+                raise
             logger.exception("stream error: %s", e)
             # Error floor: always close the stream with an error event so the
             # front-end can determine final state (plan §11.2.3). 先取走已落盘

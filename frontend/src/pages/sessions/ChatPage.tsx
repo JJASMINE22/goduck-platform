@@ -1,8 +1,8 @@
 /* 聊天页面（DESIGN §10.3）—— SSE 消息流 + HITL 决策 + 附件（能力驱动）+ 历史灌入。
    状态机由 useStreamChat 驱动（准则 F3）。进入会话 reset + 灌历史；auto-scroll 跟随新消息。
    布局：页内双视图（会话 | 工作区）display 切换保活 —— 切到工作区时聊天组件不卸载，
-   SSE 流与滚动位置不丢（useStreamChat 卸载即中止流的约束）；消息流居中阅读列 +
-   输入框可拖拽改高。 */
+   滚动位置不丢；离开页面时回合由服务端续跑（run 解耦），重进经观察流补帧。
+   消息流居中阅读列 + 输入框可拖拽改高。 */
 import { Alert, App as AntApp, Button, Flex, Segmented, Space, Tag, Typography } from 'antd'
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -10,7 +10,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, FolderOpen, MessageSquare, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
 import { useCronJobs } from '@/hooks/useCron'
-import { useStreamChat } from '@/hooks/useStreamChat'
+import { useStreamChat, detachLiveConsumers } from '@/hooks/useStreamChat'
 import { useVoiceInput } from '@/hooks/useVoiceInput'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { useWorkspaceCapability } from '@/hooks/useWorkspace'
@@ -103,7 +103,15 @@ export function ChatPage(): ReactNode {
     : undefined
   const cronRunning = cronJob?.last_status === 'running'
 
-  const stream = useStreamChat(sessionId || null)
+  // 观察流仅普通会话开启：任务会话（cron）保持 /history 轮询跟随（行为不变），
+  // 归档会话不可能有 run。观察流与 /history 并行发起（重叠 RTT），事件分发
+  // 等历史灌入完成后按序冲刷（水合门在 hook 内，settleHydration 由下方灌入
+  // effect 调用）
+  const stream = useStreamChat(
+    sessionId || null,
+    session?.kind === 'chat' && session?.status !== 'archived',
+  )
+  const settleHydration = stream.settleHydration
   const capabilities = useCapabilities()
   // 语音输入：仅后端能力开启时预建 WS（与按键解耦）；推理闸门复用 stream.status。
   // 预建连仅限可发言会话：任务会话（kind=cron）与归档会话会被后端 WS 守卫以
@@ -114,9 +122,9 @@ export function ChatPage(): ReactNode {
   )
 
   /** 中止当前流（按来源路由，语音回合无法中止/回撤的冲突修复点）：
-      语音发起 → WS cancel 帧（后端取消 astream、即时释放 withdraw 的 409 闸）；
-      SSE 发起 → abort fetch（FastAPI 取消传播至 event_gen finally）。两条路径
-      随后统一本地固化半截消息并回 idle（SSE abort 本就无终态帧，语义一致）。
+      语音发起 → WS cancel 帧（后端取消 run 并广播 canceled 终态）；SSE 发起 →
+      POST /cancel + 本地落态兜底（run 释放会话闸，withdraw 即刻放行）。两条路径
+      随后统一本地固化半截消息并回 idle（语义一致，canceled 事件幂等）。
       回调保持引用稳定（依赖的是两个稳定句柄而非整个 voice/stream 对象）：
       该函数经 props 传入 memo 化的 MessageList/气泡，引用漂移会击穿渲染隔离。 */
   const voiceCancelStream = voice.cancelStream
@@ -264,7 +272,12 @@ export function ChatPage(): ReactNode {
     forcedLoadRef.current = false
     forcedAtRef.current = 0
     lastCronLoadAtRef.current = 0
-    if (!retainedRef.current) reset()
+    if (!retainedRef.current) {
+      // 跨会话进入：拆除上一会话的本地消费连接（防旧流事件串进新会话的
+      // store）——服务端 run 不受影响，重进原会话经观察流补帧
+      detachLiveConsumers()
+      reset()
+    }
   }, [sessionId, reset])
 
   // —— 待审批恢复（HITL 重入重建）——
@@ -351,8 +364,11 @@ export function ChatPage(): ReactNode {
   // 历史全空"的直接诱因。以 store 现存消息数为准（跨会话首灌时 store 已被 reset 清空，
   // 空快照照常灌入）。React Query 出错时保留上次 data，故此处仍能灌入兜底历史。
   useEffect(() => {
-    // 同会话往返且未被显式失效：store 即最新真值，跳过一切灌入
-    if (retainedRef.current && !forcedLoadRef.current) return
+    // 同会话往返且未被显式失效：store 即最新真值，跳过一切灌入（水合即完成）
+    if (retainedRef.current && !forcedLoadRef.current) {
+      settleHydration()
+      return
+    }
     // 显式失效：只接受失效之后完成的新快照（refetch 失败时 dataUpdatedAt 不变）
     if (forcedLoadRef.current && historyQ.dataUpdatedAt <= forcedAtRef.current) return
     // 流式进行中禁止灌入：服务端快照在节点完成前不含 token 级部分输出，
@@ -360,7 +376,12 @@ export function ChatPage(): ReactNode {
     // 待审批（interrupted）同样禁止：快照灌入会冲掉刚写入的审批卡（loadHistory
     // 已保留 pendingInterrupt，此处守卫双保险；回撤路径会先 clearInterrupt+idle）
     const stNow = useChatStore.getState()
-    if (stNow.status === 'streaming' || stNow.status === 'interrupted') return
+    if (stNow.status === 'streaming' || stNow.status === 'interrupted') {
+      // 冷进入的中断恢复先到（罕见时序）：历史灌入被拦即降级放行水合门，
+      // 重放照常冲刷（仅当前回合可见，可接受）
+      settleHydration()
+      return
+    }
     // 回撤兜底快照只对"回撤发起时刻之前"的本地状态负责：若用户已编辑重发
     // （forcedAt 之后又出现新消息），迟到的快照会整体抹掉新回合——正是
     // "回撤后重发、query 不在会话末尾"的诱因。放弃本次兜底（乐观删除已生效）。
@@ -368,17 +389,30 @@ export function ChatPage(): ReactNode {
       const st = useChatStore.getState()
       if (st.messages.some((m) => m.createdAt > forcedAtRef.current)) {
         forcedLoadRef.current = false
+        settleHydration()
         return
       }
     }
     if (!historyQ.data || historyQ.isFetching) return
-    if (historyQ.data.length === 0 && useChatStore.getState().messages.length > 0) return
+    if (historyQ.data.length === 0 && useChatStore.getState().messages.length > 0) {
+      // store 已有本地基底（空快照不可抹白）：水合视为完成
+      settleHydration()
+      return
+    }
     // 消息 + 工具卡一次重建：AI 消息的 tool_calls 与 ToolMessage 的结果配对还原，
     // 刷新 / 重进 / 归档会话均可回看工具调用细节（映射细节见 historyReplay.ts）
     const { messages, toolCalls } = buildHistoryReplay(historyQ.data)
     loadHistory(sessionId, messages, toolCalls)
     forcedLoadRef.current = false
-  }, [sessionId, historyQ.data, historyQ.dataUpdatedAt, historyQ.isFetching, loadHistory])
+    // 历史基底已灌入：解除水合门，观察流缓冲的事件按序冲刷转 live
+    settleHydration()
+  }, [sessionId, historyQ.data, historyQ.dataUpdatedAt, historyQ.isFetching, loadHistory, settleHydration])
+
+  // —— 水合门兜底（配合 hook 内的超时）：历史查询失败时放行，降级为仅重放
+  // 内容可见（可接受）——
+  useEffect(() => {
+    if (historyQ.isError) settleHydration()
+  }, [historyQ.isError, settleHydration])
 
   // —— 任务会话内容跟随（cron live-follow）——
   // 调度器执行无 SSE sink（后端 cron_scheduler._invoke 直接消费事件流），浏览侧

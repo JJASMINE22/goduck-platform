@@ -19,7 +19,7 @@
   本轮 prompt——轮次相互独立，累积历史只会线性抬高输入成本、并让旧轮产出
   （含其摘要）污染本轮（见 _reset_thread_context）。
 
-进程模型：与 StreamTracker 一致的单进程假设（个人平台单 worker）。多副本需
+进程模型：与 RunManager 一致的单进程假设（个人平台单 worker）。多副本需
 改为 SELECT ... FOR UPDATE SKIP LOCKED 认领。
 """
 from __future__ import annotations
@@ -138,7 +138,7 @@ class CronScheduler:
                 continue
             # ③ 用户侧流占用（审批 resume 进行中）→ 延后到下个槽位
             thread_id = job.get("thread_id")
-            if thread_id and self.st.stream_tracker.is_streaming(thread_id):
+            if thread_id and self.st.run_manager.is_active(thread_id):
                 await self._skip(job, now, "busy: 会话正被用户侧流占用")
                 continue
             # ④ 原子认领（乐观并发推进 next_run_at），竞态输掉则静默让出
@@ -174,7 +174,7 @@ class CronScheduler:
         if job.get("last_status") == "awaiting_approval":
             return False, "任务挂起等待审批，请先在任务会话中完成 HITL 审批"
         thread_id = job.get("thread_id")
-        if thread_id and self.st.stream_tracker.is_streaming(thread_id):
+        if thread_id and self.st.run_manager.is_active(thread_id):
             return False, "任务会话正被占用（审批流进行中），请稍后重试"
         # 无人值守禁用能力（纵深第三层，fail-closed：手动路径直接 409）：
         # shell / 工具审批 / 附件 / 知识库
@@ -262,16 +262,19 @@ class CronScheduler:
     async def _invoke(self, job: dict) -> tuple[str, Optional[str]]:
         """一次任务执行：取图 → 会话保障 → 线程重置 → 与普通会话完全同构的注入。
 
-        消费 StreamAdapter 事件流（无 SSE sink）：usage 即时入库、终态事件
-        （done/interrupt/error 契约）映射为任务状态（interrupt 计为 error：
-        cron 禁 HITL，中断无人消费）。文件变更徽标/摘要等
-        中间件行为与用户会话零差异（_run 内部 activate 的 collector 照常工作）。
+        经 RunManager 以 kind=cron 启动 run（无 SSE 订阅者）：usage 即时入库
+        （on_usage）、终态事件（done/interrupt/error 契约，含防御性 canceled）
+        映射为任务状态（interrupt 计为 error：cron 禁 HITL，中断无人消费）。
+        文件变更徽标/摘要等中间件行为与用户会话零差异（_run 内部 activate 的
+        collector 照常工作）。单写者闸与用户侧 POST/resume 统一在 RunManager。
 
         上下文策略（与聊天会话的分野）：每轮注入前重置线程
         （_reset_thread_context），模型只见系统提示 + 平台记忆(/memories) +
         本轮 prompt——定时任务是相互独立的单次执行，累积历史只会线性抬高
         输入成本、并让旧轮产出（含其摘要）污染本轮。
         """
+        from app.services.run_manager import RunConflictError
+
         agent = await self.st.agent_registry.get_or_build(job["agent_id"])
         session = await self._ensure_session(job)
         thread_id = session["thread_id"]
@@ -282,33 +285,47 @@ class CronScheduler:
             }
         }
 
-        # 双检 stream_tracker：tick 检查后到此处之间的用户侧 resume 竞态兜底。
-        # 已认领（next_run_at 已推进），该轮计为 error 而非静默丢弃（run 可见）。
-        if self.st.stream_tracker.is_streaming(thread_id):
+        # 双检 RunManager 单写者闸：tick 检查后到此处之间的用户侧 resume 竞态
+        # 兜底。已认领（next_run_at 已推进），该轮计为 error 而非静默丢弃（run
+        # 可见）。
+        if self.st.run_manager.is_active(thread_id):
             return "error", "会话正被用户侧流占用，本轮放弃（下个槽位自动恢复）"
 
-        final = None
-        self.st.stream_tracker.acquire(thread_id)
-        try:
-            # 持锁后、注入前重置：与用户侧 resume（同锁串行）互斥，重置绝不落在
-            # 活跃流上；awaiting_approval 门卫（tick 门②/run_now）保证不会误删
-            # 待审批现场。残余竞态（resume 已过 interrupt 校验、尚未 acquire 的
-            # 亚毫秒窗口）最坏表现为该次 resume 报错一次，接受。
-            await self._reset_thread_context(agent, config, thread_id, job["user_id"])
-            async for ev in self.st.stream_adapter.stream_message(
-                agent, job["prompt"], config, raw_content=job["prompt"]
-            ):
-                if ev.type == "usage":
-                    # token 用量即时入库（best-effort，失败不打断运行；同 stream.py）
-                    with contextlib.suppress(Exception):
-                        await dbmod.add_session_usage(self.st.pool, session["id"], ev.payload)
-                final = ev
-        finally:
-            self.st.stream_tracker.release(thread_id)
+        # 持锁语义下、注入前重置：start_run 的单写者闸与用户侧 resume 互斥，
+        # 重置绝不落在活跃 run 上；awaiting_approval 门卫（tick 门②/run_now）
+        # 保证不会误删待审批现场。残余竞态（resume 已过 interrupt 校验、尚未
+        # start_run 的亚毫秒窗口）由下方 start_run 的 RunConflictError 兜底，
+        # 最坏表现为该次轮次计为 error run，接受。
+        await self._reset_thread_context(agent, config, thread_id, job["user_id"])
+
+        async def on_usage(payload: dict) -> None:
+            # token 用量即时入库（best-effort，失败不打断运行；同 stream.py）
+            with contextlib.suppress(Exception):
+                await dbmod.add_session_usage(self.st.pool, session["id"], payload)
+
+        async def on_final(_final_event) -> None:
             with contextlib.suppress(Exception):
                 await dbmod.touch_session(self.st.pool, session["id"])
 
-        # 契约：流必以 done | interrupt | error 收尾；防御性兜底到 error。
+        def factory():
+            return self.st.stream_adapter.stream_message(
+                agent, job["prompt"], config, raw_content=job["prompt"]
+            )
+
+        try:
+            run = await self.st.run_manager.start_run(
+                thread_id, session["id"], "cron", factory,
+                on_usage=on_usage, on_final=on_final,
+            )
+        except RunConflictError as e:
+            return "error", f"会话运行冲突（用户侧流抢先启动）：{e}"
+
+        try:
+            final = await run.task
+        except asyncio.CancelledError:
+            return "error", "运行被取消（服务关闭或超时中止）"
+
+        # 契约：流必以 done | interrupt | error | canceled 收尾；防御性兜底到 error。
         ftype = final.type if final is not None else "error"
         if ftype == "interrupt":
             # cron 已禁 HITL（validator 拒绝 + 构建期剥离双保险），此处为旁路

@@ -104,6 +104,10 @@ export interface ChatState {
   usageTotals: UsageTotals
   // 发送框草稿：上提到 store，使回撤可回填原文（受控于 store，非组件局部 state）
   draft: string
+  /** 观察流重挂水位：最近收到的 SSE id（"{run_token}.{seq}"）。跨会话进入 /
+   *  历史重灌时清空（重挂即全量回放）；仅会话内存活（刷新即失，配合 /history
+   *  重建后全量补帧，天然正确）。 */
+  lastEventId: string | null
   // —— 语音输入（麦克风小状态机，与 status 正交联动）——
   /** 'idle'=可按压；'recording'=长按采麦中；'transcribing'=松开等终稿 */
   voiceState: VoiceState
@@ -160,6 +164,8 @@ export interface ChatState {
   clearKbs: () => void
   setKbs: (list: KbRef[]) => void
   setDraft: (v: string) => void
+  /** 观察流水位记录（dispatchStreamEvent 逐事件调用；loadHistory/reset 清空） */
+  setLastEventId: (id: string) => void
   /** 语音状态机流转（idle→recording→transcribing→idle） */
   setVoiceState: (s: VoiceState) => void
   /** stt_chunk 中间稿整段替换（后端每 Turn 全量下发，非增量） */
@@ -196,6 +202,7 @@ const initialState = {
     total_tokens: 0,
   } as UsageTotals,
   draft: '',
+  lastEventId: null as string | null,
   voiceState: 'idle' as VoiceState,
   interimTranscript: '',
 }
@@ -294,6 +301,11 @@ export const useChatStore = create<ChatState>((set) => ({
         s.messages.slice(lastUser + 1).some((m) => m.role === 'agent' && (m.content !== '' || !!m.reasoning)) ||
         turnTools.length > 0
       if (!hasOutput) return {}
+      // 幂等守卫：本回合已有中断提示条则不再叠加（本地中止落态与 canceled
+      // 终态事件可能先后到达——取消端点广播与本页本地兜底并行）
+      if (s.messages.slice(lastUser + 1).some((m) => m.role === 'agent' && m.interrupted)) {
+        return {}
+      }
       return {
         messages: [
           ...s.messages,
@@ -441,6 +453,8 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setDraft: (v) => set({ draft: v }),
 
+  setLastEventId: (id) => set({ lastEventId: id }),
+
   setVoiceState: (voiceState) => set({ voiceState }),
 
   setInterimTranscript: (interimTranscript) => set({ interimTranscript }),
@@ -483,6 +497,8 @@ export const useChatStore = create<ChatState>((set) => ({
         parseStatus: null,
         fileChanges: [],
         pendingAttachments: [],
+        // 服务端快照重建后旧水位失效（跨 run / 已过期）：重挂走全量回放
+        lastEventId: null,
       }
     }),
 

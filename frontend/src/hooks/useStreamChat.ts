@@ -1,16 +1,25 @@
-/* 聊天 SSE 状态机 hook（DESIGN §8 核心）。
+/* 聊天 SSE 状态机 hook（DESIGN §8 核心）—— 回合与连接解耦版（sse-run-detach-reattach）。
    职责：把后端 SSE 事件流映射到 chatStore 动作；维护 idle/streaming/interrupted/error。
-   - send：发新消息（仅 idle 可用）
-   - resume：HITL 决策恢复（仅 interrupted 可用）
-   - cancel：中止当前流
-   终态仅由 done/interrupt/error 决定（准则 F3）。
-   注：SSE 事件分发已提取为 lib/streamEvents.dispatchStreamEvent，
-   与语音 WS 下行隧道共用同一映射。 */
+   - send：发新消息（仅 idle 可用）；resume：HITL 决策恢复（仅 interrupted 可用）；
+   - cancel：显式取消（POST /cancel + 本地落态兜底，镜像手动中止语义）；
+   - 观察流（GET /sessions/{id}/stream）：重进会话 / POST 断连后的补帧通道。
+   终态仅由 done/interrupt/error/canceled 决定（准则 F3）。
+
+   连接生命周期（核心行为变化）：
+   - POST fetch 与 GET 观察流登记在模块级（跨组件卸载存活）——离开页面只关
+     "观察窗口"，服务端 run 后台续跑，重进经观察流补帧转 live；
+   - 切换会话时统一拆除本地消费连接（detachLiveConsumers，防跨会话串流），
+     服务端 run 仍不受影响；
+   - POST 断连（网络异常 / 后端硬杀）：先尝试观察流接续（run 可能仍在执行），
+     204 确认无 run 才回落本地截断（旧行为）。 */
 import { useCallback, useEffect, useRef } from 'react'
+import { buildHistoryReplay } from '@/features/chat/historyReplay'
+import { sessionsApi } from '@/api/sessions'
 import { streamApi } from '@/api/stream'
 import { useChatStore } from '@/store/chatStore'
 import { dispatchStreamEvent, flushPendingTokens } from '@/lib/streamEvents'
-import type { ChatStreamStatus, Decision, UUID } from '@/types'
+import type { StreamTermination } from '@/lib/sse'
+import type { ChatStreamStatus, Decision, SSEEvent, UUID } from '@/types'
 
 export interface SendOptions {
   rubric?: string
@@ -21,37 +30,217 @@ export interface UseStreamChat {
   send: (content: string, opts?: SendOptions) => Promise<void>
   resume: (decisions: Decision[]) => Promise<void>
   cancel: () => void
+  /** 解除水合门（ChatPage 历史灌入完成后调用；重复调用幂等） */
+  settleHydration: () => void
 }
 
-export function useStreamChat(sessionId: UUID | null): UseStreamChat {
-  const abortRef = useRef<AbortController | null>(null)
+// —— 模块级 live 连接登记（跨卸载存活；同会话至多一路消费，防双路重复分发）——
+let livePost: { sessionId: string; controller: AbortController } | null = null
+let liveObserver: { sessionId: string; controller: AbortController } | null = null
 
-  // 卸载时中止流，防内存泄漏；若卸载时仍在流式（切页离开），还需固化半截消息
-  // 并回 idle——chatStore 在同会话往返时被保留（ChatPage 不再 reset），状态机
-  // 卡在"生成中"会让重进后输入框永久锁定（准则 F3：终态必须落定）。
-  // 中止语义同 cancel：拆除在途任务清单浮窗，避免重进会话时悬挂旧计划。
-  useEffect(() => {
-    return () => {
-      // 先冲刷 token 合并缓冲再固化：半截消息必须包含已到达未落地的增量
-      flushPendingTokens()
-      const controller = abortRef.current
-      controller?.abort()
-      const store = useChatStore.getState()
-      if (controller && store.status === 'streaming') {
-        store.finalizeStreaming()
-        store.clearTodos()
-        // 离开页面 = 本回合就地截断：在途工具卡标记已中断（结果永不再到达，
-        // 「执行中」不应永挂），同 cancel 语义；半截消息由 finalize 固化
-        store.markTurnInterrupted()
-        store.setStatus('idle')
-      }
+function abortLivePost(sessionId: string): void {
+  if (livePost && livePost.sessionId === sessionId) {
+    livePost.controller.abort()
+    livePost = null
+  }
+}
+
+function stopObserver(sessionId: string): void {
+  if (liveObserver && liveObserver.sessionId === sessionId) {
+    liveObserver.controller.abort()
+    liveObserver = null
+  }
+}
+
+/** 拆除全部本地消费连接（跨会话切换时由 ChatPage 调用；服务端 run 不受影响）。 */
+export function detachLiveConsumers(): void {
+  livePost?.controller.abort()
+  livePost = null
+  liveObserver?.controller.abort()
+  liveObserver = null
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+const OBSERVER_MAX_RETRIES = 5
+
+/** 水合门兜底时限：正常路径（历史灌入/往返跳过）远早于此 settle */
+const HYDRATION_FALLBACK_MS = 10_000
+
+/** 服务端真值重建（resync 后）：/history 重灌 store（保留待审批/中断态，
+ *  清空 lastEventId → 后续重挂全量回放）。 */
+async function reloadFromServer(sessionId: string): Promise<void> {
+  const history = await sessionsApi.history(sessionId)
+  const { messages, toolCalls } = buildHistoryReplay(history)
+  const store = useChatStore.getState()
+  if (store.sessionId === sessionId) store.loadHistory(sessionId, messages, toolCalls)
+}
+
+/**
+ * 水合门（B-Tier1）：观察流请求与 /history **并行**发起（重叠 RTT），但事件
+ * 分发等历史水合完成后按序冲刷——先缓冲后冲刷，不丢只延后。
+ *
+ * hydration 为 null（同会话往返 / 断连恢复路径，store 已有基底）时直通；
+ * 水合失败或超时由调用方兜底 settle，此处 flush 同样生效（降级为仅当前回合
+ * 可见，可接受）。冲刷同步完成且先置标志——单线程下后续到达的事件不会插队。
+ */
+function hydrationGate(
+  onEvent: (e: SSEEvent) => void,
+  hydration: Promise<void> | null,
+): (e: SSEEvent) => void {
+  if (!hydration) return onEvent
+  let hydrated = false
+  const queue: SSEEvent[] = []
+  const flush = () => {
+    hydrated = true
+    for (const e of queue.splice(0)) onEvent(e)
+  }
+  hydration.then(flush, flush)
+  return (e: SSEEvent) => {
+    if (hydrated) onEvent(e)
+    else queue.push(e)
+  }
+}
+
+/**
+ * 观察循环：挂观察流直到 run 终态 / 确认无 run（204）。
+ * - resync → /history 重建后全量重挂（loadHistory 已清 lastEventId）；
+ * - 网络异常 → 有界重试（run 可能仍在服务端执行，观察是只读幂等的）；
+ * - entryGuard：挂载路径下本地 POST/语音正在消费时不双路（恢复路径跳过）。
+ */
+async function runObserverLoop(
+  sessionId: string,
+  signal: AbortSignal,
+  entryGuard: boolean,
+  onEvent: (e: SSEEvent) => void,
+  hydration: Promise<void> | null,
+): Promise<void> {
+  const dispatch = hydrationGate(onEvent, hydration)
+  let retries = 0
+  while (!signal.aborted) {
+    const store = useChatStore.getState()
+    if (store.sessionId !== sessionId) return
+    if (entryGuard && store.status === 'streaming') return
+    entryGuard = false // 仅首轮生效
+    let term: StreamTermination
+    try {
+      term = await streamApi.observe(
+        sessionId,
+        { onEvent: dispatch },
+        signal,
+        store.lastEventId ?? undefined,
+      )
+      retries = 0
+    } catch {
+      if (signal.aborted) return
+      if (++retries > OBSERVER_MAX_RETRIES) return
+      await sleep(1_000)
+      continue
     }
-  }, [])
+    if (signal.aborted) return
+    if (term === 'resync') {
+      try {
+        await reloadFromServer(sessionId)
+      } catch {
+        return // 重建失败：维持现状（终态或重进会话时再触发）
+      }
+      continue
+    }
+    // done/interrupt/error/canceled/closed(204)：观察结束
+    return
+  }
+}
 
+function startObserver(
+  sessionId: string,
+  entryGuard: boolean,
+  onEvent: (e: SSEEvent) => void,
+  hydration: Promise<void> | null,
+): void {
+  if (liveObserver && liveObserver.sessionId === sessionId) return
+  if (liveObserver) stopObserver(liveObserver.sessionId)
+  const controller = new AbortController()
+  liveObserver = { sessionId, controller }
+  void runObserverLoop(sessionId, controller.signal, entryGuard, onEvent, hydration).finally(() => {
+    if (liveObserver?.controller === controller) liveObserver = null
+  })
+}
+
+/** POST 断连/网络异常后的恢复：先经观察流接续（run 可能仍在执行），
+ *  204 确认无 run 才回落本地截断（旧"连接中断"行为，含 HITL 重进可恢复提示）。
+ *  恢复路径 store 已有流式基底，无水合门（直通分发）。 */
+async function recoverOrTruncate(
+  sessionId: string,
+  onEvent: (e: SSEEvent) => void,
+): Promise<void> {
+  const store = useChatStore.getState()
+  if (store.sessionId !== sessionId || store.status !== 'streaming') return
+  let recovered = false
+  try {
+    const term = await streamApi.observe(
+      sessionId, { onEvent }, undefined, store.lastEventId ?? undefined,
+    )
+    if (term === 'resync') {
+      await reloadFromServer(sessionId)
+      startObserver(sessionId, false, onEvent, null)
+      recovered = true
+    } else if (term !== 'closed') {
+      recovered = true
+    }
+  } catch {
+    /* 恢复也失败：走截断兜底 */
+  }
+  if (recovered) return
+  const s = useChatStore.getState()
+  if (s.sessionId === sessionId && s.status === 'streaming') {
+    flushPendingTokens()
+    s.finalizeStreaming()
+    s.clearTodos()
+    s.markTurnInterrupted()
+    s.setStatus('idle')
+    s.setStreamError('连接中断（未收到终止事件），本回合已截断；若后端仍在运行，重进会话可恢复')
+  }
+}
+
+export function useStreamChat(sessionId: UUID | null, observerEnabled = true): UseStreamChat {
   /** 把单个 SSE 事件分发到 chatStore（共享实现，语音 WS 同源复用） */
-  const dispatchEvent = useCallback((e: Parameters<typeof dispatchStreamEvent>[0]) => {
+  const dispatchEvent = useCallback((e: SSEEvent) => {
     dispatchStreamEvent(e)
   }, [])
+
+  // —— 冷进入水合门（B-Tier1：观察流与 /history 并行、事件按序冲刷）——
+  // 观察流请求即刻发起（重叠 RTT），事件先缓冲等历史灌入（settleHydration）
+  // 后冲刷：loadHistory 整表替换不冲掉重放中的当前回合，重放也不阻塞灌入
+  // 守卫。ref 均只在 effect/回调内读写（render 期零触碰）；历史先于观察流
+  // 就绪的时序由 settledRef 标记兜底（建门即 resolve）。
+  const gateRef = useRef<{ sid: string; promise: Promise<void>; settle: () => void } | null>(null)
+  const settledRef = useRef<Set<string>>(new Set())
+
+  const settleHydration = useCallback(() => {
+    if (!sessionId) return
+    settledRef.current.add(sessionId)
+    if (gateRef.current?.sid === sessionId) gateRef.current.settle()
+  }, [sessionId])
+
+  // 卸载不拆观察流：离开页面=关观察窗口而非杀回合（连接随会话域拆除）
+  useEffect(() => {
+    if (!sessionId || !observerEnabled) return
+    if (!gateRef.current || gateRef.current.sid !== sessionId) {
+      let settle!: () => void
+      const promise = new Promise<void>((resolve) => {
+        settle = resolve
+      })
+      gateRef.current = { sid: sessionId, promise, settle }
+      if (settledRef.current.has(sessionId)) settle() // 历史先于观察流就绪
+    }
+    startObserver(sessionId, true, dispatchEvent, gateRef.current.promise)
+  }, [sessionId, observerEnabled, dispatchEvent])
+
+  // 水合门兜底：迟迟未 settle（历史查询失败/挂起）时放行，降级为仅重放内容
+  useEffect(() => {
+    if (!sessionId || !observerEnabled) return
+    const timer = setTimeout(settleHydration, HYDRATION_FALLBACK_MS)
+    return () => clearTimeout(timer)
+  }, [sessionId, observerEnabled, settleHydration])
 
   /** 发起新消息流 */
   const send = useCallback(
@@ -83,30 +272,23 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       store.clearAttachments()
       store.clearKbs()
 
-      abortRef.current?.abort()
+      stopObserver(sessionId) // 本地消费即将开始，观察流让位（防双路）
+      abortLivePost(sessionId) // 防御：同会话残留旧连接
       const controller = new AbortController()
-      abortRef.current = controller
+      livePost = { sessionId, controller }
 
       try {
         const termination = await streamApi.sendMessage(sessionId, body, { onEvent: dispatchEvent }, controller.signal)
-        // 流关闭但未收到任何终止事件（done/interrupt/error）：后端被硬杀/代理掐断。
-        // 绝不允许 status 永久停留在 streaming（输入锁死）——落回 idle 并提示；
-        // 若后端实际已停在 HITL（事件丢失恰恰发生在 interrupt 落库后），会话重入
-        // 恢复（ChatPage /interrupt 查询）仍可重建审批卡。
+        if (livePost?.controller === controller) livePost = null
         if (termination === 'closed' && !controller.signal.aborted) {
-          const store2 = useChatStore.getState()
-          if (store2.status === 'streaming') {
-            store2.finalizeStreaming()
-            store2.clearTodos()
-            store2.markTurnInterrupted()
-            store2.setStatus('idle')
-            store2.setStreamError('连接中断（未收到终止事件），本回合已截断；若后端停在待审批，重进会话可恢复')
-          }
+          // 后端被硬杀/代理掐断：run 可能仍在服务端执行 —— 观察流接续或截断
+          await recoverOrTruncate(sessionId, dispatchEvent)
         }
       } catch {
-        // 网络层异常：error floor，兜底转 error 状态（准则 F4）
+        if (livePost?.controller === controller) livePost = null
+        // 网络层异常：先观察流接续（run 可能仍在），失败再落 error（准则 F4）
         if (!controller.signal.aborted) {
-          useChatStore.getState().setStreamError('网络异常，流已中断')
+          await recoverOrTruncate(sessionId, dispatchEvent)
         }
       }
     },
@@ -124,9 +306,10 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
       store.setStatus('streaming')
       store.setStreamSource('sse')
 
-      abortRef.current?.abort()
+      stopObserver(sessionId)
+      abortLivePost(sessionId)
       const controller = new AbortController()
-      abortRef.current = controller
+      livePost = { sessionId, controller }
 
       try {
         const termination = await streamApi.resume(
@@ -135,19 +318,14 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
           { onEvent: dispatchEvent },
           controller.signal,
         )
+        if (livePost?.controller === controller) livePost = null
         if (termination === 'closed' && !controller.signal.aborted) {
-          const store2 = useChatStore.getState()
-          if (store2.status === 'streaming') {
-            store2.finalizeStreaming()
-            store2.clearTodos()
-            store2.markTurnInterrupted()
-            store2.setStatus('idle')
-            store2.setStreamError('恢复流被中断（未收到终止事件）；若后端仍停在待审批，重进会话可恢复')
-          }
+          await recoverOrTruncate(sessionId, dispatchEvent)
         }
       } catch {
+        if (livePost?.controller === controller) livePost = null
         if (!controller.signal.aborted) {
-          useChatStore.getState().setStreamError('网络异常，恢复已中断')
+          await recoverOrTruncate(sessionId, dispatchEvent)
         }
       }
     },
@@ -155,9 +333,15 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
   )
 
   const cancel = useCallback(() => {
-    // 中止前冲刷 token 合并缓冲：固化半截消息需含缓冲中的尾部增量
     flushPendingTokens()
-    abortRef.current?.abort()
+    if (sessionId) {
+      stopObserver(sessionId)
+      abortLivePost(sessionId)
+      // 服务端取消（best-effort）：广播 canceled 终态。本页订阅已拆（取消的
+      // 常态），由下方本地落态兜底，语义与终态事件一致；失败（网络）时 run
+      // 自然跑完，usage 照常入库，重进可见结果
+      void streamApi.cancel(sessionId).catch(() => undefined)
+    }
     const store = useChatStore.getState()
     // 中止后固化仍在流式的消息（转 Markdown 渲染，而非停留在纯文本流式态），再回 idle；
     // 同时拆除本回合的任务清单浮窗——中止后计划已死，悬挂只会误导（旧清单累计的诱因之一）；
@@ -166,9 +350,9 @@ export function useStreamChat(sessionId: UUID | null): UseStreamChat {
     store.clearTodos()
     store.markTurnInterrupted()
     store.setStatus('idle')
-  }, [])
+  }, [sessionId])
 
   const status = useChatStore((s) => s.status)
 
-  return { status, send, resume, cancel }
+  return { status, send, resume, cancel, settleHydration }
 }

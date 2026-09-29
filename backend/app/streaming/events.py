@@ -26,6 +26,12 @@ EventType = Literal[
     "interrupt",
     "done",
     "error",
+    # —— run 显式取消的终态（POST /cancel、语音 cancel 帧）；前端与 done/error
+    #    同列为终止事件，落态语义=手动中止（固化半截 + 「用户已手动中断」）——
+    "canceled",
+    # —— 观察者重挂失败信号（落后超出缓冲 / run 已不存在）：前端回落
+    #    /history + /interrupt 重建后重新挂观察流 ——
+    "resync",
     # —— 语音 STT（仅 WS 下行隧道使用，SSE 端点不产出）——
     "stt_chunk",   # 部分 Turn：composer 实时渲染中间稿
     "stt_output",  # 合并稿（草稿+终稿）Turn：触发会话推理（镜像 POST /messages）
@@ -38,6 +44,13 @@ class SSEEvent(BaseModel):
     agent_path: Optional[str] = None  # "root" | "root/researcher" | ...
     payload: dict[str, Any] = {}
 
-    def to_sse(self) -> dict:
-        """Format for sse-starlette EventSourceResponse (comment=False by default)."""
-        return {"event": self.type, "data": self.model_dump_json(exclude_none=True)}
+    def to_sse(self, event_id: Optional[str] = None) -> dict:
+        """Format for sse-starlette EventSourceResponse (comment=False by default).
+
+        event_id 为 SSE 规范的 ``id:`` 字段（RunManager 注入 ``{run_token}.{seq}``），
+        浏览器 EventSource 重连时自动以 Last-Event-ID 回带，服务端据此增量回放。
+        """
+        out = {"event": self.type, "data": self.model_dump_json(exclude_none=True)}
+        if event_id:
+            out["id"] = event_id
+        return out

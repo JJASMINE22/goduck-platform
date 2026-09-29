@@ -368,8 +368,8 @@ def _jev_cache_key(state, iteration) -> tuple:
     """判决缓存键 (run_id, thread_id, iteration)。
 
     thread_id 入键：实测 iter≥1 偶发 `_current_grading_run_id` 丢失（空串），
-    若键退化为 ('', iter) 会跨会话碰撞返回陈旧判决。thread_id 经 contextvar
-    传递（after_agent 埋点 → 同步调用链内可读）。
+    若键退化为 ('', iter) 会跨会话碰撞返回陈旧判决。thread_id 取自当前图任务
+    上下文（`_jev_thread_id`，after_agent 任务内 get_config() 可读）。
     """
     return (
         str(state.get("_current_grading_run_id") or ""),
@@ -379,10 +379,20 @@ def _jev_cache_key(state, iteration) -> tuple:
 
 
 def _jev_thread_id() -> str:
-    """从 after_agent 埋点的 runtime 提取 thread_id（审计关联用，缺省空串）。"""
-    runtime = _jev_rubric_runtime.get()
-    configurable = ((getattr(runtime, "config", None) or {}).get("configurable") or {})
-    return str(configurable.get("thread_id") or "")
+    """提取当前图任务的 thread_id（审计关联用，缺省空串）。
+
+    langgraph `Runtime` 不含 `.config`（官方文档明示须用
+    `langgraph.config.get_config()`，见模块头部注释）；`_invoke_grader` 运行在
+    after_agent 图任务上下文内，get_config() 直接返回该任务的 RunnableConfig。
+    图上下文外（单测/离线）返回空串——thread_id 仅审计关联用，允许 unknown。
+    """
+    try:
+        from langgraph.config import get_config
+
+        configurable = ((get_config() or {}).get("configurable") or {})
+        return str(configurable.get("thread_id") or "")
+    except Exception:  # noqa: BLE001 — 无图上下文属正常（离线/单测）
+        return ""
 
 
 class _JevRubricBase(_JevTriageMixin):

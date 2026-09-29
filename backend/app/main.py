@@ -85,6 +85,13 @@ async def lifespan(app: FastAPI):
 
     st.stream_adapter = StreamAdapter(max_invoke_retries=settings.max_invoke_retries)
 
+    # 5a. RunManager（SSE 回合与连接解耦：run 服务端续跑 + GET 观察流重挂；
+    #     吸收原 StreamTracker 的 withdraw/双发闸，启动 TTL sweeper）
+    from app.services.run_manager import RunManager
+
+    st.run_manager = RunManager(settings)
+    await st.run_manager.start()
+
     # 6. MinIO storage (附件字节持久层)
     from app.services.storage import build_minio_storage
 
@@ -171,9 +178,11 @@ async def lifespan(app: FastAPI):
     logger.info("goduck-platform started")
     yield
     # shutdown: reverse-order cleanup — 调度器最先停（不再派发新运行），
-    # 宽限收割在飞运行后再拆基础设施。
+    # 随后 RunManager 取消在飞回合，再拆基础设施。
     if st.cron_scheduler is not None:
         await st.cron_scheduler.shutdown()
+    if st.run_manager is not None:
+        await st.run_manager.shutdown()
     if st.ingest_pool is not None:
         await st.ingest_pool.shutdown()
     if st.vector_factory is not None:
@@ -242,6 +251,11 @@ def create_app() -> FastAPI:
                     settings.jev_enabled
                     and bool(settings.typesafe_api_key)
                     and settings.jev_rubric_enabled
+                ),
+                "jev_kb_rerank_enabled": (
+                    settings.jev_enabled
+                    and bool(settings.typesafe_api_key)
+                    and settings.jev_kb_rerank_enabled
                 ),
             },
         }

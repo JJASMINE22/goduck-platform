@@ -1,4 +1,4 @@
-"""后台入库池（plan §5.4）：限并发 fire-and-forget，仿 StreamTracker 思路。
+"""后台入库池（plan §5.4）：限并发 fire-and-forget，仿常驻后台 task 池思路。
 
 - submit(kb_id, doc_id, raw_bytes=None)：投递一个入库任务，立即返回（不阻塞请求）。
 - 并发由 Semaphore(kb_ingestion_concurrency) 限制，避免大文档批量 embed 压垮 TEI/ES。

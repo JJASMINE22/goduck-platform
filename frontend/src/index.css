@@ -1732,6 +1732,102 @@ pre,
 .todo-panel__chip:hover::after {
   transform: translateX(130%);
 }
+/* ===== HITL：Jev 守卫判决面板（description 结构化渲染，替代裸 pre）=====
+   白瓷微透面板坐于橙染玻璃卡上；计量条沿用工具卡载荷的小字宽表语言
+   （11px 标签 + mono tabular-nums 读数）。语义色仅作读数倾向提示，
+   权威结论以结论文案为准（阈值烘焙在服务端，前端不重复判定）。 */
+.jev-verdict {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  margin: 0 0 10px;
+  overflow: hidden;
+}
+.jev-verdict__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px dashed var(--color-border-soft);
+}
+.jev-verdict__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.jev-verdict__badge--jev {
+  color: var(--color-primary);
+  background: var(--color-primary-bg);
+}
+.jev-verdict__badge--rule {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+}
+.jev-verdict__badge--down {
+  color: var(--color-text-secondary);
+  background: var(--color-border-soft);
+}
+.jev-verdict__tail {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  text-align: right;
+}
+.jev-verdict__tail--pass {
+  color: var(--color-success);
+}
+/* 纯警示黄在白底对比不足，向正文色混合压深（可读性优先） */
+.jev-verdict__tail--ask {
+  color: color-mix(in srgb, var(--color-warning) 62%, var(--color-text));
+}
+.jev-verdict__tail--danger {
+  color: var(--color-danger);
+}
+.jev-verdict__meters {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px 9px;
+}
+.jev-verdict__meter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.jev-verdict__label {
+  flex: none;
+  width: 52px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+.jev-verdict__track {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-border-soft);
+  overflow: hidden;
+}
+.jev-verdict__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.3s ease;
+}
+.jev-verdict__value {
+  flex: none;
+  width: 34px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
 /* TodoPanel：chip 胶囊（可按压交互件，与 .glass-btn 同级质感）流体玻璃 */
 .todo-panel__chip {
   position: relative;

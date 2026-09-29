@@ -47,6 +47,11 @@ class BuildContext:
     # （client/审计/全局阈值）随工厂闭包烘焙——两级烘焙，混合树天然支持
     # （llm 子代理与 jev 子代理并存）。plan: jev-rubric-grader-gate。
     jev_rubric_factory: Optional[Callable] = None
+    # Jev KB 检索门控工厂（构建期注入，None=能力未启用）。
+    # 签名 factory() -> JevKbRerankMiddleware：kb 门控无节点级参数（问题集为
+    # 代码常量），消费点（主代理构建）直接实例化；mode/阈值随工厂闭包烘焙
+    # （TTL 语义同上）。plan: jev-kb-rerank-middleware。
+    jev_kb_factory: Optional[Callable[[], AgentMiddleware]] = None
 
 
 def _strip_cron_unattended(root: AgentConfig) -> None:
@@ -176,6 +181,33 @@ def _kb_capability_prompt(tool_names: List[str]) -> str | None:
     )
 
 
+def _maybe_append_kb_gate(
+    agentic_middleware: list,
+    ctx: BuildContext,
+    cfg_allow_knowledge: bool,
+    tool_names: List[str],
+) -> None:
+    """kb 检索门控挂载（主代理独占，与 _kb_capability_prompt 同点位同条件）。
+
+    三重前置：cfg_allow_knowledge ∧ tool_names 含 {server}__kb_search 后缀 ∧
+    ctx.jev_kb_factory 就绪（平台级 jev_kb_rerank_enabled ∧ 能力可用）。
+    任一缺失不挂载（行为=现状，无 per-agent warning——kb 门控是平台级自动
+    行为而非 agent 声明式配置，rubric 的 warning 语义不适用；能力缺失已在
+    启动期 fail-visible）。置于中间件列表末尾=最内侧（first defined =
+    outermost，ToolErrorHandlingMiddleware 在最外层兜底全部工具，含 kb）。
+    """
+    if not cfg_allow_knowledge:
+        return
+    if not any(str(n).endswith("__kb_search") for n in (tool_names or [])):
+        return
+    factory = getattr(ctx, "jev_kb_factory", None)
+    if factory is None:
+        return
+    kb_mw = factory()
+    agentic_middleware.append(kb_mw)
+    logger.info("jev kb gate attached (mode=%s)", getattr(kb_mw, "kb_mode", "unknown"))
+
+
 def create_agent_recursive(
     agent_config: AgentConfig,
     tools: List = None,
@@ -302,6 +334,11 @@ def create_agent_recursive(
             _kb = _kb_capability_prompt(agent_config.get("tool_names", []))
             if _kb:
                 agent_config["system_prompt"] += _kb
+            # kb 门控挂载与纪律提示同点位同条件（allow_knowledge 主代理独占）
+            _maybe_append_kb_gate(
+                agentic_middleware, ctx, cfg_allow_knowledge,
+                agent_config.get("tool_names", []),
+            )
 
     create_kwargs = dict(
         model=ctx.model,
@@ -435,6 +472,11 @@ def create_agent_dictionary(
         _kb = _kb_capability_prompt(agent_config.get("tool_names", []))
         if _kb:
             agent_config["system_prompt"] += _kb
+
+    # kb 门控挂载（主代理；与 recursive 路径同点位同条件）
+    _maybe_append_kb_gate(
+        main_middleware, ctx, cfg_allow_knowledge, agent_config.get("tool_names", [])
+    )
 
     create_kwargs = dict(
         model=ctx.model,

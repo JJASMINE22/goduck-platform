@@ -1,7 +1,10 @@
 /* SSE 流式封装（DESIGN §8）。
    ⚠️ 后端 POST /sessions/{id}/messages 返回 SSE（sse-starlette），浏览器原生
    EventSource 仅支持 GET，必须用 fetch-based 方案（@microsoft/fetch-event-source）。
-   POST 场景禁止自动重连（幂等性未知，避免重复发消息）—— onerror 抛错终止。 */
+   POST 场景禁止自动重连（幂等性未知，避免重复发消息）—— onerror 抛错终止。
+   GET 观察流（/sessions/{id}/stream）只读幂等：204=无 run → 'closed' 终止；
+   resync（观察者落后超出缓冲）→ 'resync' 终止，由调用方重建后重挂。
+   重试策略统一由调用方控制（useStreamChat 的有界重试循环），本层不自动重连。 */
 
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 import { ApiClient } from '@/api/client'
@@ -15,12 +18,21 @@ export interface StreamHandlers {
   onFatal?: (err: unknown) => void
 }
 
-export type StreamTermination = 'done' | 'interrupt' | 'error' | 'closed'
+export type StreamTermination =
+  | 'done'
+  | 'interrupt'
+  | 'error'
+  | 'canceled'
+  | 'resync'
+  | 'closed'
+
+/** GET 观察流的 204（无 run）信号：非错误，静默映射为 'closed' */
+class NoRunSignal extends Error {}
 
 /** 解析 SSE data 字段为 SSEEvent；非法行安全跳过 */
-function parseEvent(rawEvent: string | null, rawData: string): SSEEvent | null {
-  // 后端 to_sse：{event: <type>, data: <json>}。
-  // fetch-event-source 拆出 ev.event=<type>、ev.data=<json>，data 里也带 type。
+function parseEvent(rawEvent: string | null, rawData: string, rawId: string | null): SSEEvent | null {
+  // 后端 to_sse：{event: <type>, data: <json>, id?: "{token}.{seq}"}。
+  // fetch-event-source 拆出 ev.event/ev.data/ev.id，data 里也带 type。
   let parsed: SSEEvent
   try {
     parsed = JSON.parse(rawData) as SSEEvent
@@ -29,13 +41,14 @@ function parseEvent(rawEvent: string | null, rawData: string): SSEEvent | null {
   }
   // 以 event 字段为权威类型（data.type 兜底）
   if (rawEvent) parsed.type = rawEvent as SSEEvent['type']
+  if (rawId) parsed.id = rawId
   if (!parsed.payload) parsed.payload = {}
   return parsed
 }
 
 /**
  * 发起 POST-SSE 流，直到终止事件 / 流关闭 / 异常。
- * @returns 终止原因（done/interrupt/error/closed）；网络异常则 throw。
+ * @returns 终止原因（done/interrupt/error/canceled/resync/closed）；网络异常则 throw。
  */
 export async function streamPostSse(
   path: string,
@@ -59,11 +72,10 @@ export async function streamPostSse(
         throw new Error(`SSE 连接异常（${res.status}）`)
       },
       onmessage(ev) {
-        const e = parseEvent(ev.event, ev.data)
+        const e = parseEvent(ev.event, ev.data, ev.id)
         if (!e) return
         handlers.onEvent(e)
-        if (TERMINAL_EVENTS.includes(e.type)) {
-          // 终止事件到达，记录原因；流会随后由后端关闭触发 onclose
+        if (TERMINAL_EVENTS.includes(e.type) || e.type === 'resync') {
           termination = e.type as StreamTermination
         }
       },
@@ -78,6 +90,53 @@ export async function streamPostSse(
     return termination
   } catch (err) {
     // abort 不算 fatal
+    if (err instanceof DOMException && err.name === 'AbortError') return 'closed'
+    handlers.onFatal?.(err)
+    throw err
+  }
+}
+
+/**
+ * GET 观察流（只读幂等）：重进会话 / 断连恢复的补帧通道。
+ * @param lastEventId 上次收到的 SSE id（"{token}.{seq}"）——增量对齐水位；
+ *                   缺省则全量回放当前 run（服务端语义）。
+ * @returns 终止原因；204（无 run）→ 'closed'；网络异常则 throw。
+ */
+export async function streamGetSse(
+  path: string,
+  handlers: StreamHandlers,
+  signal?: AbortSignal,
+): Promise<StreamTermination> {
+  const url = `${ApiClient.BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
+  let termination: StreamTermination = 'closed'
+
+  try {
+    await fetchEventSource(url, {
+      method: 'GET',
+      headers: { Accept: 'text/event-stream' },
+      signal,
+      openWhenHidden: true,
+      async onopen(res) {
+        if (res.status === 204) throw new NoRunSignal() // 无 run（也无 TTL 内终态）
+        if (res.ok && res.headers.get('content-type')?.includes('text/event-stream')) return
+        throw new Error(`SSE 连接异常（${res.status}）`)
+      },
+      onmessage(ev) {
+        const e = parseEvent(ev.event, ev.data, ev.id)
+        if (!e) return
+        handlers.onEvent(e)
+        if (TERMINAL_EVENTS.includes(e.type) || e.type === 'resync') {
+          termination = e.type as StreamTermination
+        }
+      },
+      onclose() {},
+      onerror(err) {
+        throw err
+      },
+    })
+    return termination
+  } catch (err) {
+    if (err instanceof NoRunSignal) return 'closed'
     if (err instanceof DOMException && err.name === 'AbortError') return 'closed'
     handlers.onFatal?.(err)
     throw err

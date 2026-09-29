@@ -93,6 +93,20 @@ class AgentRegistry:
 
         return factory
 
+    def _jev_kb_factory(self, agent_id: uuid.UUID):
+        """kb 检索门控工厂（能力缺失/jev_kb_rerank_enabled=false 时返回 None，
+        构建不挂载，行为=现状）。
+
+        签名 factory() -> JevKbRerankMiddleware：kb 门控无节点级参数（问题集
+        为代码常量），消费点（graph_utils 主代理构建）直接实例化。平台级参数
+        （client/审计/mode/阈值）随工厂闭包烘焙。plan: jev-kb-rerank-middleware。"""
+        s = self.settings
+        if not (self._jev_capable() and s.jev_kb_rerank_enabled):
+            return None
+        from app.core.jev_kb_gate import build_jev_kb_gate
+
+        return lambda: build_jev_kb_gate(s, self.jev_audit.submit, agent_id)
+
     def _ctx(self, model, agent_id: Optional[uuid.UUID] = None) -> BuildContext:
         s = self.settings
         return BuildContext(
@@ -106,6 +120,7 @@ class AgentRegistry:
             skills_dir=str(s.skills_dir),
             jev_gate_factory=self._jev_gate_factory(agent_id) if agent_id else None,
             jev_rubric_factory=self._jev_rubric_factory(agent_id) if agent_id else None,
+            jev_kb_factory=self._jev_kb_factory(agent_id) if agent_id else None,
         )
 
     async def get_or_build(self, agent_id: uuid.UUID) -> CompiledStateGraph:

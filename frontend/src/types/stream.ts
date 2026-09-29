@@ -18,15 +18,26 @@ export type SSEEventType =
   | 'interrupt'
   | 'done'
   | 'error'
+  | 'canceled'
+  | 'resync'
 
-/** 终止事件（DESIGN 准则 F3：状态机只据此判终态） */
-export const TERMINAL_EVENTS: readonly SSEEventType[] = ['done', 'interrupt', 'error'] as const
+/** 终止事件（DESIGN 准则 F3：状态机只据此判终态）。
+ *  canceled = run 被显式取消（POST /cancel、语音 cancel 帧），落态语义=手动中止。 */
+export const TERMINAL_EVENTS: readonly SSEEventType[] = [
+  'done',
+  'interrupt',
+  'error',
+  'canceled',
+] as const
 
 /** 通用 SSE 事件壳（streaming/events.py SSEEvent） */
 export interface SSEEvent<P = Record<string, unknown>> {
   type: SSEEventType
   agent_path?: string | null // "root" | "root/researcher"
   payload: P
+  /** SSE 规范 id 字段（RunManager 注入 "{run_token}.{seq}"）：观察流重挂的
+   *  增量对齐水位（Last-Event-ID / ?after），非事件语义的一部分 */
+  id?: string | null
 }
 
 // —— 中间事件 payload 形状 ——

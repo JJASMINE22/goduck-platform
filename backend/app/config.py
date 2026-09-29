@@ -207,9 +207,90 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---- Jev KB 检索门控（Agentic RAG 相关性过滤；plan: jev-kb-rerank-middleware）----
+    # 形态 F2：middleware 包裹 kb_search 工具结果，写入消息史前做"高置信无关
+    # 才滤"的保守过滤。fail-closed = passthrough = 现状行为（Jev 不可用/返回
+    # 格式漂移/门控异常一律原样透传，绝不杀死工具结果）。平台级开关，作用于
+    # 所有 allow_knowledge 主代理。
+    jev_kb_rerank_enabled: bool = Field(
+        default=False,
+        description="kb 门控总开关：false 时 jev_kb_factory 不注入（构建不挂载，"
+        "行为=现状）。前置：jev_enabled ∧ TYPESAFE_API_KEY 就绪。",
+    )
+    jev_kb_mode: str = Field(
+        default="shadow",
+        description=(
+            "kb 门控运行态：shadow=只判只落审计（校准态，不改写 content）；"
+            "annotate=每 chunk 加 [相关性] 前缀标注不删除；enforce=高置信无关才滤"
+            "（keep_floor 保底）。灰度顺序 shadow→annotate→enforce，假阴率达标后才可收紧。"
+        ),
+    )
+    jev_kb_drop_probability: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=1.0,
+        description="drop 侧概率阈值：rel/info 两题 P 均 ≤ 此值（确定无关侧）才允许 drop。",
+    )
+    jev_kb_drop_confidence: float = Field(
+        default=0.90,
+        ge=0.0,
+        le=1.0,
+        description="drop 侧置信度阈值：conf ≥ 此值才允许 drop。与 shell 守卫锁 pass 侧"
+        "（0.9 放行）镜像对称——不可逆动作（删内容）放高置信门后。",
+    )
+    jev_kb_keep_floor: int = Field(
+        default=2,
+        ge=1,
+        description="ES 序前 N 条永不滤（Jev 只修剪尾部不斩首；输出集合永不为空的保底）。",
+    )
+    jev_kb_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        description="kb 门控独立 Jev 调用预算（秒；本地部署 RTT 小，与 shell 守卫预算分离）。",
+    )
+    jev_kb_k_boost: int = Field(
+        default=0,
+        ge=0,
+        description="两段式检索（默认关）：>0 时 pre-wrap 改写 args.k 过采、post-wrap 筛回"
+        "——recall 净增；Jev 不可用时按 ES 序截回原始 k（故障形态=现状）。",
+    )
+
     # ---- AgentRegistry cache tuning ----
     registry_max_entries: int = 16
     registry_ttl_seconds: int = 3600
+
+    # ---- RunManager（SSE 回合与连接解耦：run 服务端续跑 + 观察流重挂）----
+    run_buffer_max_events: int = Field(
+        default=2000,
+        gt=0,
+        description=(
+            "每 run 环形事件缓冲上限（重挂回放窗口；token 事件占大头）。"
+            "超出淘汰最老并推进 buffer_start，落后太多的观察者收 resync。"
+        ),
+    )
+    run_ttl_seconds: float = Field(
+        default=120,
+        gt=0,
+        description="run 终态后 RunState 保留窗口（晚归观察者补领终态事件），超时由 sweeper 回收。",
+    )
+    run_max_concurrent: int = Field(
+        default=16,
+        gt=0,
+        description="进程内并发 run 上限（超出 503 拒绝启动，防资源失控）。",
+    )
+    run_subscriber_queue_max: int = Field(
+        default=500,
+        gt=0,
+        description=(
+            "单订阅者事件队列上限；满即踢出（该订阅者收 resync 后关闭），"
+            "run 永不被慢消费者阻塞。"
+        ),
+    )
+    run_sweep_interval_seconds: float = Field(
+        default=15,
+        gt=0,
+        description="终态 TTL 回收循环的扫描间隔（秒）。",
+    )
 
     # ---- 定时任务（cron jobs）----
     cron_enabled: bool = Field(
@@ -222,7 +303,7 @@ class Settings(BaseSettings):
         description="调度循环 tick 间隔（秒）。触发精度上限；DB 负载每 tick 一条索引查询，可忽略。",
     )
     cron_max_concurrency: int = Field(
-        default=1,
+        default=3,
         ge=1,
         description="后台任务并发执行上限（信号量）。1=串行，防多个 LLM 长跑互相拖垮。",
     )
@@ -304,6 +385,15 @@ class Settings(BaseSettings):
         allowed = {"shadow", "enforce"}
         if v not in allowed:
             raise ValueError(f"jev_rubric_mode 须为 {'/'.join(sorted(allowed))}（当前 {v!r}）")
+        return v
+
+    @field_validator("jev_kb_mode")
+    @classmethod
+    def _validate_jev_kb_mode(cls, v: str) -> str:
+        """枚举收口（fail-fast），三态：shadow/annotate/enforce（语义同 _validate_jev_mode）。"""
+        allowed = {"shadow", "annotate", "enforce"}
+        if v not in allowed:
+            raise ValueError(f"jev_kb_mode 须为 {'/'.join(sorted(allowed))}（当前 {v!r}）")
         return v
 
     @property

@@ -118,7 +118,7 @@ async def withdraw_turn(body: WithdrawRequest, session_id: uuid.UUID, request: R
     session, svc = await _load_session_or_404(request, session_id)
     _refuse_cron_session(session, action="回撤消息")
 
-    if st.stream_tracker.is_streaming(session["thread_id"]):
+    if st.run_manager.is_active(session["thread_id"]):
         raise HTTPException(status_code=409, detail="流式生成中，请先停止再回撤")
 
     agent = await _build_agent_or_409(st, session["agent_id"])

@@ -104,10 +104,11 @@ export class VoiceConnection {
         this.send({ type: 'pong' })
         return
       }
-      // 回合终态：agent done/error（interrupt 除外——HITL 仍待决）与 stt_empty
+      // 回合终态：agent done/error/canceled（interrupt 除外——HITL 仍待决）与 stt_empty
       if (
         this.turnOpen &&
-        (frame.type === 'done' || frame.type === 'error' || frame.type === 'stt_empty')
+        (frame.type === 'done' || frame.type === 'error' || frame.type === 'canceled' ||
+          frame.type === 'stt_empty')
       ) {
         this.turnOpen = false
       }
@@ -164,9 +165,9 @@ export class VoiceConnection {
     this.send({ type: 'flush' })
   }
 
-  /** 中止语音发起的推理回合：发 cancel 帧（后端取消 astream 并释放 withdraw 闸）。
-      仅回合开启（turnOpen）时有意义；发出后本地即视为回合结束（终态帧不会再有，
-      镜像 SSE abort 的"无终态事件"语义，由调用方本地固化落态）。 */
+  /** 中止语音发起的推理回合：发 cancel 帧（后端取消 run 并广播 canceled 终态，
+      释放 withdraw 闸）。终态帧随后经隧道到达（与 SSE 路径同契约），本地
+      落态由 dispatch 统一处理——turnOpen 即刻关闭仅表示"不再有上行"。 */
   cancelStream(): void {
     if (!this.turnOpen) return
     if (this.send({ type: 'cancel' })) {
@@ -214,6 +215,7 @@ export function asSSEEvent(frame: VoiceDownFrame): SSEEvent | null {
     'interrupt',
     'done',
     'error',
+    'canceled',
   ]
   if (!agentTypes.includes(frame.type)) return null
   return frame as unknown as SSEEvent

@@ -87,13 +87,22 @@ def activate():
     子 task 在迭代中创建，创建时快照的 context 必须已含 collector；不得移入循环内。
     客户端 abort → async generator aclose → GeneratorExit → finally → reset，
     contextvar 复位，无跨请求泄漏。
+
+    跨 Context 关闭免疫（防御）：Py3.12 下挂起的 async generator 若从其它执行
+    上下文关闭（asyncgen 终结器 task 化的 aclose 不进入生成器迭代时的上下文），
+    ``Token.reset`` 会抛 "created in a different Context" ValueError。此时该
+    Context 即将随生成器消亡，值不再可读，跳过复位即可——失效方向安全（最坏
+    同 docstring 末段：丢观测，不串扰他人）。
     """
     c = _Collector()
     tok = _collector.set(c)
     try:
         yield c
     finally:
-        _collector.reset(tok)
+        try:
+            _collector.reset(tok)
+        except ValueError:
+            pass  # 跨 Context 复位非法：Context 随生成器关闭消亡，无需复位
 
 
 def record_change(r: FileChangeRecord) -> None:

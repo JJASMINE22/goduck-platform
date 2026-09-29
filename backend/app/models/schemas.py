@@ -411,6 +411,11 @@ class Capabilities(BaseModel):
         description="Jev rubric 门控可用（jev 基础能力 ∧ jev_rubric_enabled）。"
         "驱动智能体编辑器 rubric grader=jev 模式可见性。",
     )
+    jev_kb_rerank_enabled: bool = Field(
+        default=False,
+        description="Jev KB 检索门控可用（jev 基础能力 ∧ jev_kb_rerank_enabled）。"
+        "平台级自动行为（非 per-agent 配置面），前端仅作状态展示。",
+    )
 
 
 class HealthResponse(BaseModel):
