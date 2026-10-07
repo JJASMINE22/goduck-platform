@@ -1,8 +1,10 @@
 /* 节点详情面板（右侧）—— 编辑画布上选中的节点字段。
    按 selectedNodeId 从 store 取节点，updateFields(id, patch) 就地合并。
    主代理独有 memory/allow_attachments；子代理独有 name/description/is_dicted；workspace 主子代理均可。
-   cron 用途智能体全树隐藏 shell / 工具审批开关，主代理隐藏附件/知识库开关
-   （无人值守无审批通道；附件/知识库暂不支持。后端 validator 为最终权威）。
+   cron 用途智能体不支持的能力（工具审批 interrupt_on / 附件 allow_attachments /
+   知识库 allow_knowledge / Shell 终端执行 allow_shell）整块不渲染：
+   不显示占位说明，仅在源码留【cron 不支持·已隐藏】注释，避免为创建者增添理解成本
+   （后端 validator 仍为最终权威）。
    最终合法性以后端 /validate 为准（准则 F6）。 */
 import { Button, Flex, Input, Select, Switch, Tag, TreeSelect, Typography } from 'antd'
 import { type ReactNode } from 'react'
@@ -151,15 +153,10 @@ export function NodeDetailPanel(): ReactNode {
           />
         </Field>
 
-        {/* cron 用途智能体不提供工具审批：全树隐藏（主/子代理节点一致），
-            原位提示（后端 validator 拒绝 usage=cron ∧ interrupt_on，为最终权威） */}
-        {kind === 'cron' ? (
-          <Field label="工具调用审批（interrupt_on，仅已选工具）">
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              定时任务智能体不提供工具审批（无人值守，工具自动执行）
-            </Typography.Text>
-          </Field>
-        ) : (
+        {/* 【cron 不支持·已隐藏】工具调用审批（interrupt_on）：定时任务无人值守、
+            无审批通道，工具一律自动执行（后端 validator 拒绝 usage=cron ∧
+            interrupt_on，为最终权威）。不渲染占位说明，避免为创建者增添理解成本 */}
+        {kind !== 'cron' ? (
           <Field label="工具调用审批（interrupt_on，仅已选工具）">
             <TreeSelect
               treeCheckable
@@ -179,7 +176,7 @@ export function NodeDetailPanel(): ReactNode {
               disabled={!interruptTreeData.length}
             />
           </Field>
-        )}
+        ) : null}
 
         {isMain ? (
           <>
@@ -191,22 +188,11 @@ export function NodeDetailPanel(): ReactNode {
                 </Typography.Text>
               </Flex>
             </Field>
-            {kind === 'cron' ? (
-              <>
-                {/* cron 用途智能体不提供附件/知识库（任务输入为固定 prompt，
-                    无消息装配通道；后端 validator 为最终权威） */}
-                <Field label="附件能力（allow_attachments，仅主代理）">
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    定时任务智能体不支持附件能力（任务输入为固定 prompt）
-                  </Typography.Text>
-                </Field>
-                <Field label="知识库能力（allow_knowledge，仅主代理）">
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    定时任务智能体暂不支持知识库能力
-                  </Typography.Text>
-                </Field>
-              </>
-            ) : (
+            {/* 【cron 不支持·已隐藏】附件能力（allow_attachments）/ 知识库能力
+                （allow_knowledge）：定时任务输入为固定 prompt，无消息装配通道
+                （后端 validator 拒绝 usage=cron ∧ 两开关，为最终权威）。
+                不渲染占位说明，避免为创建者增添理解成本 */}
+            {kind !== 'cron' ? (
               <>
                 <Field label="附件能力（allow_attachments，仅主代理）">
                   <Flex align="center" gap={8}>
@@ -220,7 +206,7 @@ export function NodeDetailPanel(): ReactNode {
                   <Switch checked={!!node.allow_knowledge} onChange={(v) => patch({ allow_knowledge: v })} />
                 </Field>
               </>
-            )}
+            ) : null}
           </>
         ) : (
           <Field label="dicted 模式（仅子代理）">
@@ -242,15 +228,10 @@ export function NodeDetailPanel(): ReactNode {
           </Flex>
         </Field>
 
-        {/* cron 用途智能体不提供 shell 能力：全树隐藏开关（主/子代理节点一致），
-            原位提示（后端 validator 拒绝 usage=cron ∧ allow_shell，为最终权威） */}
-        {kind === 'cron' ? (
-          <Field label="Shell 执行（allow_shell）">
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              定时任务智能体不提供 shell 能力（无人值守无审批通道）
-            </Typography.Text>
-          </Field>
-        ) : (
+        {/* 【cron 不支持·已隐藏】Shell 终端执行（allow_shell）：定时任务无人值守、
+            无审批通道，整树禁用（后端 validator 拒绝 usage=cron ∧ allow_shell，
+            为最终权威）。不渲染占位说明，避免为创建者增添理解成本 */}
+        {kind !== 'cron' ? (
           <Field label="Shell 执行（allow_shell）">
             <Flex vertical gap={4}>
               <Flex align="center" gap={8}>
@@ -286,7 +267,7 @@ export function NodeDetailPanel(): ReactNode {
               ) : null}
             </Flex>
           </Field>
-        )}
+        ) : null}
 
         {!node.is_dicted ? (
           <Field label="动态分发（dynamic_dispatch）">

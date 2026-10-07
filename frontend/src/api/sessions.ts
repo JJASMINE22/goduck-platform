@@ -25,7 +25,10 @@ export const sessionsApi = {
   withdraw: (id: UUID, body: WithdrawRequest) =>
     post<WithdrawResponse>(`/sessions/${id}/withdraw`, body),
 
-  /** 知识库能力查询 —— 驱动会话框 KB 选择器可见性（准则 F2 能力驱动 UI） */
-  knowledgeCapability: (id: UUID) =>
-    get<KnowledgeCapability>(`/sessions/${id}/knowledge-capability`),
+  /** 知识库能力查询 —— 驱动会话框 KB 选择器可见性（准则 F2 能力驱动 UI）。
+   *  agentId=当前选中智能体（弱绑定解析：显式 > last；缺省回落） */
+  knowledgeCapability: (id: UUID, agentId?: UUID | null) =>
+    get<KnowledgeCapability>(`/sessions/${id}/knowledge-capability`, {
+      ...(agentId ? { agent_id: agentId } : {}),
+    }),
 }

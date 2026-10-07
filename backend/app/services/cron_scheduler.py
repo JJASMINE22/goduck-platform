@@ -383,9 +383,9 @@ class CronScheduler:
                 offload.unlink(missing_ok=True)
 
     async def _ensure_session(self, job: dict) -> dict:
-        """专用会话保障：agent 更新会级联归档会话（同时任务已被停用，这里是
-        手动触发/竞态路径的兜底）。行丢失（理论路径）按原 thread_id 不可恢复，
-        生成新 thread 重建——checkpointer 历史随之翻篇，run 可见可追溯。"""
+        """专用会话保障：行丢失（agent 删除级联/手删等理论路径）按原 thread_id
+        不可恢复，生成新 thread 重建——checkpointer 历史随之翻篇，run 可见可
+        追溯。归档行（用户侧归档/换绑遗留）在 agent 可用前提下复活。"""
         session = await dbmod.get_session(self.st.pool, job["session_id"])
         if session is None:
             session = await dbmod.create_session(

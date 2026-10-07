@@ -376,7 +376,7 @@ async function streamMessage(sessionId, body, handlers) {
 - **工具多选**：数据源 `GET /mcp/tools`（全量命名空间工具），多选写入 `tool_names`。
 - **实时预览**：配置变更防抖 → 调 `/agents/validate` → 返回 `mermaid` → `features/topology` 渲染。
 - **草稿**：未保存树存 `agentEditorStore`；离开页面有脏数据确认。
-- **保存**：新建走 `POST /agents`，编辑走 `PUT /agents/:id`（更新会级联删该 agent 会话 → 需弹窗**明确告知**用户旧会话将被清除）。
+- **保存**：新建走 `POST /agents`，编辑走 `PUT /agents/:id`（会话-智能体解耦后：更新不再级联删会话——既有会话直接续用新配置，无需弹窗告知；仅提示"更新后新回合即用新配置"）。
 
 ### 10.2 拓扑预览（`features/topology/`）
 - 接收 mermaid 文本（来自 `active_mermaid` / validate / topology.mmd），用 mermaid.js 渲染。
@@ -388,12 +388,18 @@ async function streamMessage(sessionId, body, handlers) {
 
 - **消息流**：user（右）/ agent（左，按 `agent_path` 标主/子代理）/ 工具卡（折叠）/ HITL 卡。
 - **输入区**：
-  - 文本框 + 发送（禁用条件：`streamStatus !== idle && !== interrupted`）。
+  - 文本框 + 发送（禁用条件：`streamStatus !== idle && !== interrupted`；另：未选智能体的空会话禁发）。
+  - **智能体选择器**（会话-智能体解耦）：composer 左下角，逐回合选择；切换即按新选中
+    重拉全部能力查询（query key 含 agentId，keyed refetch）。门禁：流式生成中 /
+    HITL 悬空期（且 last_agent_id 可解析）禁用——last 悬空时保持可选，为"选中新
+    智能体回撤悬空回合"留逃生路径。选中态是 `chatStore.selectedAgentId`（纯 UI 态，
+    永不落库），进入会话从 `session.last_agent_id` 初始化。
   - 附件按钮（**按 `attachment-capability` 渲染**，见 §10.4）。
   - rubric 单次覆盖输入（可选，对应 `SendMessageRequest.rubric`）。
 - **HITL 卡**：`interrupt` 事件到达 → 渲染决策按钮组（approve / edit / reject / respond）。
   - `edit` → 展开表单编辑 `edited_action.{name,args}`。
-  - 提交 → `POST /sessions/:id/resume` `{ decisions: [...] }` → 继续同状态机。
+  - 提交 → `POST /sessions/:id/resume` `{ decisions: [...] }` → 继续同状态机（恒经
+    last_agent_id 取图；悬空期发新消息后端显式 409，需先审批或回撤该回合）。
 
 ### 10.4 能力驱动 UI（`features/capability/`）—— 准则 F2 落地
 - 进入会话先 `GET /sessions/:id/attachment-capability`，据返回渲染：
@@ -404,8 +410,9 @@ async function streamMessage(sessionId, body, handlers) {
 - **KB 留口**：未来 `GET /sessions/:id/kb-capability` 同模式：`kb_available=false` → 隐藏「启用知识库」开关；为 true → 渲染 collection/version 下拉（见 §13）。
 
 ### 10.5 附件上传（`features/capability/`）
-- `POST /sessions/:id/uploads`：multipart，**前端只传 `file`（含 filename）+ `user_id`**，**不传 mime/kind**（后端魔数判定，准则 F6）。
+- `POST /sessions/:id/uploads`：multipart，**前端只传 `file`（含 filename）+ `user_id`（+ 可选 `agent_id`）**，**不传 mime/kind**（后端魔数判定，准则 F6）。
 - 上传成功 → 把返回的 `upload_id`（+ filename/kind 展示）存入 `chatStore.attachments`，发消息时只带 `upload_id`。
+- 上传后切到不支持图像的智能体 → 发送门 TOCTOU 纵深显式 422（"模型配置已变更或已切换智能体"）。
 
 ### 10.6 模型管理（`pages/settings/ModelsPage`）
 - 列表 + 新建/编辑（`name`/`model_type`/`api_key`/`base_url`/`supports_vision`/`enabled`）。

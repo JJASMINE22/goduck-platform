@@ -45,7 +45,11 @@ export const streamApi = {
   /** 显式取消当前 run（后端广播 canceled 终态并释放会话闸）；无 run → 409 */
   cancel: (sessionId: UUID) => post<{ ok: boolean }>(`/sessions/${sessionId}/cancel`),
 
-  /** 待审批查询：204（client 返回 undefined）= 无；有则返回 interrupt 事件同形状 payload */
-  getInterrupt: (sessionId: UUID) =>
-    get<InterruptPayload | undefined>(`/sessions/${sessionId}/interrupt`),
+  /** 待审批查询：204（client 返回 undefined）= 无；有则返回 interrupt 事件同形状 payload。
+   *  agentId=当前选中智能体（弱绑定解析：payload 通道级、与图身份无关） */
+  getInterrupt: (sessionId: UUID, agentId?: UUID | null) =>
+    get<InterruptPayload | undefined>(
+      `/sessions/${sessionId}/interrupt`,
+      agentId ? { agent_id: agentId } : undefined,
+    ),
 }

@@ -9,8 +9,9 @@ import asyncio
 import logging
 import uuid
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
 
+from app.api.stream import capability_agent_row, resolve_agent_choice_or_409
 from app.deps import get_appstate
 from app.models import db as dbmod
 from app.models.schemas import AttachmentCapability, UploadOut
@@ -39,8 +40,14 @@ async def upload_file(
     request: Request,
     file: UploadFile = File(...),
     user_id: str = Form(...),
+    agent_id: uuid.UUID | None = Form(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
 ):
-    """上传附件。前端只传文件流 + filename，mime 服务端魔数判定。"""
+    """上传附件。前端只传文件流 + filename，mime 服务端魔数判定。
+
+    agent_id 弱绑定解析（§4.4）：附件归属 session（与 agent 无关），能力
+    谓词按"显式 > last"选定的当回合智能体派生——上传时可传 A 允许图片、
+    发送时已切 B 的窗口由发送门纵深兜底（422）。
+    """
     st = _appstate(request)
 
     # ① 校验 session 存在 + 归属
@@ -75,7 +82,8 @@ async def upload_file(
     # ④ 智能体级策略门（plan §3.2）：附件总开关 + 图像能力（基座视觉 OR 下挂
     #    视觉模型，动态派生——管理员换模型/禁下挂后立即收紧）。显式 422 而非
     #    上传后静默丢弃：用户当场知道该智能体收不了这类文件。
-    policy = await AttachmentPolicyService(st).for_session(session)
+    chosen_id = await resolve_agent_choice_or_409(st, session, agent_id)
+    policy = await AttachmentPolicyService(st).for_agent_id(chosen_id)
     if not policy.allow_attachments:
         raise HTTPException(status_code=422, detail="该智能体未启用附件能力")
     kind = detect_kind(real_mime)
@@ -137,7 +145,11 @@ async def preview_upload(session_id: uuid.UUID, upload_id: uuid.UUID, request: R
 
 
 @router.get("/{session_id}/attachment-capability", response_model=AttachmentCapability)
-async def get_attachment_capability(session_id: uuid.UUID, request: Request):
+async def get_attachment_capability(
+    session_id: uuid.UUID,
+    request: Request,
+    agent_id: uuid.UUID | None = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+):
     """前端据此渲染上传组件（支持的文件类型、大小限制）。
 
     策略经 AttachmentPolicyService 动态派生（单一真相）：
@@ -145,6 +157,7 @@ async def get_attachment_capability(session_id: uuid.UUID, request: Request):
     - allow_image = 基座 supports_vision OR 下挂视觉模型当前可用
       （原 `endswith("__image_understand")` 工具名启发式已随 MCP 解析链路退役）；
     - allow_file：mime 白名单派生（mime_utils 单一来源）。
+    解析落空（未选/悬空/选择失效）→ 全关降级（capability_agent_row，§4.4）。
     """
     st = _appstate(request)
     svc = SessionService(st.pool)
@@ -152,7 +165,8 @@ async def get_attachment_capability(session_id: uuid.UUID, request: Request):
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
 
-    policy = await AttachmentPolicyService(st).for_session(session)
+    agent_row = await capability_agent_row(st, session, agent_id)
+    policy = AttachmentPolicyService(st).for_agent_row(agent_row)
     return AttachmentCapability(
         allow_attachments=policy.allow_attachments,
         allow_image=policy.allow_image,

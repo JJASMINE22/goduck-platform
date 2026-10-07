@@ -7,10 +7,13 @@ import { toastSuccess } from '@/lib/antdStatic'
 import type { UUID } from '@/types'
 import { queryKeys } from './queryKeys'
 
-export function useWorkspaceCapability(sessionId: UUID | null | undefined) {
+export function useWorkspaceCapability(
+  sessionId: UUID | null | undefined,
+  agentId?: UUID | null,
+) {
   return useQuery({
-    queryKey: queryKeys.workspaceCapability(sessionId ?? ''),
-    queryFn: () => workspaceApi.capability(sessionId!),
+    queryKey: queryKeys.workspaceCapability(sessionId ?? '', agentId ?? null),
+    queryFn: () => workspaceApi.capability(sessionId!, agentId ?? null),
     enabled: !!sessionId,
   })
 }

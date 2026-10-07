@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.schema_utils import AgentConfig
@@ -68,6 +69,85 @@ async def _build_agent_or_409(st, agent_id: uuid.UUID):
         return await st.agent_registry.get_or_build(agent_id)
     except KeyError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+async def resolve_agent_choice_or_409(
+    st, session: dict, agent_id: uuid.UUID | None = None
+) -> uuid.UUID:
+    """写者/弱绑定端点共用的智能体解析：显式 agent_id > session.last_agent_id。
+
+    会话-智能体解耦的解析矩阵（plan 1790660700000 §4.4）：
+    - 缺省回落 last_agent_id；两者皆无 → 409（空会话未选择 / 上次智能体已删）；
+    - **显式无效 ≠ 缺省**：显式传入不存在 / 已归档 / chat 会话选了 cron 型 →
+      409，绝不静默回落 last（掩盖选择意图错误比报错更糟）；
+    - 显式校验仅对 chat 会话的切换路径生效（cron 会话与其 cron 型 agent 的
+      1:1 绑定不受影响，缺省路径保持既有行为：行在即建图，构建失败 → 409）。
+
+    返回选定的 agent_id（不建图）；构图经 _build_agent_or_409。
+    """
+    explicit = agent_id is not None
+    chosen = agent_id or session.get("last_agent_id")
+    if chosen is None:
+        raise HTTPException(
+            status_code=409,
+            detail="该会话尚未选择智能体，请先在会话中选择智能体后再操作",
+        )
+    row = await dbmod.get_agent(st.pool, chosen)
+    if row is None:
+        if explicit:
+            raise HTTPException(status_code=409, detail=f"所选智能体不存在: {chosen}")
+        raise HTTPException(
+            status_code=409,
+            detail="会话上次使用的智能体已被删除，请选择新智能体后重试",
+        )
+    if explicit and session.get("kind") == "chat":
+        if row["status"] != "active":
+            raise HTTPException(
+                status_code=409, detail=f"智能体「{row['name']}」已归档，不可选择"
+            )
+        if row["kind"] != "chat":
+            raise HTTPException(
+                status_code=409,
+                detail=f"智能体「{row['name']}」为定时任务专用，不可用于会话",
+            )
+    return chosen
+
+
+async def capability_agent_row(
+    st, session: dict, agent_id: uuid.UUID | None = None
+) -> Optional[dict]:
+    """能力端点专用的宽松解析：解析不到 → None（全关降级，200）。
+
+    显式参数优先且无效时不回落 last（与严格解析同规则），但落空不报 409——
+    能力谓词是纯展示层输入，悬空 last（agent 已删）/ 未选择 / 选择已失效
+    统一降级为"全关"，前端能力驱动 UI 自然隐藏按钮。kind 匹配规则与严格
+    解析一致：chat 会话只认 chat 型，cron 会话只认 cron 型（保持任务会话的
+    工作区/Shell 徽标行为不变）。
+    """
+    chosen = agent_id or session.get("last_agent_id")
+    if chosen is None:
+        return None
+    row = await dbmod.get_agent(st.pool, chosen)
+    if row is None:
+        return None
+    if row.get("kind") != session.get("kind", "chat"):
+        return None
+    return row
+
+
+async def _refuse_pending_interrupt(agent, config) -> None:
+    """HITL 门禁（plan §4.4）：悬空中断存在（state.next 非空）时拒绝新回合。
+
+    行为变更：此前新消息会静默取消待审批（interrupt 被新输入丢弃）；解耦后
+    悬空期必须先经 resume（审批）或 withdraw（回撤该回合）收场，再发新消息。
+    判据通道级（任意图可读 checkpoint 的 state.next），与图身份无关。
+    """
+    state = await agent.aget_state(config)
+    if state.next:
+        raise HTTPException(
+            status_code=409,
+            detail="该会话存在待审批的中断（HITL），请先处理审批或回撤该回合后再发新消息",
+        )
 
 
 async def _load_session_or_404(request: Request, session_id: uuid.UUID) -> dict:
@@ -164,7 +244,13 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
     session, _svc = await _load_session_or_404(request, session_id)
     _refuse_cron_session(session, action="手动发送消息")
     config = _config_for(session)
-    agent = await _build_agent_or_409(st, session["agent_id"])
+
+    # 写者解析（§4.4）：显式 body.agent_id > last_agent_id，落空/无效 → 409
+    chosen_id = await resolve_agent_choice_or_409(st, session, body.agent_id)
+    agent = await _build_agent_or_409(st, chosen_id)
+
+    # HITL 门禁（§4.4）：悬空中断存在时拒绝新回合（行为变更：静默取消 → 显式 409）
+    await _refuse_pending_interrupt(agent, config)
 
     # 附件/KB 校验（流外，plan §6.5）—— 与语音 WS 共享同一校验器：能力门控 422 /
     # 附件归属 403 / KB 不存在 404 / 503 以 HTTP 状态码尽早暴露。组装（含图像
@@ -173,17 +259,23 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
         await validate_message_content(
             st,
             session,
+            agent_id=chosen_id,
             attachments=body.attachments,
             knowledge_base_ids=body.knowledge_base_ids,
         )
     except MessageContentError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
+    # last_agent_id 唯一写点（§4.4 写者语义）：校验通过后、开 run 前写入。
+    # run 单写者闸排除并发 send；crash 窗口内 last 指向"意图 agent"，无害。
+    await dbmod.set_session_last_agent(st.pool, session["id"], chosen_id)
+
     factory = chat_event_source(
         st,
         session,
         agent,
         config,
+        agent_id=chosen_id,
         user_query=body.content,
         attachments=body.attachments,
         knowledge_base_ids=body.knowledge_base_ids,
@@ -197,11 +289,16 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
 
 
 @router.get("/{session_id}/knowledge-capability", response_model=KnowledgeCapability)
-async def get_knowledge_capability(session_id: uuid.UUID, request: Request):
+async def get_knowledge_capability(
+    session_id: uuid.UUID,
+    request: Request,
+    agent_id: Optional[uuid.UUID] = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+):
     """前端据此渲染会话框 KB 选择器（DESIGN 准则 F2 能力驱动 UI）。
 
     allow_knowledge = 智能体配置允许 AND 全局 KB 能力已启用（kb_enabled）。
-    kb_enabled=false 时直接 false（不查 agent 配置）。
+    kb_enabled=false 时直接 false（不查 agent 配置）。解析落空（未选/悬空/
+    选择失效）→ 全关降级（capability_agent_row，§4.4）。
     """
     from app.services.session_service import SessionService
 
@@ -212,19 +309,23 @@ async def get_knowledge_capability(session_id: uuid.UUID, request: Request):
 
     allow = False
     if st.knowledge_service is not None:  # kb_enabled
-        agent_row = await dbmod.get_agent(st.pool, session["agent_id"])
+        agent_row = await capability_agent_row(st, session, agent_id)
         if agent_row is not None:
             allow = AgentConfig.model_validate(agent_row["config_json"]).allow_knowledge
     return KnowledgeCapability(allow_knowledge=allow)
 
 
 @router.get("/{session_id}/shell-capability", response_model=ShellCapability)
-async def get_shell_capability(session_id: uuid.UUID, request: Request):
+async def get_shell_capability(
+    session_id: uuid.UUID,
+    request: Request,
+    agent_id: Optional[uuid.UUID] = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+):
     """是否启用 shell 执行 —— 驱动会话页 shell 能力徽标（准则 F2 能力驱动 UI）。
 
     allow_shell = 该会话智能体主代理或任一子代理配置 allow_shell=true。
     （compiled 子代理需自身开启才有独立 shell 后端；dicted 子代理共享父
-    后端，故随父代理生效。）
+    后端，故随父代理生效。）解析落空 → false（全关降级）。
     """
     st = get_appstate(request)
 
@@ -235,7 +336,7 @@ async def get_shell_capability(session_id: uuid.UUID, request: Request):
         raise HTTPException(status_code=404, detail="session not found")
 
     allow = False
-    agent_row = await dbmod.get_agent(st.pool, session["agent_id"])
+    agent_row = await capability_agent_row(st, session, agent_id)
     if agent_row is not None:
         allow = _allows_shell_anywhere(AgentConfig.model_validate(agent_row["config_json"]))
     return ShellCapability(allow_shell=allow)
@@ -249,22 +350,28 @@ def _allows_shell_anywhere(cfg: AgentConfig) -> bool:
 
 
 @router.get("/{session_id}/interrupt")
-async def get_pending_interrupt(session_id: uuid.UUID, request: Request):
+async def get_pending_interrupt(
+    session_id: uuid.UUID,
+    request: Request,
+    agent_id: Optional[uuid.UUID] = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+):
     """待审批 HITL 查询（会话重入恢复，plan §5.3 补全）。
 
     待审批状态在前端仅存活于 live SSE 流内：刷新/切会话即丢失审批卡，
-    图却仍暂停在 interrupt（悬空工具卡永远「执行中」，且用户发新消息会
-    静默取消待审批）。本端点返回 checkpointer 真值——与 interrupt SSE 事件
-    同一 payload 形状（action_requests + review_configs），前端据此重建
-    interrupted 状态与审批卡。无待审批 → 204。
+    图却仍暂停在 interrupt（悬空工具卡永远「执行中」）。本端点返回
+    checkpointer 真值——与 interrupt SSE 事件同一 payload 形状
+    （action_requests + review_configs），前端据此重建 interrupted 状态与
+    审批卡。无待审批 → 204。
 
-    只读 aget_state，不占用 run 闸；resume 端点同源校验（409 契约
-    不变），两端点天然一致。
+    弱绑定解析（§4.4）：任一 same-schema 图读到同一 checkpoint state，
+    payload 与图身份无关；门禁锁定期间"选中 == last"恒成立，两种解析重合。
+    只读 aget_state，不占用 run 闸；resume 端点同源校验（409 契约不变）。
     """
     st = get_appstate(request)
     session, _svc = await _load_session_or_404(request, session_id)
     config = _config_for(session)
-    agent = await _build_agent_or_409(st, session["agent_id"])
+    chosen_id = await resolve_agent_choice_or_409(st, session, agent_id)
+    agent = await _build_agent_or_409(st, chosen_id)
     intr = await HITLResolver().assert_interrupted(agent, config)
     # 非字典/空值（如裸 interrupt() 原语）无 action_requests，前端守卫会跳过；
     # 此处一并 204，保持「有返回即可渲染审批卡」的简单契约
@@ -278,7 +385,11 @@ async def resume(session_id: uuid.UUID, body: ResumeRequest, request: Request):
     st = get_appstate(request)
     session, _svc = await _load_session_or_404(request, session_id)
     config = _config_for(session)
-    agent = await _build_agent_or_409(st, session["agent_id"])
+    # 强绑定（§4.4 解析矩阵）：resume 必须跑在恰好那张中断的图上，不收
+    # agent_id 参数。门禁 D 保证"存在 pending interrupt ⇒ last_agent_id ==
+    # 中断 agent"（悬空期 send 被拒、切换是纯 UI 态不落库），构造性精确。
+    chosen_id = await resolve_agent_choice_or_409(st, session)
+    agent = await _build_agent_or_409(st, chosen_id)
 
     resolver = HITLResolver()
 

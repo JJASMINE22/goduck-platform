@@ -36,10 +36,10 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
+from app.api.stream import capability_agent_row
 from app.core.schema_utils import AgentConfig
 from app.core.user_scoped_backend import user_workspace_path
 from app.deps import get_appstate
-from app.models import db as dbmod
 from app.models.schemas import (
     WorkspaceCapability,
     WorkspaceDeleted,
@@ -105,17 +105,22 @@ def _stat_mtime(path: Path) -> Optional[str]:
 # capability
 # ---------------------------------------------------------------------------
 @router.get("/{session_id}/workspace-capability", response_model=WorkspaceCapability)
-async def workspace_capability(session_id: uuid.UUID, request: Request):
+async def workspace_capability(
+    session_id: uuid.UUID,
+    request: Request,
+    agent_id: Optional[uuid.UUID] = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+):
     """是否启用工作区 —— 驱动会话页工作区面板可见性（准则 F2 能力驱动 UI）。
 
-    allow_workspace = 该会话智能体配置 workspace=true。
+    allow_workspace = 该会话智能体配置 workspace=true。解析落空（未选/悬空/
+    选择失效）→ false（全关降级，§4.4）。
     """
     st = get_appstate(request)
     session = await SessionService(st.pool).get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     allow = False
-    agent_row = await dbmod.get_agent(st.pool, session["agent_id"])
+    agent_row = await capability_agent_row(st, session, agent_id)
     if agent_row is not None:
         allow = AgentConfig.model_validate(agent_row["config_json"]).workspace
     return WorkspaceCapability(allow_workspace=allow)

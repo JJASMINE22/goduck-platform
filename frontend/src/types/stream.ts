@@ -178,6 +178,9 @@ export interface Attachment {
 
 export interface SendMessageRequest {
   content: string
+  /** 本回合智能体（会话-智能体解耦，写者语义）：缺省回落会话 last_agent_id；
+   *  发送成功后由后端写入 last_agent_id */
+  agent_id?: UUID | null
   rubric?: string | null // 单次 rubric 覆盖（FixedRubric 优先）
   attachments?: Attachment[]
   /** 本次消息启用的知识库 id（非空时后端注入 KB 锚点，强暗示 agent 调 kb_search） */

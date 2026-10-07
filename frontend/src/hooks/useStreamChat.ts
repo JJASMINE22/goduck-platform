@@ -18,7 +18,7 @@ import { sessionsApi } from '@/api/sessions'
 import { streamApi } from '@/api/stream'
 import { useChatStore } from '@/store/chatStore'
 import { dispatchStreamEvent, flushPendingTokens } from '@/lib/streamEvents'
-import type { StreamTermination } from '@/lib/sse'
+import { SseRejectedError, type StreamTermination } from '@/lib/sse'
 import type { ChatStreamStatus, Decision, SSEEvent, UUID } from '@/types'
 
 export interface SendOptions {
@@ -263,6 +263,9 @@ export function useStreamChat(sessionId: UUID | null, observerEnabled = true): U
 
       const body = {
         content,
+        // 本回合智能体（§4.4 写者）：selectedAgentId 是纯 UI 态，随请求下发；
+        // 后端发送成功后写入 last_agent_id（选中永不落库，审计归因不被 UI 污染）
+        agent_id: store.selectedAgentId ?? undefined,
         rubric: opts?.rubric,
         attachments: attachs.map((a) => ({ upload_id: a.upload_id })),
         knowledge_base_ids: kbIds.length ? kbIds : undefined,
@@ -284,8 +287,26 @@ export function useStreamChat(sessionId: UUID | null, observerEnabled = true): U
           // 后端被硬杀/代理掐断：run 可能仍在服务端执行 —— 观察流接续或截断
           await recoverOrTruncate(sessionId, dispatchEvent)
         }
-      } catch {
+      } catch (err) {
         if (livePost?.controller === controller) livePost = null
+        // 后端拒绝（携带真实 detail 的 4xx：未选择智能体 / HITL 门禁 / 模型
+        // 不可用等）：请求未成立、无 run——回滚乐观消息、恢复 composer 内容、
+        // 以真实原因落横幅。注意顺序：setStreamError 会连带置 status='error'，
+        // 须在其后再显式回 idle，横幅保留而发送解锁。
+        if (err instanceof SseRejectedError && !controller.signal.aborted) {
+          const s = useChatStore.getState()
+          flushPendingTokens()
+          s.finalizeStreaming()
+          const lastUser = [...s.messages].reverse().find((m) => m.role === 'user')
+          if (lastUser) s.removeTurn(lastUser.id)
+          s.setAttachments(attachs)
+          s.setKbs(kbSnap)
+          s.setDraft(content)
+          s.setStreamError(err.message)
+          s.setStatus('idle')
+          s.setStreamSource(null)
+          return
+        }
         // 网络层异常：先观察流接续（run 可能仍在），失败再落 error（准则 F4）
         if (!controller.signal.aborted) {
           await recoverOrTruncate(sessionId, dispatchEvent)
@@ -322,8 +343,31 @@ export function useStreamChat(sessionId: UUID | null, observerEnabled = true): U
         if (termination === 'closed' && !controller.signal.aborted) {
           await recoverOrTruncate(sessionId, dispatchEvent)
         }
-      } catch {
+      } catch (err) {
         if (livePost?.controller === controller) livePost = null
+        if (!controller.signal.aborted && err instanceof SseRejectedError) {
+          // 后端拒绝（如模型不可用 409）：横幅以真实原因呈现并回 idle；待审批
+          // 卡在 resume 开始时已清——经真值查询重建（成功则回到 interrupted，
+          // 审批不丢失；204/失败则维持 idle + 横幅）
+          const s = useChatStore.getState()
+          flushPendingTokens()
+          s.finalizeStreaming()
+          s.setStreamError(err.message)
+          s.setStatus('idle')
+          s.setStreamSource(null)
+          try {
+            const payload = await streamApi.getInterrupt(
+              sessionId,
+              useChatStore.getState().selectedAgentId,
+            )
+            if (payload?.action_requests?.length) {
+              useChatStore.getState().setInterrupt(payload)
+            }
+          } catch {
+            /* 保持 idle + 横幅 */
+          }
+          return
+        }
         if (!controller.signal.aborted) {
           await recoverOrTruncate(sessionId, dispatchEvent)
         }

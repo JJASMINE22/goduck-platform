@@ -12,21 +12,28 @@ import { toastError } from '@/lib/antdStatic'
 import type { UUID } from '@/types'
 import { queryKeys } from './queryKeys'
 
-export function useAttachmentCapability(sessionId: UUID | null | undefined) {
+/** 附件能力（能力驱动 UI）：按当前选中智能体派生（§4.4 弱绑定解析，
+ *  query key 含 agentId——切换选中即 keyed refetch）。 */
+export function useAttachmentCapability(
+  sessionId: UUID | null | undefined,
+  agentId?: UUID | null,
+) {
   return useQuery({
-    queryKey: queryKeys.attachmentCapability(sessionId ?? ''),
-    queryFn: () => uploadsApi.capability(sessionId!),
+    queryKey: queryKeys.attachmentCapability(sessionId ?? '', agentId ?? null),
+    queryFn: () => uploadsApi.capability(sessionId!, agentId ?? null),
     enabled: !!sessionId,
   })
 }
 
-export function useUploadFile(sessionId: UUID) {
+export function useUploadFile(sessionId: UUID, agentId?: UUID | null) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ file, userId }: { file: File; userId: string }) =>
-      uploadsApi.upload(sessionId, file, userId),
+      uploadsApi.upload(sessionId, file, userId, agentId ?? null),
     onSuccess: () =>
-      qc.invalidateQueries({ queryKey: queryKeys.attachmentCapability(sessionId) }),
+      qc.invalidateQueries({
+        queryKey: queryKeys.attachmentCapability(sessionId, agentId ?? null),
+      }),
   })
 }
 
@@ -52,10 +59,11 @@ function friendlyName(file: File): string {
 }
 
 /** 多入口（选择器/粘贴）共用的附件上传编排。
-    返回 attach（批量入队 + 并发上传）与 retry（按 localId 重试错误占位）。 */
-export function useAttachFiles(sessionId: UUID, userId: string) {
-  const cap = useAttachmentCapability(sessionId)
-  const { mutateAsync } = useUploadFile(sessionId)
+     返回 attach（批量入队 + 并发上传）与 retry（按 localId 重试错误占位）。
+     agentId=当前选中智能体（上传门能力谓词按它派生）。 */
+export function useAttachFiles(sessionId: UUID, userId: string, agentId?: UUID | null) {
+  const cap = useAttachmentCapability(sessionId, agentId)
+  const { mutateAsync } = useUploadFile(sessionId, agentId)
 
   const run = useCallback(
     async (file: File, localId: string) => {

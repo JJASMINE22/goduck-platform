@@ -14,9 +14,12 @@ import type {
 const wsBase = (sessionId: UUID) => `/sessions/${sessionId}/workspace`
 
 export const workspaceApi = {
-  /** 工作区能力查询 —— 驱动面板可见性（准则 F2 能力驱动 UI） */
-  capability: (sessionId: UUID) =>
-    get<WorkspaceCapability>(`/sessions/${sessionId}/workspace-capability`),
+  /** 工作区能力查询 —— 驱动面板可见性（准则 F2 能力驱动 UI）。
+   *  agentId=当前选中智能体（弱绑定解析：显式 > last；解析落空返回 false） */
+  capability: (sessionId: UUID, agentId?: UUID | null) =>
+    get<WorkspaceCapability>(`/sessions/${sessionId}/workspace-capability`, {
+      ...(agentId ? { agent_id: agentId } : {}),
+    }),
 
   /** 递归文件树（受限条目/深度）；空工作区返回 [] */
   tree: (sessionId: UUID) => get<WorkspaceNode[]>(`${wsBase(sessionId)}/tree`),

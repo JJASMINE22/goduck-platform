@@ -135,9 +135,11 @@ export class VoiceConnection {
   }
 
   // ---------------------------------------------------------------- 回合帧
-  /** 按下麦克风：start 快照帧（标记回合开启，音频随后上行） */
+  /** 按下麦克风：start 快照帧（标记回合开启，音频随后上行）。
+   *  agent_id=本回合智能体（会话-智能体解耦写者语义，缺省回落 last_agent_id） */
   pressStart(payload: {
     draft?: string | null
+    agent_id?: string | null
     attachments: { upload_id: string }[]
     knowledge_base_ids: string[]
     rubric?: string | null
@@ -145,6 +147,7 @@ export class VoiceConnection {
     const ok = this.send({
       type: 'start',
       draft: payload.draft ?? null,
+      agent_id: payload.agent_id ?? null,
       attachments: payload.attachments,
       knowledge_base_ids: payload.knowledge_base_ids,
       rubric: payload.rubric ?? null,

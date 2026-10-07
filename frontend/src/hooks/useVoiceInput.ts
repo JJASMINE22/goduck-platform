@@ -153,6 +153,17 @@ export function useVoiceInput(sessionId: UUID | null, enabled: boolean): UseVoic
         // 收口旧回合）
         const sse = asSSEEvent(frame)
         if (!sse) return
+        // 连接级错误（无进行中语音回合时到达，如 WS 建连即被拒）：非回合产物，
+        // 不写聊天状态——否则"会话出错"横幅会挂在整个会话上误导用户（连接已
+        // 由 onclose 4404/4409 停摆，麦克风置灰即为可见反馈）。回合内错误
+        // （录音/转写/推理期到达）照常分发。
+        if (
+          sse.type === 'error' &&
+          store.voiceState === 'idle' &&
+          store.status !== 'streaming'
+        ) {
+          return
+        }
         dispatchStreamEvent(sse)
         if (
           sse.type === 'done' || sse.type === 'error' || sse.type === 'interrupt' ||
@@ -216,6 +227,9 @@ export function useVoiceInput(sessionId: UUID | null, enabled: boolean): UseVoic
       const conn = connRef.current
       if (!conn || !conn.ready) return
       if (store.voiceState !== 'idle' || store.status !== 'idle') return
+      // 未选智能体不发起回合（与 ChatInput micDisabled 同源守卫）：空会话无
+      // last 可回落，start 帧缺省解析必 409——错误帧会以横幅+error 态污染会话
+      if (!store.selectedAgentId) return
 
       // 草稿/附件/KB/rubric 快照（输完/选完再长按即自然生效；校验错误在录音前由
       // error 帧暴露；录音期间输入框只读，快照即终值，不会被中途修改）
@@ -223,6 +237,8 @@ export function useVoiceInput(sessionId: UUID | null, enabled: boolean): UseVoic
       const kbIds = store.selectedKbs.map((kb) => kb.id)
       const ok = conn.pressStart({
         draft: store.draft,
+        // 本回合智能体（§4.4 写者，与手打 send 同源）：UI 选中态随 start 帧下发
+        agent_id: store.selectedAgentId ?? undefined,
         attachments: attachs.map((a) => ({ upload_id: a.upload_id })),
         knowledge_base_ids: kbIds,
         rubric: rubric?.trim() || undefined,

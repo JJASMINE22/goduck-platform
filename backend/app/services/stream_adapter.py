@@ -244,13 +244,14 @@ class StreamAdapter:
         upload_ids: list[str] | None = None,
         raw_content: str | None = None,
         kb_ids: list[str] | None = None,
+        agent_id: str | None = None,
     ) -> AsyncIterator[SSEEvent]:
         """Stream a fresh user message. Yields until done / interrupt / error.
 
         content may be a plain str (text) or a multimodal list (text + image_url
         blocks) assembled by ContentComposer.
 
-        upload_ids / raw_content / kb_ids are stashed on the message's
+        upload_ids / raw_content / kb_ids / agent_id are stashed on the message's
         additional_kwargs so the checkpointer persists them alongside content
         (they never enter the model payload — the model only sees ``content``):
         - upload_ids: recovered on /history to render attachment thumbnails
@@ -264,12 +265,17 @@ class StreamAdapter:
         - kb_ids: the knowledge bases selected for this message. Recovered on
           /history to re-render the KB badges on the user bubble, and on
           withdraw to prefill the composer's KB selector.
+        - agent_id: 锚点回合归属（会话-智能体解耦，plan 1790660700000 §4.4）。
+          withdraw 清理 `_summarization_event` 旁通道时，若当前解析图无该
+          通道，经它取"产出该回合的图"执行（通道盲区的解法）。
         """
         additional_kwargs: dict[str, Any] = {}
         if upload_ids:
             additional_kwargs["upload_ids"] = upload_ids
         if kb_ids:
             additional_kwargs["kb_ids"] = kb_ids
+        if agent_id:
+            additional_kwargs["agent_id"] = agent_id
         if isinstance(raw_content, str) and raw_content:
             additional_kwargs["raw_content"] = raw_content
         msg = HumanMessage(content=content, additional_kwargs=additional_kwargs)

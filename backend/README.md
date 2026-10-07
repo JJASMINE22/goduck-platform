@@ -84,25 +84,30 @@ backend/
 |---|---|---|
 | `model` | 注册模型（OpenAI 兼容客户端族 + api_key + base_url + 采样参数）。agent 经 `model_id` 引用。 | `name` 唯一；key 永不回显；被引用时禁止删除 |
 | `agent` | 智能体当前 active 配置（单行可变）。`id` 全程稳定不变，更新即 in-place 覆写 `config_json`。 | `name` 唯一；`status` ∈ draft/active/archived |
-| `agent_config_history` | 配置历史快照（append-only 审计 + 手动还原来源）。更新时不删，仅追加。 | `agent_id` → `agent(id)` ON DELETE CASCADE |
-| `session` | 会话。绑定 `agent_id`；`thread_id` 是 LangGraph checkpointer 的键。 | `thread_id` 唯一；`agent_id` 级联删；索引 `user_id` |
+| `agent_config_history` | 配置历史快照（append-only 审计 + 手动还原来源）。更新时不删，仅追加。 | `agent_id` 无 FK：agent 删除后快照保留为审计线索 |
+| `session` | 会话。`last_agent_id` 记录最近使用的智能体（send 时写入，非绑定）；`thread_id` 是 LangGraph checkpointer 的键。 | `thread_id` 唯一；`last_agent_id` ON DELETE SET NULL（会话比 agent 长寿）；索引 `user_id` |
 | `mcp_server` | MCP 服务注册（stdio/http）。`name` 作为工具名前缀。 | `name` 唯一；`config_json` 存 `{command,args,env}` 或 `{url,headers}` |
 | `upload` | 附件元数据（字节在 MinIO）。 | 关联 session/user |
 | `knowledge_base` | 知识库（ES 索引 `kb_<id>` + 可选 MinIO 原文留底）。 | `name` 唯一 |
 | `kb_document` | 知识库文档（状态机 pending/ingesting/ready/failed + 分块数/页数）。 | 级联随 KB 删除 |
 
-两类"历史"区分：**会话历史（session + LangGraph checkpoints）= 更新智能体时删除**；
-**配置历史（agent_config_history）= 保留可还原**。
+两类"历史"区分（会话-智能体解耦后）：**会话历史（session + LangGraph checkpoints）
+= 与智能体更新/删除解耦，全程保留**；**配置历史（agent_config_history）= 保留可还原**。
 
 > LangGraph 原生表（`checkpoints` / `checkpoint_writes` / `checkpoint_blobs` / store）
-> 由 `AsyncPostgresSaver.setup()` / `AsyncPostgresStore.setup()` 创建，更新智能体时
-> 会显式删除失效 `thread_id` 对应的 checkpoints 三表行以防泄漏。
+> 由 `AsyncPostgresSaver.setup()` / `AsyncPostgresStore.setup()` 创建，仅随 session
+> purge 清理（不再随智能体更新/删除清理）。
 
 ## 关键设计
 
-- **无版本化（方案 B）**：`agent.id` 全程稳定不变；更新 = in-place 覆写 `config_json`
-  + 追加 `agent_config_history` 快照。更新即级联删该 agent 的全部会话，并清理 LangGraph
-  checkpoints 残留（会话历史删、配置历史留）。重启加载所有 `active` 智能体重建 registry。
+- **无版本化 + 会话-智能体解耦**：`agent.id` 全程稳定不变；更新 = in-place 覆写
+  `config_json` + 追加 `agent_config_history` 快照。同一会话可逐回合切换智能体：
+  `POST /messages` 等写者带 `agent_id`（缺省回落 `session.last_agent_id`），send
+  时写入 last；withdraw / 能力端点 / `GET /interrupt` 走弱绑定解析（显式 >
+  last）；`POST /resume` 恒经 last（HITL 悬空期门禁禁止切换/发新消息，构造性
+  保证续跑在中断的那张图上）。删除 agent：chat 会话存活（last SET NULL，
+  进入后选择新智能体即可继续/回撤），cron 专用会话归档保留产出。
+  重启加载所有 `active` 智能体重建 registry。
 - **数据驱动运行时**：模型（`model` 表）与 MCP server（`mcp_server` 表）全部经 API 注册、
   存 DB、重启自动加载；模型变更即时刷新 ModelStore 并使 agent 缓存失效（无需重启）。
 - **能力开关**：`kb_enabled=false` 时不 import RAG 重依赖、不挂 knowledge 路由；
@@ -147,7 +152,7 @@ python -m app.main          # 或 uvicorn app.main:app --reload
 |--------|------|------|
 | POST | `/agents/validate` | 校验 config + 返回 mermaid 预览（不落库） |
 | POST | `/agents` | 创建（name 唯一，409 冲突）→ 建 registry → 返回 mermaid |
-| PUT | `/agents/{id}` | 更新（必须存在）→ 级联删会话+清 checkpoint → 重建 registry |
+| PUT | `/agents/{id}` | 更新（必须存在）→ 重建 registry（会话不归档，续用新配置） |
 | GET | `/agents` | 列出智能体 |
 | GET | `/agents/{id}` | 详情 + 当前 active mermaid |
 | GET | `/agents/{id}/topology.mmd` | Mermaid 文本（PlainTextResponse） |
@@ -160,17 +165,20 @@ python -m app.main          # 或 uvicorn app.main:app --reload
 
 | Method | Path | 说明 |
 |--------|------|------|
-| POST | `/sessions` | 创建会话（绑定 agent_id） |
-| GET | `/sessions?user_id=` | 列出用户会话（含 agent_name） |
+| POST | `/sessions` | 创建会话（agent_id 可选：缺省 = 空会话，进入后选择） |
+| GET | `/sessions?user_id=` | 列出用户会话（含最近使用 agent_name） |
 | GET | `/sessions/{id}` | 会话详情 |
 | DELETE | `/sessions/{id}` | 归档会话 |
 | GET | `/sessions/{id}/history` | checkpointer 历史消息 |
-| POST | `/sessions/{id}/messages` | 发送消息（可带附件/KB 锚点）→ SSE 流 |
-| POST | `/sessions/{id}/resume` | HITL 决策恢复 → SSE 流 |
-| GET | `/sessions/{id}/attachment-capability` | 附件能力（驱动上传组件可见性/接受类型） |
-| GET | `/sessions/{id}/knowledge-capability` | 知识库能力（会话是否可锚定 KB） |
-| GET | `/sessions/{id}/shell-capability` | shell 能力（agent 是否开 allow_shell） |
-| WS | `/sessions/{id}/voice` | 语音输入全管线（start/audio/flush ⇄ stt_*/agent 事件） |
+| POST | `/sessions/{id}/messages` | 发送消息（可带 agent_id/附件/KB 锚点）→ SSE 流；发送成功写 last_agent_id；悬空中断存在时 409 |
+| POST | `/sessions/{id}/resume` | HITL 决策恢复 → SSE 流（恒经 last_agent_id 取图，不收 agent_id） |
+| GET | `/sessions/{id}/interrupt` | 待审批查询（?agent_id= 可选，缺省回落 last） |
+| POST | `/sessions/{id}/withdraw` | 回撤回合（body.agent_id 可选：弱绑定取图，last 悬空时选中即可回撤） |
+| GET | `/sessions/{id}/attachment-capability` | 附件能力（?agent_id= 可选；解析落空全关降级） |
+| GET | `/sessions/{id}/knowledge-capability` | 知识库能力（?agent_id= 可选） |
+| GET | `/sessions/{id}/shell-capability` | shell 能力（?agent_id= 可选） |
+| GET | `/sessions/{id}/workspace-capability` | 工作区能力（?agent_id= 可选） |
+| WS | `/sessions/{id}/voice` | 语音输入全管线（start 帧可带 agent_id；audio/flush ⇄ stt_*/agent 事件） |
 
 ### 附件 `/sessions/{id}/uploads`
 

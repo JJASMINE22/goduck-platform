@@ -34,6 +34,9 @@ export interface VoiceStartFrame {
   type: 'start'
   /** 按压时输入框草稿快照；终稿非空时后端与之合并为一条消息（stt_output 下发合并稿） */
   draft?: string | null
+  /** 本回合智能体（写者语义，与 SendMessageRequest.agent_id 对齐）：缺省回落
+   *  会话 last_agent_id；语音发送成功同样写入 last_agent_id */
+  agent_id?: UUID | null
   attachments: VoiceAttachment[]
   knowledge_base_ids: UUID[]
   rubric?: string | null

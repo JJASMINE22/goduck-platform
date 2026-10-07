@@ -192,8 +192,11 @@ async def archive_agent(agent_id: uuid.UUID, request: Request):
 
 @router.post("/{agent_id}/purge", status_code=204)
 async def purge_agent(agent_id: uuid.UUID, request: Request):
-    """Hard delete an agent (physical) + cascade sessions/checkpoints/history.
+    """Hard delete an agent (physical).
 
+    会话-智能体解耦语义：chat 会话与 checkpoint 不再随删（last_agent_id 置空，
+    进入会话选择新智能体即可继续）；cron 专用会话软归档保留产出；
+    agent_config_history 快照保留为审计线索。
     Irreversible. Two-step delete: archive first (recoverable), purge to remove
     for good. Registry cache is invalidated.
     """

@@ -6,10 +6,13 @@ import { shellApi } from '@/api/shell'
 import type { UUID } from '@/types'
 import { queryKeys } from './queryKeys'
 
-export function useShellCapability(sessionId: UUID | null | undefined) {
+export function useShellCapability(
+  sessionId: UUID | null | undefined,
+  agentId?: UUID | null,
+) {
   return useQuery({
-    queryKey: queryKeys.shellCapability(sessionId ?? ''),
-    queryFn: () => shellApi.capability(sessionId!),
+    queryKey: queryKeys.shellCapability(sessionId ?? '', agentId ?? null),
+    queryFn: () => shellApi.capability(sessionId!, agentId ?? null),
     enabled: !!sessionId,
   })
 }

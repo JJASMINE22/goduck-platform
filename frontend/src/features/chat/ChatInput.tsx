@@ -7,12 +7,13 @@
     失败留驻可点重试），全部落定前发送门关闭（快照发生在点击瞬间，防止漏挂在途文件）。
     录音中输入框只读展示"草稿 + 流式转写"合并预览（与后端 stt_output 合并稿同构），
     松开后草稿与终稿合并为一条消息发送，与手打输入互斥。 */
-import { Button, Checkbox, Flex, Input, Popover, Tooltip, Typography, Upload } from 'antd'
+import { Button, Checkbox, Flex, Input, Popover, Select, Tooltip, Typography, Upload } from 'antd'
 import { type ReactNode, useRef, useState } from 'react'
 import {
   AlertCircle,
   AudioLines,
   BookOpen,
+  Bot,
   ChevronDown,
   ChevronUp,
   FileText,
@@ -87,6 +88,11 @@ export function ChatInput({
   send,
   cancel,
   voice,
+  agents,
+  selectedAgentId,
+  onSelectAgent,
+  agentLocked,
+  agentLockedReason,
 }: {
   sessionId: UUID
   userId: string
@@ -94,6 +100,14 @@ export function ChatInput({
   send: (content: string, opts?: SendOptions) => Promise<void>
   cancel: () => void
   voice: UseVoiceInput
+  /** 可选智能体列表（active + chat 型；ChatPage 过滤后传入） */
+  agents: Array<{ id: string; name: string }>
+  /** 当前选中智能体（chatStore 纯 UI 态，§4.4：send 时作为请求参数下发） */
+  selectedAgentId: string | null
+  onSelectAgent: (id: string) => void
+  /** 门禁（§4.4）：流式生成中 / HITL 悬空期（last 可解析）禁止切换 */
+  agentLocked: boolean
+  agentLockedReason?: string | null
 }): ReactNode {
   // 发送框文本上提到 store（draft）：回撤需回填原文，故 composer 受控于 store 而非局部 state。
   const draft = useChatStore((s) => s.draft)
@@ -101,17 +115,22 @@ export function ChatInput({
   const [rubric, setRubric] = useState('')
   const [showRubric, setShowRubric] = useState(false)
   const [kbOpen, setKbOpen] = useState(false)
+  // 智能体下拉展开态：展开时强制隐藏外层 Tooltip——composer 钉在页面底部，
+  // 下拉向上弹出恰与 placement="top" 的提示浮窗同域重叠（Tooltip 层级 1060 >
+  // 下拉 1050，覆盖列表项、抢占点击），"提示与列表同时显示"导致无法选中。
+  // 悬停仍显示提示，左键展开仅显示列表。
+  const [agentOpen, setAgentOpen] = useState(false)
 
-  // —— 附件 ——
-  const cap = useAttachmentCapability(sessionId)
-  const { attach, retry } = useAttachFiles(sessionId, userId)
+  // —— 附件（能力按当前选中智能体派生；query key 含 agentId，切换即重拉） ——
+  const cap = useAttachmentCapability(sessionId, selectedAgentId)
+  const { attach, retry } = useAttachFiles(sessionId, userId, selectedAgentId)
   const attachments = useChatStore((s) => s.attachments)
   const removeAttachment = useChatStore((s) => s.removeAttachment)
   const pendingAttachments = useChatStore((s) => s.pendingAttachments)
   const removePending = useChatStore((s) => s.removePending)
 
-  // —— 知识库 ——
-  const kbCap = useKnowledgeCapability(sessionId)
+  // —— 知识库（同上：能力随选中智能体） ——
+  const kbCap = useKnowledgeCapability(sessionId, selectedAgentId)
   const { data: kbs, isLoading: kbsLoading } = useKnowledgeBases()
   const selectedKbs = useChatStore((s) => s.selectedKbs)
   const addKb = useChatStore((s) => s.addKb)
@@ -141,8 +160,12 @@ export function ChatInput({
   }
   const canAttach = !!cap.data?.allow_attachments
   const canUseKb = !!kbCap.data?.allow_knowledge
+  // 智能体选择门（§4.4 空会话）：未选择且无 last_agent_id 时能力端点全关降级，
+  // 发送必须先完成选择（后端发送门同样 409 兜底，双保险）
+  const hasAgent = !!selectedAgentId
   // 麦克风闸门（与 press() 内部守卫同源）：连接就绪 + 会话空闲 + 无进行中的语音回合
-  const micDisabled = !voice.ready || voiceState !== 'idle' || status !== 'idle'
+  // + 已选智能体（语音回合同走 send 写者解析，空会话无 last 可回落）
+  const micDisabled = !voice.ready || voiceState !== 'idle' || status !== 'idle' || !hasAgent
 
   const toggleKb = (kb: KnowledgeBaseOut) => {
     if (selectedKbs.some((k) => k.id === kb.id)) {
@@ -181,6 +204,8 @@ export function ChatInput({
     if (!text || !idle) return
     // 附件在途/未决：禁止发送（见 hasPending 注释）
     if (hasPending) return
+    // 未选智能体：禁止发送（空会话必须先选择，见 hasAgent 注释）
+    if (!hasAgent) return
     // 语音回合进行中（录音/识别）不与手打发送并发
     if (useChatStore.getState().voiceState !== 'idle') return
     void send(text, { rubric: rubric.trim() || undefined })
@@ -308,17 +333,42 @@ export function ChatInput({
             ? '正在听…松开麦克风发送'
             : transcribing
               ? '正在整理语音…'
-              : idle
-                ? '输入消息，Enter 发送，Shift+Enter 换行'
-                : streaming
-                  ? '生成中…（可中止）'
-                  : '等待人工审批…'
+              : !hasAgent
+                ? '请先在左下角选择智能体…'
+                : idle
+                  ? '输入消息，Enter 发送，Shift+Enter 换行'
+                  : streaming
+                    ? '生成中…（可中止）'
+                    : '等待人工审批…'
         }
       />
 
-      {/* 底部工具条：左=附件/知识库图标，右=rubric 开关 + 发送/中止 */}
+      {/* 底部工具条：左=智能体选择/附件/知识库图标，右=rubric 开关 + 发送/中止 */}
       <Flex justify="space-between" align="center" className="chat-composer__bar">
         <Flex gap={4} align="center">
+          {/* 智能体选择器（会话-智能体解耦 §4.4）：逐回合选择，切换即重拉能力。
+              门禁（流式生成中 / HITL 悬空期且 last 可解析）禁用；last 悬空时
+              悬空期保持可选——为"选中新智能体回撤悬空回合"留逃生路径 */}
+          <Tooltip
+            title={agentLocked ? (agentLockedReason ?? '当前回合进行中，暂不可切换智能体') : '选择本回合使用的智能体'}
+            placement="top"
+            open={agentOpen ? false : undefined}
+          >
+            <Select
+              size="small"
+              variant="borderless"
+              className="chat-composer__agent-select"
+              value={selectedAgentId ?? undefined}
+              placeholder={agents.length ? '选择智能体' : '暂无可用智能体'}
+              disabled={agentLocked || !agents.length}
+              onChange={(v) => onSelectAgent(v as string)}
+              options={agents.map((a) => ({ value: a.id, label: a.name }))}
+              notFoundContent={<Typography.Text type="secondary">暂无可用（活跃聊天）智能体</Typography.Text>}
+              suffixIcon={<Bot size={14} />}
+              popupMatchSelectWidth={false}
+              onOpenChange={setAgentOpen}
+            />
+          </Tooltip>
           {canAttach ? (
             <Upload
               accept={accept || undefined}
@@ -415,9 +465,15 @@ export function ChatInput({
           ) : (
             <button
               type="button"
-              className={`glass-btn chat-composer__send${idle && draft.trim() && !hasPending ? ' chat-composer__send--ready' : ''}`}
-              disabled={!idle || hasPending}
-              title={hasPending ? '附件上传中，请稍候…' : undefined}
+              className={`glass-btn chat-composer__send${idle && draft.trim() && !hasPending && hasAgent ? ' chat-composer__send--ready' : ''}`}
+              disabled={!idle || hasPending || !hasAgent}
+              title={
+                hasPending
+                  ? '附件上传中，请稍候…'
+                  : !hasAgent
+                    ? '请先选择智能体'
+                    : undefined
+              }
               onClick={handleSend}
             >
               <Send size={14} />

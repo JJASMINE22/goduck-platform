@@ -36,8 +36,13 @@ import uuid
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from websockets.exceptions import WebSocketException
 
-from app.api.stream import _build_agent_or_409, _persist_usage
+from app.api.stream import (
+    _build_agent_or_409,
+    _persist_usage,
+    resolve_agent_choice_or_409,
+)
 from app.deps import SimpleUser, get_ws_appstate
+from app.models import db as dbmod
 from app.models.schemas import VoiceStartFrame
 from app.services.message_content import (
     MessageContentError,
@@ -320,6 +325,7 @@ async def _run_agent_round(
     config: dict,
     start: VoiceStartFrame,
     user_text: str,
+    agent_id: uuid.UUID | None = None,
 ) -> dict | None:
     """镜像 POST /messages：组装 content → run（RunManager）→ WS 下行隧道。
 
@@ -348,6 +354,7 @@ async def _run_agent_round(
         session,
         agent,
         config,
+        agent_id=agent_id,
         user_query=user_text,
         attachments=start.attachments,
         knowledge_base_ids=start.knowledge_base_ids,
@@ -440,7 +447,12 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
     await ws.accept()
     sess = _VoiceSession(ws, st, settings)
 
-    # 连接级校验：会话存在/未归档、智能体可构建（失败 → error 帧 + close）
+    # 连接级校验：会话存在/未归档（失败 → error 帧 + close）。
+    # 智能体身份的权威解析在回合级（start 帧 agent_id > last_agent_id，见回合
+    # 循环），连接级取图只是预热 best-effort：空会话（尚未选择）与悬空 last
+    # （agent 已删）都是合法进入态——不关闭连接（麦克风 UI 在未选择时本就
+    # 置灰；若 start 帧解析失败，回合级会给出带上下文的 error 帧）。仅
+    # "last 存在但图不可构建"（模型被禁用等配置性硬错误）沿用 fail-fast。
     try:
         session, _svc = await _load_session(st, session_id)
     except KeyError:
@@ -449,11 +461,14 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
     except PermissionError as e:
         await _session_gone(sess, _CLOSE_SESSION_GONE, str(e))
         return
-    try:
-        agent = await _build_agent_or_409(st, session["agent_id"])
-    except HTTPException as e:
-        await _session_gone(sess, _CLOSE_AGENT_CONFLICT, str(e.detail))
-        return
+    agent = None
+    last_agent = session.get("last_agent_id")
+    if last_agent is not None and await dbmod.get_agent(st.pool, last_agent) is not None:
+        try:
+            agent = await _build_agent_or_409(st, last_agent)
+        except HTTPException as e:
+            await _session_gone(sess, _CLOSE_AGENT_CONFLICT, str(e.detail))
+            return
 
     config = {
         "configurable": {
@@ -485,10 +500,37 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
             else:
                 start = await _await_start_frame(sess)
 
+            # 回合级智能体解析（写者语义，§4.4）：start 帧 agent_id 优先，
+            # 缺省回落 last_agent_id。逐回合刷新 session 快照 + 重解析（连接
+            # 常驻，期间 last 可能被并行 SSE 回合更新或 agent 被删除）；
+            # 失败 → error 帧、回合作废、连接保持。
+            try:
+                fresh = await SessionService(st.pool).get(session_id)
+                if fresh is not None:
+                    session = fresh
+                chosen_id = await resolve_agent_choice_or_409(st, session, start.agent_id)
+                agent = await _build_agent_or_409(st, chosen_id)
+            except HTTPException as e:
+                await sess.send_error(str(e.detail))
+                continue
+
+            # HITL 门禁（§4.4）：悬空中断存在时拒绝新回合（与 POST /messages 同语义，
+            # 行为变更：静默取消 → 显式拒绝）。
+            try:
+                state = await agent.aget_state(config)
+                if state.next:
+                    await sess.send_error(
+                        "该会话存在待审批的中断（HITL），请先处理审批或回撤该回合后再发新消息"
+                    )
+                    continue
+            except Exception as e:  # noqa: BLE001 — aget_state 失败按回合错误处理
+                logger.warning("voice gate aget_state failed: %s", e)
+
             # start 快照校验（录音前暴露配置错误；失败 → error 帧、回合作废）
             try:
                 await validate_message_content(
                     st, session,
+                    agent_id=chosen_id,
                     attachments=start.attachments,
                     knowledge_base_ids=start.knowledge_base_ids,
                 )
@@ -532,8 +574,13 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
             # —— 合并稿 → 镜像 POST 组装 + astream + WS 隧道 ——
             sess.busy = True  # 推理期心跳不做空闲回收
             superseded: dict | None = None
+            # last_agent_id 唯一写点（§4.4 写者语义，与 POST /messages 对齐）：
+            # 转写落定、即将开 run 时写入（空转写不写——没有消息就没有"最近使用"）
+            await dbmod.set_session_last_agent(st.pool, session["id"], chosen_id)
             try:
-                superseded = await _run_agent_round(sess, session, agent, config, start, user_text)
+                superseded = await _run_agent_round(
+                    sess, session, agent, config, start, user_text, agent_id=chosen_id
+                )
             except MessageContentError as e:
                 # start 校验后配置仍可能变化（附件被删等）——按回合错误处理
                 await sess.send_error(e.detail)

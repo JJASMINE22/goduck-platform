@@ -25,11 +25,15 @@ export function useKnowledgeBases() {
 }
 
 /** 会话级知识库能力：驱动会话框 KB 图标可见性（准则 F2 能力驱动 UI）。
- *  allow_knowledge=false（KB 全局未启用 / agent 未开启知识库能力）时不重试。 */
-export function useKnowledgeCapability(sessionId: UUID | null | undefined) {
+ *  allow_knowledge=false（KB 全局未启用 / agent 未开启知识库能力）时不重试。
+ *  agentId=当前选中智能体（弱绑定解析，query key 含 agentId 随切换 refetch）。 */
+export function useKnowledgeCapability(
+  sessionId: UUID | null | undefined,
+  agentId?: UUID | null,
+) {
   return useQuery({
-    queryKey: queryKeys.kbCapability(sessionId ?? ''),
-    queryFn: () => sessionsApi.knowledgeCapability(sessionId!),
+    queryKey: queryKeys.kbCapability(sessionId ?? '', agentId ?? null),
+    queryFn: () => sessionsApi.knowledgeCapability(sessionId!, agentId ?? null),
     enabled: !!sessionId,
     retry: false,
   })

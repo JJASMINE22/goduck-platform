@@ -80,11 +80,12 @@ async def _validate_attachments(
     if image_count > max_images:
         raise MessageContentError(422, f"单条消息最多携带 {max_images} 张图片")
 
-    # 发送门纵深：上传门已挡，此处拦截 TOCTOU（上传后 agent 换模型/下挂被禁用）。
-    # 显式 422 优于静默跳过——用户必须知道图像不会被看到。
+    # 发送门纵深：上传门已挡，此处拦截 TOCTOU（上传后 agent 换模型/下挂被禁用/
+    # 会话内切换到不支持图像的智能体——同构场景，plan §5）。显式 422 优于静默
+    # 跳过——用户必须知道图像不会被看到。
     if image_count and not allow_image:
         raise MessageContentError(
-            422, "该智能体当前不支持图像附件（模型配置已变更），请移除图片后重试"
+            422, "该智能体当前不支持图像附件（模型配置已变更或已切换智能体），请移除图片后重试"
         )
     return upload_ids
 
@@ -110,17 +111,22 @@ async def _validate_kbs(
 async def validate_message_content(
     st: "AppState",
     session: dict,
+    agent_id: uuid.UUID,
     attachments: Optional[list[Attachment]] = None,
     knowledge_base_ids: Optional[list[uuid.UUID]] = None,
 ) -> None:
-    """纯校验（无组装）：录音前/SSE 开流前暴露配置/归属错误。"""
+    """纯校验（无组装）：录音前/SSE 开流前暴露配置/归属错误。
+
+    agent_id 为当回合智能体（会话-智能体解耦：调用方按"显式 > last"解析后
+    传入）；能力谓词与 KB 门控均按它派生，与组装层的幂等重校验同源。
+    """
     attachments = attachments or []
     knowledge_base_ids = knowledge_base_ids or []
 
-    policy = await AttachmentPolicyService(st).for_session(session)
+    policy = await AttachmentPolicyService(st).for_agent_id(agent_id)
     agent_cfg: Optional[AgentConfig] = None
     if attachments or knowledge_base_ids:
-        agent_row = await dbmod.get_agent(st.pool, session["agent_id"])
+        agent_row = await dbmod.get_agent(st.pool, agent_id)
         agent_cfg = (
             AgentConfig.model_validate(agent_row["config_json"]) if agent_row else None
         )
@@ -171,6 +177,7 @@ async def _process_one(
 async def assemble_message_content_stream(
     st: "AppState",
     session: dict,
+    agent_id: uuid.UUID,
     user_query: str,
     attachments: Optional[list[Attachment]] = None,
     knowledge_base_ids: Optional[list[uuid.UUID]] = None,
@@ -178,16 +185,16 @@ async def assemble_message_content_stream(
     """校验并组装（流内）。yield SSEEvent(status) 若干次，最终 yield BuiltMessage。
 
     前置：调用方已完成 validate_message_content（本生成器幂等重跑校验，
-    廉价且防窗口期漂移）。
+    廉价且防窗口期漂移——agent 行现查现取，切换/换模型立即生效）。
     """
     attachments = attachments or []
     knowledge_base_ids = knowledge_base_ids or []
 
-    policy = await AttachmentPolicyService(st).for_session(session)
+    policy = await AttachmentPolicyService(st).for_agent_id(agent_id)
     # 与 validate_message_content 同条件：KB 门控同样需要 agent 配置（否则
     # 仅带 KB 的消息会因 agent_cfg=None 被误判为"未启用知识库能力"）
     agent_row = (
-        await dbmod.get_agent(st.pool, session["agent_id"])
+        await dbmod.get_agent(st.pool, agent_id)
         if (attachments or knowledge_base_ids)
         else None
     )

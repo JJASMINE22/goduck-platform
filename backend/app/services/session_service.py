@@ -34,22 +34,25 @@ class SessionService:
     async def create(
         self,
         user_id: str,
-        agent_id: uuid.UUID,
+        agent_id: Optional[uuid.UUID],
         title: Optional[str],
         thread_id: Optional[str] = None,
     ) -> dict:
         """创建会话（同用户活跃会话内标题唯一；归档会话豁免，可复用标题）。
 
+        - agent_id 可选（会话-智能体解耦）：None=空会话，首条消息发送时经
+          db.set_session_last_agent 写入；传入时校验存在 + 非 cron 型；
         - 标题归一：strip 后为空视为未命名（NULL，允许多个）。
         - 自传 thread_id：撞库即 400（thread_id 是 checkpointer 键，全局唯一）。
         - 预检（语义化 409/400）+ DB 部分唯一索引竞态兜底（见 db.create_session）。
         """
-        agent_row = await dbmod.get_agent(self.pool, agent_id)
-        if agent_row is None:
-            raise KeyError(f"agent {agent_id} not found")
-        # kind 隔离（方案 A）：cron 型智能体不可建聊天会话（绑定面互斥）
-        if agent_row.get("kind") == "cron":
-            raise PermissionError("该智能体为定时任务专用（kind=cron），不能创建聊天会话")
+        if agent_id is not None:
+            agent_row = await dbmod.get_agent(self.pool, agent_id)
+            if agent_row is None:
+                raise KeyError(f"agent {agent_id} not found")
+            # kind 隔离（方案 A）：cron 型智能体不可建聊天会话（绑定面互斥）
+            if agent_row.get("kind") == "cron":
+                raise PermissionError("该智能体为定时任务专用（kind=cron），不能创建聊天会话")
         title = (title or "").strip() or None
         if title is not None:
             dup = await dbmod.get_active_session_by_user_title(self.pool, user_id, title)
@@ -208,6 +211,7 @@ class SessionService:
         thread_id: str,
         session_id: uuid.UUID,
         message_id: str,
+        anchor_agent_builder=None,
     ) -> dict:
         """Withdraw a full conversation turn anchored on a user message.
 
@@ -285,7 +289,14 @@ class SessionService:
         # 4) soft delete via the add_messages reducer (no raw checkpoint writes).
         #    必须用 aupdate_state：checkpointer 是 AsyncPostgresSaver（仅异步方法），
         #    调同步 update_state 会去用不存在的 put() → 500。
-        await self._apply_withdraw_update(agent, config, ids_to_remove)
+        anchor_ak = getattr(target, "additional_kwargs", None) or {}
+        await self._apply_withdraw_update(
+            agent,
+            config,
+            ids_to_remove,
+            anchor_agent_id=anchor_ak.get("agent_id"),
+            anchor_agent_builder=anchor_agent_builder,
+        )
 
         # 5) recover raw_content + attachments + kbs for composer prefill
         ak = getattr(target, "additional_kwargs", None) or {}
@@ -308,6 +319,8 @@ class SessionService:
         agent: CompiledStateGraph,
         config: dict,
         ids_to_remove: list[str],
+        anchor_agent_id: object = None,
+        anchor_agent_builder=None,
     ) -> None:
         """Apply the withdraw state update: messages soft-delete + summarization
         side-channel invalidation + stale pending-task cleanup.
@@ -316,6 +329,13 @@ class SessionService:
         per channel — files 的 {path: None} 增量即删除键):
         - 摘要通道仅在图中存在且确有产物时写入（未触发过摘要的线程保持
           messages-only 更新，行为与历史版本一致）。
+        - **锚点回合归属**（会话-智能体解耦，plan 1790660700000 §4.4）：
+          当前图无 `_summarization_event` 通道（换 agent 回撤/当回合 agent
+          未组合摘要中间件）而锚点记录了归属时，改经锚点图清理该旁通道
+          ——`aget_state` 换图读不出滞留产物（values 按图 schema 反序列化）、
+          `aupdate_state` 拒绝 schema 外通道键，"无条件清理"不成立，唯一
+          正确路径就是经"含该通道的锚点图"执行。锚点缺失（存量消息）或锚点
+          agent 不可构建 → 回退门控行为 + warning，知情接受残留。
         - 常规更新走无 as_node 推断路径（干净回合边界，生产验证）；中止态
           （cancelled 流残留 pending 任务）下该路径经 model 节点 writer 链
           会触发 langgraph 分支 ``KeyError: 'model'``（撤回 500 的根因），
@@ -331,8 +351,9 @@ class SessionService:
             "messages": [RemoveMessage(id=i) for i in ids_to_remove]
         }
         channels = getattr(agent, "channels", None) or {}
+        has_summ_channel = "_summarization_event" in channels
         if (
-            "_summarization_event" in channels
+            has_summ_channel
             and state.values.get("_summarization_event") is not None
         ):
             update["_summarization_event"] = None
@@ -362,9 +383,72 @@ class SessionService:
             )
             await agent.aupdate_state(config, update, as_node=fallback)
 
+        # 摘要旁通道盲区（当前图无该通道）→ 锚点归属清理（见 docstring）
+        if not has_summ_channel:
+            await self._clear_summarization_via_anchor(
+                config, anchor_agent_id, anchor_agent_builder
+            )
+
         state_after = await agent.aget_state(config)
         if state_after.next:
             await agent.aupdate_state(config, None, as_node=END)
+
+    async def _clear_summarization_via_anchor(
+        self,
+        config: dict,
+        anchor_agent_id: object,
+        anchor_agent_builder,
+    ) -> None:
+        """经锚点图清理 `_summarization_event` 旁通道（§4.4 锚点归属）。
+
+        任何失败（锚点缺失 / agent 已删 / 图不可构建 / 更新异常）只 warning
+        不中断回撤：messages 软删已生效，旁通道残留属知情接受的降级语义
+        （与迁移前存量消息一致）。独立 aupdate_state，与主更新互不牵连。
+        """
+        if not isinstance(anchor_agent_id, str) or not anchor_agent_id:
+            return  # 存量消息无归属：维持门控行为（无通道即跳过清理）
+        if anchor_agent_builder is None:
+            return
+        try:
+            anchor_uuid = uuid.UUID(anchor_agent_id)
+        except (ValueError, TypeError):
+            logger.warning("withdraw: 锚点 agent_id 非法（%r），跳过摘要通道清理", anchor_agent_id)
+            return
+        try:
+            anchor_graph = await anchor_agent_builder(anchor_uuid)
+        except Exception:  # noqa: BLE001 — HTTPException(409) 等，残留可接受
+            logger.warning(
+                "withdraw: 锚点图构建失败（agent %s），摘要通道清理跳过（残留接受）",
+                anchor_agent_id,
+                exc_info=True,
+            )
+            return
+        anchor_channels = getattr(anchor_graph, "channels", None) or {}
+        if "_summarization_event" not in anchor_channels:
+            return  # 锚点图也无该通道：产物不可能存在
+        try:
+            a_state = await anchor_graph.aget_state(config)
+            if a_state.values.get("_summarization_event") is None:
+                return  # 无产物，无需清理
+            try:
+                await anchor_graph.aupdate_state(config, {"_summarization_event": None})
+            except Exception:
+                nodes = getattr(anchor_graph, "nodes", None) or {}
+                fallback = next(
+                    (name for name in ("tools",) if name in nodes),
+                    next((name for name in nodes if name != "__start__"), None),
+                )
+                if fallback is None:
+                    raise
+                await anchor_graph.aupdate_state(
+                    config, {"_summarization_event": None}, as_node=fallback
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "withdraw: 锚点图摘要通道清理失败（agent %s），残留接受",
+                anchor_agent_id,
+                exc_info=True,
+            )
 
     async def _resolve_human_attachments(
         self,

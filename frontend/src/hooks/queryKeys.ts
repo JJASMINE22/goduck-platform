@@ -24,18 +24,21 @@ export const queryKeys = {
   skillDescription: (name: string) => ['skills', name, 'description'] as const,
   knowledgeBases: ['knowledge-bases'] as const,
   kbDocuments: (kbId: string) => ['knowledge-bases', kbId, 'documents'] as const,
-  attachmentCapability: (sessionId: string) =>
-    ['sessions', sessionId, 'attachment-capability'] as const,
-  kbCapability: (sessionId: string) => ['sessions', sessionId, 'kb-capability'] as const,
-  workspaceCapability: (sessionId: string) =>
-    ['sessions', sessionId, 'workspace-capability'] as const,
+  // 能力查询键含 agentId 维度（会话-智能体解耦 §4.4）：切换选中智能体即
+  // keyed refetch（无需手动 invalidate）；'' = 缺省回落 last_agent_id
+  attachmentCapability: (sessionId: string, agentId?: string | null) =>
+    ['sessions', sessionId, 'attachment-capability', agentId ?? ''] as const,
+  kbCapability: (sessionId: string, agentId?: string | null) =>
+    ['sessions', sessionId, 'kb-capability', agentId ?? ''] as const,
+  workspaceCapability: (sessionId: string, agentId?: string | null) =>
+    ['sessions', sessionId, 'workspace-capability', agentId ?? ''] as const,
   workspaceTree: (sessionId: string) => ['sessions', sessionId, 'workspace-tree'] as const,
   workspaceFile: (sessionId: string, path: string) =>
     ['sessions', sessionId, 'workspace-file', path] as const,
   workspacePreview: (sessionId: string, path: string) =>
     ['sessions', sessionId, 'workspace-preview', path] as const,
-  shellCapability: (sessionId: string) =>
-    ['sessions', sessionId, 'shell-capability'] as const,
+  shellCapability: (sessionId: string, agentId?: string | null) =>
+    ['sessions', sessionId, 'shell-capability', agentId ?? ''] as const,
   cronJobs: (userId: string) => ['cron', 'jobs', { userId }] as const,
   cronRuns: (jobId: string) => ['cron', 'jobs', jobId, 'runs'] as const,
 } as const

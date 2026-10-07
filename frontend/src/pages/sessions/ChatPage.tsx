@@ -9,6 +9,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, FolderOpen, MessageSquare, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
+import { useAgents } from '@/hooks/useAgents'
 import { useCronJobs } from '@/hooks/useCron'
 import { useStreamChat, detachLiveConsumers } from '@/hooks/useStreamChat'
 import { useVoiceInput } from '@/hooks/useVoiceInput'
@@ -55,16 +56,21 @@ async function resolveHumanId(sessionId: string, storeMsgId: string): Promise<st
   return realId
 }
 
-/** 调用回撤；后端在流式生成期间返回 409，按退避重试（场景①：停止后后端释放 tracker 的短暂窗口）。 */
+/** 调用回撤；后端在流式生成期间返回 409，按退避重试（场景①：停止后后端释放 tracker 的短暂窗口）。
+ *  agentId=当前选中智能体（§4.4 弱绑定取图：显式 > last——last 悬空时"仅选中、不发送"即可回撤）。 */
 async function callWithdraw(
   sessionId: string,
   messageId: string,
+  agentId?: string | null,
   attempts = 4,
 ): Promise<WithdrawResponse> {
   let lastErr: unknown
   for (let i = 0; i < attempts; i++) {
     try {
-      return await sessionsApi.withdraw(sessionId, { message_id: messageId })
+      return await sessionsApi.withdraw(sessionId, {
+        message_id: messageId,
+        agent_id: agentId ?? undefined,
+      })
     } catch (e) {
       lastErr = e
       // 仅对"流式生成中"的 409 退避重试，其余错误立即抛出
@@ -113,6 +119,25 @@ export function ChatPage(): ReactNode {
   )
   const settleHydration = stream.settleHydration
   const capabilities = useCapabilities()
+  // —— 会话-智能体解耦（§4.4）：选中智能体 = chatStore 纯 UI 态 ——
+  const agentsQ = useAgents()
+  /** 可选智能体（active + chat 型）：composer 选择器数据源 */
+  const chatAgents = (agentsQ.data ?? []).filter(
+    (a) => (a.kind ?? 'chat') === 'chat' && a.status === 'active',
+  )
+  const selectedAgentId = useChatStore((s) => s.selectedAgentId)
+  const setSelectedAgentId = useChatStore((s) => s.setSelectedAgentId)
+  /** last 可解析（agent 仍在活跃列表）：HITL 悬空期门禁的解锁判据——
+   *  last 悬空（agent 已删/归档）时保持可选，为"选中新智能体回撤悬空回合"
+   *  留逃生路径（后端 send 仍 409，仅放行 withdraw 取图） */
+  const lastAgentResolvable =
+    !session?.last_agent_id || chatAgents.some((a) => a.id === session?.last_agent_id)
+  const agentLocked =
+    stream.status === 'streaming' || (stream.status === 'interrupted' && lastAgentResolvable)
+  const agentLockedReason =
+    stream.status === 'streaming'
+      ? '回合生成中，结束后可切换智能体'
+      : '存在待审批中断，处理完毕前不可切换智能体'
   // 语音输入：仅后端能力开启时预建 WS（与按键解耦）；推理闸门复用 stream.status。
   // 预建连仅限可发言会话：任务会话（kind=cron）与归档会话会被后端 WS 守卫以
   // error 帧拒绝（经共享 dispatch 落为「会话出错」横幅）——在源头即不连接。
@@ -134,9 +159,9 @@ export function ChatPage(): ReactNode {
     if (st.status === 'streaming' && st.streamSource === 'voice') voiceCancelStream()
     streamCancel()
   }, [voiceCancelStream, streamCancel])
-  const wsCapQ = useWorkspaceCapability(sessionId || null)
+  const wsCapQ = useWorkspaceCapability(sessionId || null, selectedAgentId)
   const allowWorkspace = wsCapQ.data?.allow_workspace === true
-  const shellCapQ = useShellCapability(sessionId || null)
+  const shellCapQ = useShellCapability(sessionId || null, selectedAgentId)
   const allowShell = shellCapQ.data?.allow_shell === true
   const setHeader = usePageHeaderStore((s) => s.setHeader)
   // —— 页内双视图（会话 | 工作区）——
@@ -158,6 +183,7 @@ export function ChatPage(): ReactNode {
   const reset = useChatStore((s) => s.reset)
   const loadHistory = useChatStore((s) => s.loadHistory)
   const streamError = useChatStore((s) => s.streamError)
+  const setStreamError = useChatStore((s) => s.setStreamError)
   // 回撤所需 store 动作
   const removeTurn = useChatStore((s) => s.removeTurn)
   const setDraft = useChatStore((s) => s.setDraft)
@@ -280,6 +306,17 @@ export function ChatPage(): ReactNode {
     }
   }, [sessionId, reset])
 
+  // —— 选中智能体初始化（§4.4）——
+  // 选中是纯 UI 态（reset 清空、刷新即失）：进入会话时从 session.last_agent_id
+  // 兜底初始化（后端在 send 时写入的最新真值）；非空不覆写——同会话内用户已
+  // 切换的选择在 session 重拉 / 回撤重灌后保持不变（loadHistory 不触碰该字段）。
+  useEffect(() => {
+    if (!session) return
+    if (useChatStore.getState().selectedAgentId === null) {
+      setSelectedAgentId(session.last_agent_id ?? null)
+    }
+  }, [session, setSelectedAgentId])
+
   // —— 待审批恢复（HITL 重入重建）——
   // 待决 interrupt 只存活于 live SSE 流的前端内存态：刷新/切会话即丢失审批卡，
   // 而图仍暂停在 interrupt（工具卡永挂「执行中」，发新消息还会静默取消待审批）。
@@ -289,9 +326,10 @@ export function ChatPage(): ReactNode {
   useEffect(() => {
     if (!sessionId) return
     let cancelled = false
+    const agentId = useChatStore.getState().selectedAgentId
     void (async () => {
       try {
-        const payload = await streamApi.getInterrupt(sessionId)
+        const payload = await streamApi.getInterrupt(sessionId, agentId)
         if (cancelled || !payload?.action_requests?.length) return
         const store = useChatStore.getState()
         if (store.status !== 'idle' || store.pendingInterrupt) return
@@ -322,7 +360,13 @@ export function ChatPage(): ReactNode {
       setWithdrawingId(messageId)
       try {
         const realId = await resolveHumanId(session.id, messageId)
-        const res = await callWithdraw(session.id, realId)
+        // 弱绑定取图（§4.4）：显式传当前选中智能体（恒传——UI 所选即执行图），
+        // 后端按"显式 > last"解析；last 悬空时无需先发消息即可回撤
+        const res = await callWithdraw(
+          session.id,
+          realId,
+          useChatStore.getState().selectedAgentId,
+        )
         removeTurn(messageId)
         setDraft(res.raw_content)
         setAttachments(res.attachments ?? [])
@@ -464,9 +508,10 @@ export function ChatPage(): ReactNode {
     const st = useChatStore.getState()
     if (st.status !== 'idle' || st.pendingInterrupt) return
     let cancelled = false
+    const agentId = useChatStore.getState().selectedAgentId
     void (async () => {
       try {
-        const payload = await streamApi.getInterrupt(sessionId)
+        const payload = await streamApi.getInterrupt(sessionId, agentId)
         if (cancelled || !payload?.action_requests?.length) return
         const cur = useChatStore.getState()
         if (cur.status !== 'idle' || cur.pendingInterrupt) return
@@ -621,13 +666,16 @@ export function ChatPage(): ReactNode {
     <Flex vertical gap={0} style={{ height: '100%' }}>
       {/* 顶部（标题/状态/切换/归档已上提 Header 卡，见上方 setHeader effect） */}
 
-      {/* 错误提示（仅出错时出现，不占常规布局） */}
+      {/* 错误提示（仅出错时出现，不占常规布局）。关闭横幅 = 复位错误态：
+          setStreamError(null) 连带 status 回 idle——否则 error 态会锁死发送
+          （历史缺陷：仅视觉隐藏时状态机永不恢复） */}
       {streamError ? (
         <Alert
           type="error"
           message="会话出错"
           description={streamError}
           closable
+          onClose={() => setStreamError(null)}
           style={{ margin: '0 0 8px' }}
         />
       ) : null}
@@ -687,6 +735,11 @@ export function ChatPage(): ReactNode {
                       send={stream.send}
                       cancel={handleCancel}
                       voice={voice}
+                      agents={chatAgents}
+                      selectedAgentId={selectedAgentId}
+                      onSelectAgent={setSelectedAgentId}
+                      agentLocked={agentLocked}
+                      agentLockedReason={agentLockedReason}
                     />
                   </div>
                 </div>

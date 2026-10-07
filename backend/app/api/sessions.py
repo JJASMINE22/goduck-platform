@@ -5,7 +5,11 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from app.api.stream import _build_agent_or_409, _load_session_or_404
+from app.api.stream import (
+    _build_agent_or_409,
+    _load_session_or_404,
+    resolve_agent_choice_or_409,
+)
 from app.deps import get_appstate
 from app.models.schemas import (
     MessageOut,
@@ -121,7 +125,17 @@ async def withdraw_turn(body: WithdrawRequest, session_id: uuid.UUID, request: R
     if st.run_manager.is_active(session["thread_id"]):
         raise HTTPException(status_code=409, detail="流式生成中，请先停止再回撤")
 
-    agent = await _build_agent_or_409(st, session["agent_id"])
+    # 弱绑定取图（§4.4 解析矩阵）：回撤只需任一 same-schema 图（messages/files
+    # 基座通道全图同 reducer），显式 agent_id 优先——last 悬空（agent 已删）时
+    # "仅选中、不发送"即可恢复回撤。摘要旁通道的清理经锚点归属另行取图。
+    chosen_id = await resolve_agent_choice_or_409(st, session, body.agent_id)
+    agent = await _build_agent_or_409(st, chosen_id)
+
+    async def _anchor_agent_builder(anchor_id: uuid.UUID):
+        """锚点回合归属取图（§4.4）：按 HumanMessage additional_kwargs.agent_id
+        构建"产出该回合的图"，供摘要旁通道清理使用。构建失败由调用方降级。"""
+        return await _build_agent_or_409(st, anchor_id)
+
     try:
         result = await svc.withdraw_turn(
             st.checkpointer,
@@ -129,6 +143,7 @@ async def withdraw_turn(body: WithdrawRequest, session_id: uuid.UUID, request: R
             session["thread_id"],
             session["id"],
             body.message_id,
+            anchor_agent_builder=_anchor_agent_builder,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

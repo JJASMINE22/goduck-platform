@@ -5,11 +5,13 @@ Business tables: agent / agent_config_history / session / mcp_server.
 LangGraph-native tables (checkpoints / checkpoint_writes / checkpoint_blobs / store)
 are created by AsyncPostgresSaver/Store `.setup()`.
 
-Design (plan §1, 方案 B):
+Design (plan §1, 方案 B; 会话-智能体解耦后修订，见 .kilo/plans/1790660700000):
 - agent.id 全程稳定不变; 更新 = in-place 覆写 config_json + 追加 agent_config_history 快照。
-- 更新时该 agent 的全部 active 会话软归档（checkpoint 保留 → 历史仍可浏览；
-  stream/resume 对 archived 409，防止旧 checkpoint 在新图上恢复）。配置历史保留。
-  （物理删除仅在 agent purge / session purge，不可恢复。）
+- 会话-智能体解耦：session.last_agent_id 只是"最近使用的智能体"（send 时写入），
+  不再构成绑定。更新 agent 不再归档其会话（同 schema 工厂下旧 checkpoint 可安全
+  上新图）；删除 agent 不再级联删会话（last_agent_id 经 FK SET NULL 置空，
+  会话与 checkpoint 存活，进入后选择新智能体即可继续）。
+  agent_config_history 无 FK（审计线索独立于 agent 生命周期，对齐 jev_decision）。
 
 Notes:
 - psycopg3 uses `%s` placeholders (NOT asyncpg's `$1`).
@@ -73,7 +75,9 @@ CREATE TABLE IF NOT EXISTS agent (
 
 CREATE TABLE IF NOT EXISTS agent_config_history (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_id        UUID NOT NULL REFERENCES agent(id) ON DELETE CASCADE,
+    -- 无 FK：会话比 agent 长寿后，历史快照是"当时跑在什么配置上"的审计线索
+    -- （对齐 jev_decision 的无 FK 设计）；agent 删除后行保留，agent_id 悬空无害。
+    agent_id        UUID NOT NULL,
     config_json     JSONB   NOT NULL,
     model_id        UUID,
     vision_model_id UUID,
@@ -85,15 +89,19 @@ CREATE INDEX IF NOT EXISTS idx_ach_agent ON agent_config_history(agent_id, creat
 
 CREATE TABLE IF NOT EXISTS session (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_id     UUID NOT NULL REFERENCES agent(id) ON DELETE CASCADE,
-    user_id      VARCHAR NOT NULL,
-    thread_id    VARCHAR NOT NULL UNIQUE,
-    title        TEXT,
-    status       VARCHAR NOT NULL DEFAULT 'active',
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    -- 最近使用的智能体（会话-智能体解耦）：send 时写入，非绑定关系。
+    -- NULL=创建后尚未选择/发送；agent 删除时 SET NULL，会话与 checkpoint 存活。
+    last_agent_id UUID REFERENCES agent(id) ON DELETE SET NULL,
+    user_id       VARCHAR NOT NULL,
+    thread_id     VARCHAR NOT NULL UNIQUE,
+    title         TEXT,
+    status        VARCHAR NOT NULL DEFAULT 'active',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_session_agent ON session(agent_id);
+-- 索引名保留 idx_session_agent（迁移安装下随列改名自动跟随，避免改名竞态）；
+-- 其建语句在 _MIGRATIONS（列改名之后）执行——存量安装在此刻列名仍为 agent_id，
+-- 提前到 DDL 会因列不存在而启动失败。
 CREATE INDEX IF NOT EXISTS idx_session_user  ON session(user_id);
 
 CREATE TABLE IF NOT EXISTS mcp_server (
@@ -224,6 +232,46 @@ CREATE TABLE IF NOT EXISTS jev_decision (
 CREATE INDEX IF NOT EXISTS idx_jev_decision_agent ON jev_decision(agent_id, created_at DESC);
 """
 
+# session.agent_id → last_agent_id 一次性物理改名（幂等：旧列不存在即跳过；
+# 新装库 DDL 直接建 last_agent_id，不经过本迁移）。改名后 FK/索引自动跟随列，
+# 约束名不变（见 _SESSION_FK_SET_NULL_MIGRATION）。
+_SESSION_AGENT_RENAME_MIGRATION = """
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'session' AND column_name = 'agent_id'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'session' AND column_name = 'last_agent_id'
+    ) THEN
+        ALTER TABLE session RENAME COLUMN agent_id TO last_agent_id;
+    END IF;
+END
+$$;
+"""
+
+
+# session FK 行为切换：ON DELETE CASCADE → ON DELETE SET NULL（会话比 agent 长寿）。
+# 列改名后旧约束仍以旧名 session_agent_id_fkey 存在（约束名不随列改名），
+# 先 DROP 旧约束再以新名重建；存量行均有有效 agent 引用，验证必然通过。
+# 幂等：目标约束名已存在（迁移已跑过 / 新装 DDL 已建）即跳过。
+_SESSION_FK_SET_NULL_MIGRATION = """
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'session_last_agent_id_fkey'
+    ) THEN
+        ALTER TABLE session DROP CONSTRAINT IF EXISTS session_agent_id_fkey;
+        ALTER TABLE session
+            ADD CONSTRAINT session_last_agent_id_fkey
+            FOREIGN KEY (last_agent_id) REFERENCES agent(id) ON DELETE SET NULL;
+    END IF;
+END
+$$;
+"""
+
+
 # Idempotent column migrations for pre-existing tables (CREATE TABLE IF NOT
 # EXISTS won't add columns to already-present tables). Each is guarded so it's
 # safe to run repeatedly.
@@ -253,6 +301,17 @@ _MIGRATIONS = [
     # DROP NOT NULL 天然幂等，重复执行无害。
     "ALTER TABLE jev_decision ADD COLUMN IF NOT EXISTS decision_type VARCHAR NOT NULL DEFAULT 'shell_guard'",
     "ALTER TABLE jev_decision ALTER COLUMN command DROP NOT NULL",
+    # 会话-智能体解耦（plan: 1790660700000 §8/§10.3）：agent_id → last_agent_id
+    # 语义迁移。列物理改名（存量安装执行一次；新装 DDL 直接建 last_agent_id，
+    # 本块探测 agent_id 不存在即跳过）。改名后 FK/索引自动跟随列。
+    _SESSION_AGENT_RENAME_MIGRATION,
+    "ALTER TABLE session ALTER COLUMN last_agent_id DROP NOT NULL",
+    # FK 行为切换：CASCADE（删 agent 级联删会话）→ SET NULL（会话比 agent 长寿）。
+    _SESSION_FK_SET_NULL_MIGRATION,
+    # 索引随列就位（新装在此创建；迁移安装已随列改名持有同名索引，IF NOT EXISTS 跳过）
+    "CREATE INDEX IF NOT EXISTS idx_session_agent ON session(last_agent_id)",
+    # agent_config_history 拆除 FK（历史快照保留为审计线索，行独立于 agent 生命周期）
+    "ALTER TABLE agent_config_history DROP CONSTRAINT IF EXISTS agent_config_history_agent_id_fkey",
 ]
 
 # enable_thinking 三态化一次性迁移：旧 schema 为 NOT NULL 且旧语义 false=不注入；
@@ -308,9 +367,9 @@ async def init_business_schema(pool: AsyncConnectionPool) -> None:
     except Exception:  # noqa: BLE001
         logger.exception("ensure kb_document(kb_id, filename) unique index failed (legacy dupes?)")
 
-    # 会话同用户同名去重的并发兜底：部分唯一索引（仅 active + 非空 title 参与去重，
-    # 归档会话豁免 → 归档即释放标题；agent 更新软归档会话同理）。先清理历史重复的
-    # active 行（同 user 同 title 保留最新），再加索引；失败仅告警不阻断启动。
+    # Session same-user same-title deduplication concurrency fallback: partial unique index (only active + non-empty title participates in deduplication,
+    # archived sessions exempt → archiving releases the title). First clean up historically duplicated
+    # active rows (keep the latest for same user same title), then add the index; on failure only warn without blocking startup.
     # 注意：未来若增加「取消归档」端点，须做同名预检（索引不会自动放行 re-active）。
     try:
         async with pool.connection() as conn:
@@ -384,15 +443,14 @@ async def update_agent(
 ) -> Optional[dict]:
     """Update agent config + model_id + vision_model_id in-place + append history snapshot.
 
-    Side effects (same tx): archive this agent's ACTIVE sessions (soft).
-    Checkpoints are kept so /history stays browsable (history is read from the
-    checkpointer's messages channel, independent of graph topology); the
-    stream/resume endpoints refuse archived sessions (409), so stale checkpoint
-    state can never be resumed against the new graph. Titles auto-release via
-    the (user_id, title) active-partial unique index.
+    会话-智能体解耦后不再归档该 agent 的 active 会话：同 schema 工厂下旧
+    checkpoint 可安全上新图续跑，同 agent 配置更新只是弱化版切换（plan
+    1790660700000 §2.2）。cron 自动停用保留（跨更新的 awaiting_approval
+    是真实风险，plan §9.5）。
     Returns None if agent not found. name=None（默认）保持原名，便于 restore_agent
     等不改名的调用方。
     """
+    paused_cron = 0
     async with pool.connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -422,16 +480,8 @@ async def update_agent(
                     (agent_id, Json(config_json), model_id, vision_model_id, updater),
                 )
 
-                # soft-archive this agent's active sessions (checkpoints kept)
-                await cur.execute(
-                    "UPDATE session SET status = 'archived', updated_at = now() "
-                    "WHERE agent_id = %s AND status = 'active'",
-                    (agent_id,),
-                )
-                archived = cur.rowcount
-
-                # 级联停用绑定该 agent 的定时任务：旧图上的 checkpoint 不可在新图恢复
-                # （会话已归档 409），继续触发只会连续失败烧钱。用户确认后可手动
+                # 级联停用绑定该 agent 的定时任务：任务会话与 agent 1:1 锁定，
+                # 更新后的图语义漂移对无人值守执行是真实风险。用户确认后可手动
                 # 重新启用（启用时自动复活会话行）。
                 await cur.execute(
                     "UPDATE cron_job SET enabled = false, updated_at = now(), "
@@ -440,11 +490,6 @@ async def update_agent(
                     (agent_id,),
                 )
                 paused_cron = cur.rowcount
-    if archived:
-        logger.info(
-            "agent %s updated; archived %d active sessions (checkpoints kept)",
-            agent_id, archived,
-        )
     if paused_cron:
         logger.info("agent %s updated; auto-paused %d cron jobs", agent_id, paused_cron)
     return agent
@@ -570,31 +615,36 @@ async def archive_agent(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> Optio
 
 
 async def delete_agent(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> bool:
-    """Physically delete an agent + cascade (sessions, config history, checkpoints).
+    """Physically delete the agent row（会话-智能体解耦语义，plan §6.6）.
 
-    Irreversible (vs archive_agent). Returns True if the agent row was deleted,
-    False if not found.
+    会话比 agent 长寿，删除不再级联清场：
+    - chat 会话：行与 checkpoint 全部存活，last_agent_id 经 FK SET NULL 置空；
+      进入会话选择新智能体即可继续对话 / 回撤（弱绑定解析，stream.py）；
+    - cron 会话：绑定任务行随 cron_job FK 级联消失，会话先行软归档保留产出
+      （对齐"删除任务归档其专用会话"的既有语义）；
+    - agent_config_history：无 FK（迁移拆除），快照保留为审计线索；
+    - checkpoint 三表仅随 session purge 清理，与本删除解耦。
+    Irreversible. Returns True if the agent row was deleted, False if not found.
     """
     async with pool.connection() as conn:
         async with conn.transaction():
             async with conn.cursor() as cur:
+                # cron 专用会话先行归档（须在 agent 删除级联掉 cron_job 之前，
+                # 按 last_agent_id 圈定其专用会话）
                 await cur.execute(
-                    "SELECT thread_id FROM session WHERE agent_id = %s", (agent_id,)
+                    "UPDATE session SET status = 'archived', updated_at = now() "
+                    "WHERE kind = 'cron' AND last_agent_id = %s AND status = 'active'",
+                    (agent_id,),
                 )
-                thread_ids = [r[0] for r in await cur.fetchall()]
-                await cur.execute("DELETE FROM session WHERE agent_id = %s", (agent_id,))
-                await cur.execute(
-                    "DELETE FROM agent_config_history WHERE agent_id = %s", (agent_id,)
-                )
-                if thread_ids:
-                    for tbl in _CHECKPOINT_TABLES:
-                        await cur.execute(
-                            f"DELETE FROM {tbl} WHERE thread_id = ANY(%s)", (thread_ids,)
-                        )
+                archived_cron = cur.rowcount
                 await cur.execute("DELETE FROM agent WHERE id = %s", (agent_id,))
                 deleted = cur.rowcount > 0
     if deleted:
-        logger.info("agent %s hard-deleted; purged %d sessions", agent_id, len(thread_ids))
+        logger.info(
+            "agent %s hard-deleted; chat sessions survive (last_agent_id set NULL), "
+            "%d cron sessions archived",
+            agent_id, archived_cron,
+        )
     return deleted
 
 
@@ -614,13 +664,16 @@ async def list_history(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> list[d
 
 async def create_session(
     pool: AsyncConnectionPool,
-    agent_id: uuid.UUID,
+    agent_id: Optional[uuid.UUID],
     user_id: str,
     thread_id: str,
     title: Optional[str],
     kind: str = "chat",
 ) -> dict:
     """Insert a session row.
+
+    agent_id 可选（会话-智能体解耦）：None = 创建时尚未选择智能体，首条
+    消息发送时写入 last_agent_id（db.set_session_last_agent）。
 
     UniqueViolation → 归一化异常（service 预检与 INSERT 之间竞态的兜底）：
     - idx_session_user_title_active：同用户活跃会话标题撞车 → FileExistsError(409)
@@ -630,9 +683,9 @@ async def create_session(
         async with conn.cursor(row_factory=dict_row) as cur:
             try:
                 await cur.execute(
-                    "INSERT INTO session (agent_id, user_id, thread_id, title, kind) "
+                    "INSERT INTO session (last_agent_id, user_id, thread_id, title, kind) "
                     "VALUES (%s, %s, %s, %s, %s) "
-                    "RETURNING id, agent_id, user_id, thread_id, title, status, kind, "
+                    "RETURNING id, last_agent_id, user_id, thread_id, title, status, kind, "
                     "created_at, updated_at",
                     (agent_id, user_id, thread_id, title, kind),
                 )
@@ -646,6 +699,24 @@ async def create_session(
     return row
 
 
+async def set_session_last_agent(
+    pool: AsyncConnectionPool,
+    session_id: uuid.UUID,
+    agent_id: uuid.UUID,
+) -> None:
+    """send 时写入 last_agent_id（唯一写点，plan §4.4 写者语义）。
+
+    在校验通过后、start_run 前调用：run 单写者闸排除并发 send；crash 窗口
+    内 last 指向"意图 agent"，无害。resume/withdraw 不写（选中是纯 UI 态）。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE session SET last_agent_id = %s WHERE id = %s",
+                (agent_id, session_id),
+            )
+
+
 async def get_active_session_by_user_title(
     pool: AsyncConnectionPool, user_id: str, title: str
 ) -> Optional[dict]:
@@ -653,7 +724,7 @@ async def get_active_session_by_user_title(
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, agent_id, user_id, thread_id, title, status, created_at, updated_at "
+                "SELECT id, last_agent_id, user_id, thread_id, title, status, created_at, updated_at "
                 "FROM session WHERE user_id = %s AND title = %s AND status = 'active' "
                 "LIMIT 1",
                 (user_id, title),
@@ -668,7 +739,7 @@ async def get_session_by_thread(
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, agent_id, user_id, thread_id, title, status, created_at, updated_at "
+                "SELECT id, last_agent_id, user_id, thread_id, title, status, created_at, updated_at "
                 "FROM session WHERE thread_id = %s",
                 (thread_id,),
             )
@@ -678,13 +749,15 @@ async def get_session_by_thread(
 async def list_sessions_by_user(
     pool: AsyncConnectionPool, user_id: str, include_archived: bool = False
 ) -> list[dict]:
+    # LEFT JOIN（会话-智能体解耦）：last_agent 悬空（agent 已删 / 未选择）时
+    # 会话仍需列出，agent_name 为 NULL 由前端优雅降级展示。
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             extra = "" if include_archived else " AND s.status != 'archived'"
             await cur.execute(
-                f"SELECT s.id, s.agent_id, s.user_id, s.thread_id, s.title, s.status, s.kind, "
+                f"SELECT s.id, s.last_agent_id, s.user_id, s.thread_id, s.title, s.status, s.kind, "
                 f"s.created_at, s.updated_at, a.name AS agent_name "
-                f"FROM session s JOIN agent a ON a.id = s.agent_id "
+                f"FROM session s LEFT JOIN agent a ON a.id = s.last_agent_id "
                 f"WHERE s.user_id = %s{extra} ORDER BY s.updated_at DESC",
                 (user_id,),
             )
@@ -696,7 +769,7 @@ async def get_session(pool: AsyncConnectionPool, session_id: uuid.UUID) -> Optio
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, agent_id, user_id, thread_id, title, status, kind, usage_totals, "
+                "SELECT id, last_agent_id, user_id, thread_id, title, status, kind, usage_totals, "
                 "created_at, updated_at FROM session WHERE id = %s",
                 (session_id,),
             )
@@ -709,7 +782,7 @@ async def archive_session(pool: AsyncConnectionPool, session_id: uuid.UUID) -> O
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 "UPDATE session SET status = 'archived', updated_at = now() WHERE id = %s "
-                "RETURNING id, agent_id, user_id, thread_id, title, status, created_at, updated_at",
+                "RETURNING id, last_agent_id, user_id, thread_id, title, status, created_at, updated_at",
                 (session_id,),
             )
             row = await cur.fetchone()
@@ -1496,9 +1569,9 @@ async def create_cron_job(
                 session = None
                 try:
                     await cur.execute(
-                        "INSERT INTO session (agent_id, user_id, thread_id, title, kind) "
+                        "INSERT INTO session (last_agent_id, user_id, thread_id, title, kind) "
                         "VALUES (%s, %s, %s, %s, 'cron') "
-                        "RETURNING id, agent_id, user_id, thread_id, title, status, kind",
+                        "RETURNING id, last_agent_id, user_id, thread_id, title, status, kind",
                         (agent_id, user_id, thread_id, f"[定时] {name}"),
                     )
                     session = await cur.fetchone()
@@ -1755,7 +1828,7 @@ async def reactivate_cron_session(pool: AsyncConnectionPool, session_id: uuid.UU
                 await cur.execute(
                     "UPDATE session SET status = 'active', updated_at = now() "
                     "WHERE id = %s AND status = 'archived' "
-                    "RETURNING id, agent_id, user_id, thread_id, title, status, kind",
+                    "RETURNING id, last_agent_id, user_id, thread_id, title, status, kind",
                     (session_id,),
                 )
             except UniqueViolation:
@@ -1765,7 +1838,7 @@ async def reactivate_cron_session(pool: AsyncConnectionPool, session_id: uuid.UU
                 await cur.execute(
                     "UPDATE session SET status = 'active', title = NULL, updated_at = now() "
                     "WHERE id = %s AND status = 'archived' "
-                    "RETURNING id, agent_id, user_id, thread_id, title, status, kind",
+                    "RETURNING id, last_agent_id, user_id, thread_id, title, status, kind",
                     (session_id,),
                 )
             return await cur.fetchone()

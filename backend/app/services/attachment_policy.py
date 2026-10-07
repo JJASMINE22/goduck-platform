@@ -14,6 +14,9 @@
 - GET  /sessions/{id}/attachment-capability（前端上传组件可见性）
 - POST /sessions/{id}/uploads（上传门 422）
 - POST /sessions/{id}/messages + voice WS（发送门，经 message_content）
+
+会话-智能体解耦（plan 1790660700000 §5）：策略按**当回合 agent_id** 派生
+（调用方解析后传入，缺省回落链在 API 层），不再读 session 表。
 """
 from __future__ import annotations
 
@@ -43,17 +46,27 @@ class AttachmentPolicy:
 
 
 class AttachmentPolicyService:
-    """session → agent → model 能力解析（委托 ModelStore 内存缓存，不自查 DB model 表）。"""
+    """agent_id → agent → model 能力解析（委托 ModelStore 内存缓存，不自查 DB model 表）。"""
 
     def __init__(self, st: "AppState"):
         self._st = st
 
-    async def for_session(self, session: dict) -> AttachmentPolicy:
+    async def for_agent_id(self, agent_id: Optional[uuid.UUID]) -> AttachmentPolicy:
+        """按当回合智能体派生能力（现查 agent 行，绝不快照）。
+
+        agent_id 为 None（未选择智能体）或行不存在（悬空 last / 已删除）→
+        "全关"降级而非 500：上传门据此 422、发送门据此拦截，能力端点据此
+        隐藏上传组件——脏数据与空会话共用同一条优雅降级路径。
+        """
+        agent_row = (
+            await dbmod.get_agent(self._st.pool, agent_id) if agent_id is not None else None
+        )
+        return self.for_agent_row(agent_row)
+
+    def for_agent_row(self, agent_row: Optional[dict]) -> AttachmentPolicy:
+        """行级纯派生（调用方自行解析行时的同步入口，见 uploads.py 能力端点）。"""
         st = self._st
-        agent_row = await dbmod.get_agent(st.pool, session["agent_id"])
         if agent_row is None:
-            # 调用方（上传门/发送门）已保证 session 有效且 agent 可构建，
-            # 此处兜底为"全关"而非 500，让能力端点对脏数据优雅降级。
             return AttachmentPolicy(
                 allow_attachments=False,
                 allow_image=False,

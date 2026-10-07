@@ -29,6 +29,32 @@ export type StreamTermination =
 /** GET 观察流的 204（无 run）信号：非错误，静默映射为 'closed' */
 class NoRunSignal extends Error {}
 
+/** 后端拒绝（非 2xx，message 携带后端 detail 真实原因）。
+ *  与网络层异常（fetch TypeError 等）区分：拒绝=请求未成立、无 run 启动，
+ *  调用方应直接落错误并复位状态，而非走"连接中断截断"的网络异常语义。 */
+export class SseRejectedError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'SseRejectedError'
+    this.status = status
+  }
+}
+
+/** 读取非 2xx 响应的 FastAPI detail（尽力而为，失败回落状态码文案） */
+async function rejectionFrom(res: Response): Promise<SseRejectedError> {
+  let message = `请求被拒绝（${res.status}）`
+  try {
+    const body = (await res.clone().json()) as { detail?: unknown } | null
+    if (body && typeof body.detail === 'string' && body.detail) {
+      message = body.detail
+    }
+  } catch {
+    /* body 非 JSON（代理错误页等）：保留状态码文案 */
+  }
+  return new SseRejectedError(res.status, message)
+}
+
 /** 解析 SSE data 字段为 SSEEvent；非法行安全跳过 */
 function parseEvent(rawEvent: string | null, rawData: string, rawId: string | null): SSEEvent | null {
   // 后端 to_sse：{event: <type>, data: <json>, id?: "{token}.{seq}"}。
@@ -69,7 +95,7 @@ export async function streamPostSse(
       // POST 幂等性未知：禁止自动重连（DESIGN §8.4）
       async onopen(res) {
         if (res.ok && res.headers.get('content-type')?.includes('text/event-stream')) return
-        throw new Error(`SSE 连接异常（${res.status}）`)
+        throw await rejectionFrom(res)
       },
       onmessage(ev) {
         const e = parseEvent(ev.event, ev.data, ev.id)
@@ -119,7 +145,7 @@ export async function streamGetSse(
       async onopen(res) {
         if (res.status === 204) throw new NoRunSignal() // 无 run（也无 TTL 内终态）
         if (res.ok && res.headers.get('content-type')?.includes('text/event-stream')) return
-        throw new Error(`SSE 连接异常（${res.status}）`)
+        throw await rejectionFrom(res)
       },
       onmessage(ev) {
         const e = parseEvent(ev.event, ev.data, ev.id)

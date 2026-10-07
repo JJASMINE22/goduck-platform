@@ -104,6 +104,11 @@ export interface ChatState {
   usageTotals: UsageTotals
   // 发送框草稿：上提到 store，使回撤可回填原文（受控于 store，非组件局部 state）
   draft: string
+  /** 当前选中的智能体（会话-智能体解耦 §4.4）：纯 UI 态，永不落库——send 时
+   *  作为请求参数下发，后端在发送成功后才写 last_agent_id。会话作用域：跨会话
+   *  reset 清空、由 ChatPage 从 session.last_agent_id 初始化；同会话刷新后同样
+   *  回落 last_agent_id（HITL 悬空期由 ChatPage 门禁锁定）。 */
+  selectedAgentId: string | null
   /** 观察流重挂水位：最近收到的 SSE id（"{run_token}.{seq}"）。跨会话进入 /
    *  历史重灌时清空（重挂即全量回放）；仅会话内存活（刷新即失，配合 /history
    *  重建后全量补帧，天然正确）。 */
@@ -164,6 +169,8 @@ export interface ChatState {
   clearKbs: () => void
   setKbs: (list: KbRef[]) => void
   setDraft: (v: string) => void
+  /** 切换选中智能体（ChatPage composer 选择器调用；门禁期由 UI 禁用） */
+  setSelectedAgentId: (id: string | null) => void
   /** 观察流水位记录（dispatchStreamEvent 逐事件调用；loadHistory/reset 清空） */
   setLastEventId: (id: string) => void
   /** 语音状态机流转（idle→recording→transcribing→idle） */
@@ -202,6 +209,7 @@ const initialState = {
     total_tokens: 0,
   } as UsageTotals,
   draft: '',
+  selectedAgentId: null as string | null,
   lastEventId: null as string | null,
   voiceState: 'idle' as VoiceState,
   interimTranscript: '',
@@ -452,6 +460,8 @@ export const useChatStore = create<ChatState>((set) => ({
   setKbs: (list) => set({ selectedKbs: list }),
 
   setDraft: (v) => set({ draft: v }),
+
+  setSelectedAgentId: (id) => set({ selectedAgentId: id }),
 
   setLastEventId: (id) => set({ lastEventId: id }),
 

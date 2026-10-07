@@ -105,7 +105,12 @@ class ValidateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 class SessionCreate(BaseModel):
     user_id: str = Field(min_length=1)
-    agent_id: uuid.UUID
+    # 可选（会话-智能体解耦）：不选则创建"空会话"，首条消息发送时才确定智能体。
+    # 传入时校验存在 + 非 cron 型（service 层）。
+    agent_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="创建时预选的智能体；缺省=空会话，进入后再选择",
+    )
     title: Optional[str] = Field(
         default=None,
         description="可选标题；空白（含纯空格）归一为 None=未命名，未命名会话可多个",
@@ -125,7 +130,9 @@ class SessionCreate(BaseModel):
 
 class SessionOut(BaseModel):
     id: uuid.UUID
-    agent_id: uuid.UUID
+    # 最近使用的智能体（会话-智能体解耦）：send 时写入；NULL=尚未选择（空会话）
+    # 或上次智能体已被删除（FK SET NULL）。前端据此初始化 composer 默认选中。
+    last_agent_id: Optional[uuid.UUID] = None
     user_id: str
     thread_id: str
     title: Optional[str]
@@ -179,6 +186,12 @@ class Attachment(BaseModel):
 
 class SendMessageRequest(BaseModel):
     content: str = Field(min_length=1)
+    # 本回合使用的智能体（会话-智能体解耦，写者语义）：缺省回落会话
+    # last_agent_id；两者皆无 → 409。发送成功后写入 last_agent_id。
+    agent_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="本回合智能体；缺省回落会话最近使用的智能体",
+    )
     rubric: Optional[str] = Field(
         default=None, description="Per-invoke rubric override (FixedRubric priority)"
     )
@@ -219,6 +232,11 @@ class VoiceStartFrame(BaseModel):
     draft: Optional[str] = Field(
         default=None, description="按压时输入框草稿快照；与语音终稿合并为一条消息"
     )
+    # 写者语义（与 SendMessageRequest.agent_id 对齐）：本回合智能体，缺省回落
+    # 会话 last_agent_id；语音发送成功同样写入 last_agent_id。
+    agent_id: Optional[uuid.UUID] = Field(
+        default=None, description="本回合智能体；缺省回落会话最近使用的智能体"
+    )
     attachments: list[Attachment] = Field(default_factory=list)
     knowledge_base_ids: list[uuid.UUID] = Field(default_factory=list)
     rubric: Optional[str] = None
@@ -227,6 +245,12 @@ class VoiceStartFrame(BaseModel):
 class WithdrawRequest(BaseModel):
     message_id: str = Field(
         ..., min_length=1, description="LangGraph 用户消息 id，定位被回撤的整段回合"
+    )
+    # 弱绑定解析（plan §4.4）：回撤只需任一 same-schema 图，显式传入时优先于
+    # last_agent_id（last 悬空时"仅选中、不发送"即可恢复回撤）；缺省回落。
+    agent_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="回撤取图所用智能体；缺省回落会话最近使用的智能体",
     )
 
 

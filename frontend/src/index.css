@@ -315,6 +315,15 @@ pre,
   margin-top: auto;
   padding: 2px 8px;
 }
+/* 智能体选择器（会话-智能体解耦）：融入玻璃 composer 的无边框小号下拉 */
+.chat-composer__agent-select {
+  min-width: 118px;
+  max-width: 180px;
+  margin-right: 4px;
+}
+.chat-composer__agent-select .ant-select-selection-item {
+  color: var(--color-text-secondary);
+}
 /* ===== [试验] 流体玻璃按钮（Liquid Glass · iOS 26 风）=====
    成像三要素：① 半透薄底 ② backdrop-filter 取景后景（blur + 提饱和），
    ③ 多道 inset rim 高光模拟玻璃边缘折射；::before 常驻顶部镜面亮斑（厚度感），

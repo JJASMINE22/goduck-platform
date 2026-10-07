@@ -24,6 +24,7 @@ def chat_event_source(
     agent,
     config: dict,
     *,
+    agent_id,
     user_query: str,
     attachments: list,
     knowledge_base_ids: list,
@@ -34,6 +35,9 @@ def chat_event_source(
 
     附件 / KB 的能力与归属校验由调用方在流外完成（422/403/404 尽早暴露）；
     本源内的 assemble 只做预消费与锚点注入（status 进度事件随流透传）。
+    agent_id 为当回合智能体（会话-智能体解耦）：随 HumanMessage
+    additional_kwargs 持久化为**锚点回合归属**——withdraw 清理摘要旁通道
+    时经它取"产出该回合的图"（plan 1790660700000 §4.4）。
     """
 
     async def _source() -> AsyncIterator[SSEEvent]:
@@ -41,6 +45,7 @@ def chat_event_source(
         async for item in assemble_message_content_stream(
             st,
             session,
+            agent_id=agent_id,
             user_query=user_query,
             attachments=attachments,
             knowledge_base_ids=knowledge_base_ids,
@@ -59,6 +64,7 @@ def chat_event_source(
             upload_ids=built.upload_ids,
             raw_content=raw_content,
             kb_ids=[str(k) for k in knowledge_base_ids],
+            agent_id=str(agent_id),
         )
         try:
             async for ev in gen:

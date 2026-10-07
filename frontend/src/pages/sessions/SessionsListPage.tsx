@@ -1,5 +1,5 @@
 /* 会话列表页 —— 按 user_id 列出会话（个人工具；user_id 由顶栏统一切换，默认 admin）。
-   新建会话需选智能体；点行进入聊天。 */
+   新建会话可选智能体（会话-智能体解耦：不选则创建空会话，进入后再选）；点行进入聊天。 */
 import { App as AntApp, Button, Flex, Form, Input, Modal, Popconfirm, Segmented, Select, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState, type ReactNode } from 'react'
@@ -28,13 +28,14 @@ export function SessionsListPage(): ReactNode {
   const { modal } = AntApp.useApp()
 
   const [open, setOpen] = useState(false)
-  const [form] = Form.useForm<{ agent_id: string; title?: string }>()
+  const [form] = Form.useForm<{ agent_id?: string; title?: string }>()
 
   const handleCreate = async () => {
     const v = await form.validateFields()
     const session = await createSession.mutateAsync({
       user_id: userId,
-      agent_id: v.agent_id,
+      // 可选（会话-智能体解耦）：不选 = 空会话，首条消息发送时才确定智能体
+      agent_id: v.agent_id || null,
       // 空白标题归一为未命名（后端同名校验仅对非空标题生效）
       title: v.title?.trim() || null,
     })
@@ -77,7 +78,7 @@ export function SessionsListPage(): ReactNode {
         </Flex>
       ),
     },
-    { title: '智能体', dataIndex: 'agent_name', key: 'agent_name', render: (v: string | null) => v ?? '—' },
+    { title: '智能体（最近使用）', dataIndex: 'agent_name', key: 'agent_name', render: (v: string | null) => v ?? '—' },
     {
       title: '状态',
       dataIndex: 'status',
@@ -170,10 +171,15 @@ export function SessionsListPage(): ReactNode {
         confirmLoading={createSession.isPending}
         destroyOnClose
       >
-        <Form<{ agent_id: string; title?: string }> form={form} layout="vertical">
-          <Form.Item name="agent_id" label="智能体" rules={[{ required: true, message: '请选择智能体' }]}>
+        <Form<{ agent_id?: string; title?: string }> form={form} layout="vertical">
+          <Form.Item
+            name="agent_id"
+            label="智能体（可选）"
+            extra="不选则创建空会话，进入会话后于输入框左下角选择"
+          >
             <Select
               placeholder="选择一个可用（活跃）智能体"
+              allowClear
               options={activeAgents.map((a) => ({ value: a.id, label: a.name }))}
               loading={agents.isLoading}
             />
