@@ -7,6 +7,7 @@ import type { MenuProps } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useMemo, type ReactNode } from 'react'
 import { useCapabilities } from '@/hooks/useCapabilities'
+import { ThemeToggle } from './ThemeToggle'
 import { UserSwitcher } from './UserSwitcher'
 
 type MenuItem = Required<MenuProps>['items'][number]
@@ -80,16 +81,20 @@ export function Sidebar({ collapsed = false }: { collapsed?: boolean }): ReactNo
         onClick={onClick}
         style={{ flex: 1, borderInlineEnd: 'none', overflowX: 'hidden', overflowY: 'auto', paddingBottom: 8 }}
       />
-      {/* 用户区（菜单下方、折叠钮上方）：展开为整行芯片，折叠为居中头像圆钮 */}
+      {/* 底部工具区（菜单下方、折叠钮上方）：主题切换（Light|Dark 分段胶囊）
+           + 用户芯片；折叠时两者都退化为居中圆钮 */}
       <div
         style={{
           flexShrink: 0,
           display: 'flex',
-          justifyContent: 'center',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 8,
           padding: collapsed ? '10px 0 12px' : '10px 12px 12px',
           borderTop: '1px solid var(--color-border-soft)',
         }}
       >
+        <ThemeToggle collapsed={collapsed} />
         <UserSwitcher collapsed={collapsed} />
       </div>
     </div>

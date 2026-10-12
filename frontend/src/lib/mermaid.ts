@@ -1,23 +1,34 @@
-/* Mermaid 渲染封装（DESIGN 准则 F7：单一渲染入口，只渲染后端产出的文本）。
+/* Mermaid 渲染封装（DESIGN 准则 F7：单一渲染入口，只渲染后端的文本）。
     mermaid v11 + securityLevel:strict。零图像/网络依赖，纯前端渲染拓扑文本。
-    统一注入 neo 主题 + elk 布局抬头（app 为亮色主题，避免暗图配亮气泡的风格不一致）。 */
+    主题感知：读取 <html data-theme>（themeStore 挂载，lib 不依赖 store），
+    亮色注入 neo 主题抬头、暗色注入 dark 主题（避免暗图配亮气泡的风格不一致）；
+    主题变更时重新 initialize，消费方（Markdown/MermaidPreview）以 theme 为
+    effect 依赖触发重渲染。 */
 import mermaid from 'mermaid'
 
-let initialized = false
+type MermaidMode = 'light' | 'dark'
 
-function ensureInit() {
-  if (initialized) return
+let initializedFor: MermaidMode | null = null
+
+function currentMode(): MermaidMode {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
+}
+
+function ensureInit(mode: MermaidMode) {
+  if (initializedFor === mode) return
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict', // 禁止 mermaid 里的交互脚本/html
-    theme: 'default', // 亮色基底（app 为亮色主题）；流程图细节由抬头 theme: neo 覆盖
+    theme: mode === 'dark' ? 'dark' : 'default', // 亮暗基底；流程图细节由抬头覆盖
     flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
   })
-  initialized = true
+  initializedFor = mode
 }
 
-/** 统一的 neo 主题 + elk 布局抬头。仅当代码本身未带 frontmatter 时注入，避免冲突。 */
-const STYLE_FRONTMATTER = '---\nconfig:\n  theme: neo\n  layout: elk\n---\n'
+/** neo（亮）/ dark（暗）主题 + elk 布局抬头。仅当代码本身未带 frontmatter 时注入，避免冲突。 */
+function styleFrontmatter(mode: MermaidMode): string {
+  return `---\nconfig:\n  theme: ${mode === 'dark' ? 'dark' : 'neo'}\n  layout: elk\n---\n`
+}
 
 let seq = 0
 
@@ -25,9 +36,10 @@ let seq = 0
 export async function renderMermaid(code: string): Promise<string> {
   const trimmed = code?.trim()
   if (!trimmed) return ''
-  ensureInit()
+  const mode = currentMode()
+  ensureInit(mode)
   // 已带 frontmatter（以 --- 开头）则原样使用，避免重复抬头导致解析失败
-  const source = /^---\s*\n/.test(trimmed) ? trimmed : STYLE_FRONTMATTER + trimmed
+  const source = /^---\s*\n/.test(trimmed) ? trimmed : styleFrontmatter(mode) + trimmed
   // 唯一 id 避免多次渲染冲突
   const id = `gd-mermaid-${Date.now()}-${seq++}`
   try {

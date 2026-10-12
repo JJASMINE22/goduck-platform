@@ -425,7 +425,18 @@ async function streamMessage(sessionId, body, handlers) {
 
 - **配色**：CSS 变量（`--color-bg`/`--color-fg`/`--color-primary`/`--color-danger`/`--token-...`），AntD 经 `ConfigProvider` 同步 token。
 - **角色色**（消息流区分）：主代理 / 子代理 / 工具 / 用户 各一色 token，便于后续暗色模式。
-- **暗色模式**：预留 `data-theme="dark"`，CSS 变量切换即可（一期可不做，但 token 结构必须支持）。
+- **双主题（Light | Dark，已实现）**：
+  - 单一主题源 `store/themeStore`（zustand + localStorage），挂 `<html data-theme>` + `colorScheme`；
+    AntD 经 `createAntdTheme(dark)` 切 `defaultAlgorithm`/`darkAlgorithm`（App.tsx 动态取用）。
+  - `tokens.css` 两套值集：`:root`（浅色）与 `[data-theme="dark"]`（冷夜画布 + Google 暗色系提亮主色/语义色/角色色）。
+  - **流体玻璃暗色适配**：所有玻璃配方（底/边/rim 高光/镜面亮斑/流光/选中态凸起/composer 三态）
+    收敛为 `--glass-*` 变量（亮=白玻璃、暗=深色半透底 + 低 α 白 rim），index.css 玻璃规则零硬编码色；
+    环境光层暗色下提亮（夜色中的流动辉光）；hljs 双色板（GitHub Light/Dark）随 data-theme 切换；
+    mermaid 按主题出 neo/dark 变体并在切换时重渲染（Markdown/MermaidPreview 以 theme 为 effect 依赖）。
+  - **切换入口**：侧边栏卡片底部「浅色 | 深色」玻璃分段胶囊（`ThemeToggle`，折叠态退化为圆形图标钮）。
+  - **玻璃语言一致性**：顶栏页面主动作主按钮（主色染玻璃 `--btn-primary-*`）、Segmented 选中滑块
+    （玻璃凸起，镜像菜单选中态）、Select 下拉弹层与选中项（body 前缀全局玻璃化）、
+    中止按钮实心停止符（`Square fill`）统一同源成像配方。
 - **间距/圆角**：统一 token，禁止散落魔法数字。
 - **字体**：系统字体栈 + 等宽字体（代码/工具参数）。
 - **响应式**：一期以桌面端为主（个人工作台），但布局用 flex/grid，避免固定像素断点。

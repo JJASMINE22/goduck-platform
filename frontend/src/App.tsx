@@ -1,12 +1,15 @@
 /* 应用根：组装全局 Provider + 路由（DESIGN §9）。
    Provider 嵌套顺序（外→内）：ConfigProvider(主题/locale) → AntD App(message context)
-     → QueryProvider → BrowserRouter → AppRoot(useApp 注入静态桥接) → Routes。 */
+     → QueryProvider → BrowserRouter → AppRoot(useApp 注入静态桥接) → Routes。
+   主题：themeStore 读 Light|Dark → ConfigProvider 动态切 default/darkAlgorithm，
+   <html data-theme> 由 themeStore 挂载（驱动 CSS 变量集）。 */
 import { App as AntApp, ConfigProvider } from 'antd'
 import { useEffect, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
-import { antdLocale, antdTheme } from '@/styles/theme'
+import { antdLocale, createAntdTheme } from '@/styles/theme'
 import { setStaticFns } from '@/lib/antdStatic'
 import { QueryProvider } from '@/hooks/QueryProvider'
+import { useThemeStore } from '@/store/themeStore'
 import { AppShell } from '@/components/layout/AppShell'
 import { AgentsListPage } from '@/pages/agents/AgentsListPage'
 import { AgentEditorPage } from '@/pages/agents/AgentEditorPage'
@@ -45,8 +48,9 @@ function AppRoot(): ReactNode {
 }
 
 export default function App(): ReactNode {
+  const dark = useThemeStore((s) => s.theme === 'dark')
   return (
-    <ConfigProvider theme={antdTheme} locale={antdLocale}>
+    <ConfigProvider theme={createAntdTheme(dark)} locale={antdLocale}>
       <AntApp>
         <QueryProvider>
           <BrowserRouter>

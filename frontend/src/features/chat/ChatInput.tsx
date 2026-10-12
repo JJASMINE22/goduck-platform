@@ -455,7 +455,8 @@ export function ChatInput({
           </Tooltip>
           {streaming ? (
             <button type="button" className="glass-btn chat-composer__stop" onClick={cancel}>
-              <Square size={14} />
+              {/* 实心方块 = 标准停止符 ■（fill 填充随文字取 danger 红） */}
+              <Square size={14} fill="currentColor" strokeWidth={0} />
               中止
             </button>
           ) : recording || transcribing ? (

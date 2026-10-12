@@ -11,6 +11,7 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { renderMermaidInto } from '@/lib/mermaid'
+import { useThemeStore } from '@/store/themeStore'
 
 /** LLM 常把公式写作 \(..\)/\[..\]，remark-math 只认 $..$/$$..$$。
     先用占位符保护代码围栏与行内代码，再统一替换定界符，避免误伤代码。 */
@@ -77,10 +78,12 @@ function CodeBlock({ lang, source, children }: { lang: string; source: string; c
   )
 }
 
-/** mermaid 块：顶栏（复制源码 + 下载 SVG） + 渲染图。SVG 序列化自渲染容器内的 <svg>。 */
+/** mermaid 块：顶栏（复制源码 + 下载 SVG） + 渲染图。SVG 序列化自渲染容器内的 <svg>。
+    theme 入依赖：Light|Dark 切换后以对应 mermaid 主题重渲染。 */
 function MermaidBlock({ code }: { code: string }): ReactNode {
   const ref = useRef<HTMLDivElement>(null)
   const [copied, setCopied] = useState(false)
+  const theme = useThemeStore((s) => s.theme)
   useEffect(() => {
     let active = true
     void (async () => {
@@ -90,7 +93,7 @@ function MermaidBlock({ code }: { code: string }): ReactNode {
     return () => {
       active = false
     }
-  }, [code])
+  }, [code, theme])
   const onCopySource = async () => {
     if (await copyText(code)) {
       setCopied(true)

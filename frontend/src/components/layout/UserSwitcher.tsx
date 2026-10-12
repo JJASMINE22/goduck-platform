@@ -150,8 +150,8 @@ export function UserSwitcher({ collapsed = false }: { collapsed?: boolean }): Re
           e.currentTarget.style.background = 'var(--color-primary-bg)'
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.65)'
-          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.5)'
+          e.currentTarget.style.borderColor = 'var(--glass-border-strong)'
+          e.currentTarget.style.background = 'var(--glass-bg)'
         }}
         style={
           collapsed
@@ -162,8 +162,8 @@ export function UserSwitcher({ collapsed = false }: { collapsed?: boolean }): Re
                 cursor: 'pointer',
                 padding: 4,
                 borderRadius: '50%',
-                border: '1px solid rgba(255, 255, 255, 0.65)',
-                background: 'rgba(255, 255, 255, 0.5)',
+                border: '1px solid var(--glass-border-strong)',
+                background: 'var(--glass-bg)',
                 fontFamily: 'inherit',
                 color: 'var(--color-text)',
                 transition: 'background .15s, border-color .15s',
@@ -176,8 +176,8 @@ export function UserSwitcher({ collapsed = false }: { collapsed?: boolean }): Re
                 width: '100%',
                 padding: '5px 8px 5px 6px',
                 borderRadius: 'var(--radius-md)',
-                border: '1px solid rgba(255, 255, 255, 0.65)',
-                background: 'rgba(255, 255, 255, 0.5)',
+                border: '1px solid var(--glass-border-strong)',
+                background: 'var(--glass-bg)',
                 fontFamily: 'inherit',
                 color: 'var(--color-text)',
                 transition: 'background .15s, border-color .15s',

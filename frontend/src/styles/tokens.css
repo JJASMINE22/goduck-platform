@@ -1,6 +1,13 @@
 /* goduck-platform 设计 token —— 全局 CSS 变量，与 AntD theme.ts 同源。
    浅色（Google AI Studio 风）：近白底 + Google 蓝 + 大圆角软阴影 + 低对比细分割。
-   组件引用 var(--xxx)。配色集中管理，换肤只改本文件 + theme.ts。 */
+   暗色（data-theme="dark"）：冷夜画布 + 提亮主色（Google 暗色蓝）+ 深色玻璃。
+   组件引用 var(--xxx)。配色集中管理，换肤只改本文件 + theme.ts。
+
+   玻璃成像 token（--glass-*）：流体玻璃配方中所有"白色底/边/rim 高光/镜面亮斑/
+   流光"统一收敛为变量（亮=白玻璃、暗=暗玻璃），index.css 玻璃规则零硬编码色。
+   梯度约定（亮色 α 近似原手写值，视觉无差）：
+     faint  小件薄底（按钮/徽标/chip）     soft  面板薄底（页面卡/折叠卡/工具条）
+     mid    中密（气泡操作条/Popover/井）  strong 高密（抽屉/composer 聚焦） */
 
 :root {
   /* —— 中性色（浅色·冷灰画布）——
@@ -9,6 +16,7 @@
   --color-bg: #eef1f6;
   --color-bg-elevated: #ffffff;
   --color-surface: #ffffff;
+  --color-bg-inset: #e4e8f0; /* 凹陷面：代码块/思考过程/工具载荷的底 */
   --color-border: #d8dde6;
   --color-border-soft: #e4e8f0;
 
@@ -24,6 +32,7 @@
 
   /* —— 语义色（Material）—— */
   --color-success: #1e8e3e;
+  --color-success-bg: rgba(30, 142, 62, 0.1);
   --color-warning: #f9ab00;
   --color-danger: #d93025;
   --color-info: #1a73e8;
@@ -56,4 +65,131 @@
   /* —— 阴影（浅色下的柔和高程，Material 式双层；稍增强以衬托浮起模块）—— */
   --shadow-sm: 0 1px 2px rgba(60, 64, 67, 0.08), 0 1px 3px rgba(60, 64, 67, 0.05);
   --shadow-md: 0 2px 6px rgba(60, 64, 67, 0.1), 0 8px 24px rgba(60, 64, 67, 0.08);
+
+  /* —— 玻璃底（四档透明度）—— */
+  --glass-bg-faint: rgba(255, 255, 255, 0.32);
+  --glass-bg-soft: rgba(255, 255, 255, 0.44);
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-bg-strong: rgba(255, 255, 255, 0.66);
+  /* —— 玻璃边 —— */
+  --glass-border: rgba(255, 255, 255, 0.55);
+  --glass-border-strong: rgba(255, 255, 255, 0.75);
+  /* —— inset rim 高光（顶缘主 rim / 亮 rim / 底缘 / 侧缘 / 下缘暗垫）—— */
+  --glass-rim: rgba(255, 255, 255, 0.78);
+  --glass-rim-bright: rgba(255, 255, 255, 0.92);
+  --glass-rim-soft: rgba(255, 255, 255, 0.31);
+  --glass-rim-side: rgba(255, 255, 255, 0.4);
+  --glass-rim-underside: rgba(120, 145, 180, 0.25);
+  /* —— ::before 镜面亮斑 / ::after 悬停流光 —— */
+  --glass-specular: rgba(255, 255, 255, 0.55);
+  --glass-sheen: rgba(255, 255, 255, 0.55);
+  /* —— color-mix 基色（悬停染主色等场景的"玻璃本体"色）—— */
+  --glass-tint: #ffffff;
+  --glass-tint-soft: rgba(255, 255, 255, 0.5);
+  /* —— 选中态玻璃凸起（菜单/文件树）：渐变亮面 + 透底 + 内顶光带 —— */
+  --glass-sel-grad: linear-gradient(115deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.07) 38%, rgba(255, 255, 255, 0) 62%);
+  --glass-sel-base: rgba(255, 255, 255, 0.12);
+  --glass-sel-glint: rgba(255, 255, 255, 0.55);
+  /* —— 无 backdrop-filter 环境的近实底回退 —— */
+  --glass-solid: rgba(255, 255, 255, 0.94);
+
+  /* —— composer 三态玻璃（浏览 → 悬停 → 聚焦）—— */
+  --composer-bg: rgba(255, 255, 255, 0.28);
+  --composer-bg-hover: rgba(255, 255, 255, 0.4);
+  --composer-bg-focus: rgba(255, 255, 255, 0.66);
+
+  /* —— 用户气泡玻璃（顶部受光渐变两档 + 无 blur 回退实底）—— */
+  --user-bubble-glint: rgba(255, 255, 255, 0.55);
+  --user-bubble-glint-mid: rgba(255, 255, 255, 0.14);
+  --user-bubble-fallback: #e9f1fc;
+
+  /* —— 滚动条 / 抽屉遮罩 / 证据纸面井 —— */
+  --scrollbar-thumb: rgba(60, 64, 67, 0.3);
+  --scrollbar-thumb-hover: rgba(60, 64, 67, 0.5);
+  --drawer-mask: rgba(31, 38, 48, 0.3);
+  --kb-well-grad: linear-gradient(180deg, rgba(238, 241, 246, 0.92), rgba(226, 231, 240, 0.92));
+
+  /* —— 玻璃主按钮（顶栏页面主动作：新建会话等）：主色染玻璃
+     亮色保持近实心蓝（白字对比安全），暗色为 Google 暗色风深底 + 亮蓝字 —— */
+  --btn-primary-bg: color-mix(in srgb, var(--color-primary) 78%, var(--glass-bg-strong));
+  --btn-primary-bg-hover: color-mix(in srgb, var(--color-primary) 88%, var(--glass-bg-strong));
+  --btn-primary-fg: #ffffff;
+  --btn-primary-border: color-mix(in srgb, var(--color-primary) 55%, var(--glass-tint));
+  --btn-primary-glow: color-mix(in srgb, var(--color-primary) 26%, transparent);
+}
+
+/* ===== 暗色主题（data-theme="dark" 于 <html> 挂载，themeStore 驱动）=====
+   画布冷夜蓝黑，抬升面深灰蓝；玻璃换暗色半透底 + 低 α 白 rim（暗玻璃的
+   边缘折射），环境光斑透过磨砂暗玻璃折射感更强。文本/主色/语义色全部
+   取 Google 暗色系提亮变体，保证暗底对比度。 */
+[data-theme='dark'] {
+  --color-bg: #0f141b;
+  --color-bg-elevated: #1a212b;
+  --color-surface: #1a212b;
+  --color-bg-inset: #12171f;
+  --color-border: #39424f;
+  --color-border-soft: #2a323d;
+
+  --color-text: #e8eaed;
+  --color-text-secondary: #9aa4b2;
+  --color-text-tertiary: #737e8c;
+
+  --color-primary: #8ab4f8;
+  --color-primary-hover: #aecbfa;
+  --color-primary-bg: rgba(138, 180, 248, 0.14);
+
+  --color-success: #57c985;
+  --color-success-bg: rgba(87, 201, 133, 0.14);
+  --color-warning: #fdd663;
+  --color-danger: #f28b82;
+  --color-info: #8ab4f8;
+
+  --color-role-user: #8ab4f8;
+  --color-role-agent-main: #c58af9;
+  --color-role-agent-sub: #5dcab3;
+  --color-role-tool: #9aa4b2;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.45);
+
+  /* —— 暗玻璃：深色半透底 + 低 α 白 rim（暗处的玻璃边缘光）—— */
+  --glass-bg-faint: rgba(22, 27, 36, 0.44);
+  --glass-bg-soft: rgba(23, 28, 37, 0.52);
+  --glass-bg: rgba(25, 30, 40, 0.6);
+  --glass-bg-strong: rgba(27, 33, 44, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.16);
+  --glass-border-strong: rgba(255, 255, 255, 0.26);
+  --glass-rim: rgba(255, 255, 255, 0.2);
+  --glass-rim-bright: rgba(255, 255, 255, 0.32);
+  --glass-rim-soft: rgba(255, 255, 255, 0.07);
+  --glass-rim-side: rgba(255, 255, 255, 0.1);
+  --glass-rim-underside: rgba(0, 0, 0, 0.45);
+  --glass-specular: rgba(255, 255, 255, 0.13);
+  --glass-sheen: rgba(255, 255, 255, 0.18);
+  --glass-tint: #141a24;
+  --glass-tint-soft: rgba(13, 17, 24, 0.6);
+  --glass-sel-grad: linear-gradient(115deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.04) 38%, rgba(255, 255, 255, 0) 62%);
+  --glass-sel-base: rgba(255, 255, 255, 0.07);
+  --glass-sel-glint: rgba(255, 255, 255, 0.14);
+  --glass-solid: rgba(20, 25, 33, 0.96);
+
+  --composer-bg: rgba(23, 28, 37, 0.42);
+  --composer-bg-hover: rgba(25, 30, 40, 0.52);
+  --composer-bg-focus: rgba(27, 33, 44, 0.74);
+
+  --user-bubble-glint: rgba(255, 255, 255, 0.08);
+  --user-bubble-glint-mid: rgba(255, 255, 255, 0.02);
+  --user-bubble-fallback: #26313f;
+
+  --scrollbar-thumb: rgba(255, 255, 255, 0.22);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
+  --drawer-mask: rgba(0, 0, 0, 0.45);
+  --kb-well-grad: linear-gradient(180deg, rgba(13, 17, 24, 0.92), rgba(18, 23, 31, 0.92));
+
+  /* 暗色玻璃主按钮：主色薄染暗玻璃 + 亮蓝文字（Material 暗色按钮惯例） */
+  --btn-primary-bg: color-mix(in srgb, var(--color-primary) 24%, var(--glass-bg-strong));
+  --btn-primary-bg-hover: color-mix(in srgb, var(--color-primary) 34%, var(--glass-bg-strong));
+  --btn-primary-fg: #aecbfa;
+  --btn-primary-border: color-mix(in srgb, var(--color-primary) 46%, var(--glass-tint));
+  --btn-primary-glow: color-mix(in srgb, var(--color-primary) 22%, transparent);
 }
