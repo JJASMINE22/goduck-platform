@@ -39,6 +39,19 @@ export function useKnowledgeCapability(
   })
 }
 
+/** 解析引擎状态（C1）：驱动解析面板双轨语义（docling=隐藏滑窗参数）。
+ *  后端配置静态（kb_parser_engine），staleTime 放宽为 5min。 */
+export function useKbParserEngine(enabled: boolean) {
+  const { kb_enabled } = useCapabilities()
+  return useQuery({
+    queryKey: queryKeys.kbParserEngine,
+    queryFn: knowledgeApi.parserEngine,
+    enabled: enabled && kb_enabled,
+    retry: false,
+    staleTime: 300_000,
+  })
+}
+
 /** 单库文档列表：存在 pending/indexing 文档时每 2s 轮询，全终态后自动停。
  *  retry:false 避免接口异常时反复重试刷屏。 */
 export function useKbDocuments(kbId: UUID | null | undefined) {

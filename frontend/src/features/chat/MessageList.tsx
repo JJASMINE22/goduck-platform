@@ -16,6 +16,8 @@ import { Markdown } from '@/components/markdown/Markdown'
 import { MessageAttachments } from './MessageAttachments'
 import { FileChangesCard } from './FileChangesCard'
 import { ToolCallCard } from './ToolCallCard'
+import { KbSearchToolCard } from './KbSearchToolCard'
+import { isKbSearchTool } from './kbSearchTool'
 import type { KbRef, UUID } from '@/types'
 
 type TimelineItem =
@@ -94,7 +96,13 @@ export const MessageList = memo(function MessageList({
         </div>
       ) : null}
       {timeline.map((item) => {
-        if (item.kind === 'tool') return <ToolCallCard key={`t-${item.data.id}`} entry={item.data} />
+        // kb_search 专属卡：结构化摘要 + 证据锚定入口（替代平铺 JSON 观测）
+        if (item.kind === 'tool')
+          return isKbSearchTool(item.data.name) ? (
+            <KbSearchToolCard key={`t-${item.data.id}`} entry={item.data} />
+          ) : (
+            <ToolCallCard key={`t-${item.data.id}`} entry={item.data} />
+          )
         if (item.kind === 'files')
           return <FileChangesCard key="file-changes-card" records={item.data} onOpenFile={onOpenFile} />
         // 手动中断提示条目：渲染为回合末尾的提示行（气泡/工具卡下方），不走 Markdown

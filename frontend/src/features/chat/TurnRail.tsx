@@ -1,17 +1,21 @@
 /* 会话回合导航轨（TurnRail）—— 每轮对话一个 label：悬停弹小窗预览该轮内容，点击跳转。
    - turns 由 chatStore.messages 派生（role==='user' 切分回合）：label = 用户 query 截断；
-     预览 = query 全文 + 该轮首条非空代理回复。
-     历史灌入与实时流共用同一 store，刷新后自动重建；锚点与 label 同源同快照，不会错位。
+      预览 = query 全文 + 该轮首条非空代理回复。
+      历史灌入与实时流共用同一 store，刷新后自动重建；锚点与 label 同源同快照，不会错位。
    - 点击经 data-turn-anchor 锚点平滑滚动（锚点挂在 MessageList 的用户回合容器上）；
-     跳转后 scroll 容器判定离底、自动追底停止——复用 ChatPage 既有 pinnedRef 机制。
+      跳转后 scroll 容器判定离底、自动追底停止——复用 ChatPage 既有 pinnedRef 机制。
    - 三级形态由容器查询驱动（.chat-panel 为容器，见 index.css）：
-     宽面板 = 完整 label / 中宽 = 仅圆点（悬停仍有预览）/ 窄面板 = 整轨隐藏；
-     阅读列同步在右侧让位，轨道永不与气泡及回撤操作条重叠。
+      宽面板 = 完整 label / 中宽 = 仅圆点（悬停仍有预览）/ 窄面板 = 整轨隐藏；
+      阅读列同步在右侧让位，轨道永不与气泡及回撤操作条重叠。
+   - 超长折叠：回合数超过 VISIBLE_LIMIT 时默认只渲染最近一段，更早的折进顶部
+      「展开」钮（空心底区分真实锚点；窄轨档 title 提示兜底）——轨道高度有界，
+      Popover 触发器不随会话长度无限堆积；展开态下轨道自身可滚（悬停显细
+      滚动条，见 index.css）。会话切换（store reset → 空回合）自动收回展开。
    - ≥1 落定回合即渲染：末轮进行中（streaming/interrupted）暂不入轨——发送瞬间
-     轨道不弹入、逐 token 不触发条目/预览抖动；回合结束（done/error）或历史
-     灌入后自然出现（准则 F3：终态事件驱动）。 */
+      轨道不弹入、逐 token 不触发条目/预览抖动；回合结束（done/error）或历史
+      灌入后自然出现（准则 F3：终态事件驱动）。 */
 import { Popover } from 'antd'
-import { type ReactNode, type RefObject, useMemo } from 'react'
+import { type ReactNode, type RefObject, useMemo, useState } from 'react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage } from '@/store/chatStore'
 
@@ -27,6 +31,8 @@ interface Turn {
 
 /** 出现阈值：只要存在一个已落定回合即渲染；空会话/首轮进行中不渲染 */
 const MIN_TURNS = 1
+/** 折叠阈值：超过后默认只渲染最近 VISIBLE_LIMIT 条，更早的折进「展开」钮 */
+const VISIBLE_LIMIT = 24
 const LABEL_MAX = 26
 const QUERY_MAX = 120
 const REPLY_MAX = 200
@@ -77,6 +83,15 @@ export function TurnRail({ scrollRef }: { scrollRef: RefObject<HTMLDivElement | 
     return status === 'streaming' || status === 'interrupted' ? all.slice(0, -1) : all
   }, [messages, status])
 
+  // —— 超长折叠（Hooks 须先于早退分支声明）——
+  // 默认仅尾部可见；跨会话复位由父组件 key={sessionId} 重挂承担（同一路由
+  // 切换会话不卸载组件，state 需外部键控）
+  const [expanded, setExpanded] = useState(false)
+  const foldable = turns.length > VISIBLE_LIMIT
+  const visibleTurns = foldable && !expanded ? turns.slice(-VISIBLE_LIMIT) : turns
+  /** 被折掉的前缀回合数：预览/aria 的「第 N 轮」按全量序数计，折叠不改编号 */
+  const hiddenCount = turns.length - visibleTurns.length
+
   if (turns.length < MIN_TURNS) return null
 
   const jump = (anchorId: string) => {
@@ -86,7 +101,19 @@ export function TurnRail({ scrollRef }: { scrollRef: RefObject<HTMLDivElement | 
 
   return (
     <nav className="turn-rail" aria-label="回合导航">
-      {turns.map((t, i) => (
+      {foldable ? (
+        <button
+          type="button"
+          className="turn-rail__item turn-rail__more"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          title={expanded ? '收起导航' : `展开更早的 ${hiddenCount} 轮`}
+        >
+          <span className="turn-rail__dot turn-rail__dot--more" />
+          <span className="turn-rail__label">{expanded ? '收起' : `… 更早 ${hiddenCount} 轮`}</span>
+        </button>
+      ) : null}
+      {visibleTurns.map((t, i) => (
         <Popover
           key={t.anchorId}
           trigger="hover"
@@ -98,7 +125,7 @@ export function TurnRail({ scrollRef }: { scrollRef: RefObject<HTMLDivElement | 
           overlayStyle={{ maxWidth: 340 }}
           content={
             <div className="turn-rail__preview">
-              <div className="turn-rail__preview-seq">第 {i + 1} 轮</div>
+              <div className="turn-rail__preview-seq">第 {hiddenCount + i + 1} 轮</div>
               <div className="turn-rail__preview-query">{t.queryText}</div>
               {t.replyPreview ? (
                 <div className="turn-rail__preview-reply">{t.replyPreview}</div>
@@ -110,7 +137,7 @@ export function TurnRail({ scrollRef }: { scrollRef: RefObject<HTMLDivElement | 
             type="button"
             className="turn-rail__item"
             onClick={() => jump(t.anchorId)}
-            aria-label={`跳转到第 ${i + 1} 轮`}
+            aria-label={`跳转到第 ${hiddenCount + i + 1} 轮`}
           >
             <span className="turn-rail__dot" />
             <span className="turn-rail__label">{t.label}</span>

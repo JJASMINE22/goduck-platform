@@ -42,6 +42,9 @@ export interface ToolCallEntry {
   agentPath: string
   result?: string // tool_result 回填
   hasResult: boolean
+  /** jev kb 门控观测标记（'unavailable'=判决不可用，结果未过滤照常透传）；
+      来自 tool_result 事件 / 历史回放，仅 kb_search 卡片渲染徽标用 */
+  jevKb?: 'unavailable'
   /** true=本回合被手动中止时仍在执行（结果永不再到达）；重发后后端重放
       超步补齐结果时由 setToolResult 复位。展示为「已中断」而非永挂「执行中」 */
   abandoned?: boolean
@@ -131,7 +134,7 @@ export interface ChatState {
       空回合（尚无任何 agent 输出/工具卡）不加，避免提示行孤悬在用户消息之后 */
   markTurnInterrupted: () => void
   upsertToolCall: (tc: Omit<ToolCallEntry, 'hasResult' | 'createdAt'>) => void
-  setToolResult: (toolCallId: string, result: string) => void
+  setToolResult: (toolCallId: string, result: string, jevKb?: 'unavailable') => void
   setStatus: (s: ChatStreamStatus) => void
   setStreamSource: (src: 'sse' | 'voice' | null) => void
   setInterrupt: (payload: InterruptPayload) => void
@@ -348,10 +351,13 @@ export const useChatStore = create<ChatState>((set) => ({
       return { toolCalls: [...s.toolCalls, entry] }
     }),
 
-  setToolResult: (toolCallId, result) =>
+  setToolResult: (toolCallId, result, jevKb) =>
     set((s) => ({
+      // jevKb 缺省显式清除（重发重放场景旧标记不得残留）
       toolCalls: s.toolCalls.map((t) =>
-        t.id === toolCallId ? { ...t, result, hasResult: true, abandoned: false } : t,
+        t.id === toolCallId
+          ? { ...t, result, hasResult: true, abandoned: false, jevKb: jevKb ?? undefined }
+          : t,
       ),
     })),
 

@@ -44,6 +44,7 @@ from langgraph.types import Command
 
 from app.core import file_change_tracker
 from app.services.thinking_patch import extract_reasoning
+from app.services.tool_content import content_to_str
 from app.streaming.events import SSEEvent
 
 logger = logging.getLogger(__name__)
@@ -54,9 +55,8 @@ def _path(namespace: tuple) -> str:
 
 
 def _content_str(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    return str(content)
+    # 块列表（MCP wire 形态）提取 text 拼接，避免 str() 产出 repr（详见模块注释）
+    return content_to_str(content)
 
 
 def _text_delta(content: Any) -> str:
@@ -163,14 +163,20 @@ def _msg_to_events(msg, agent_path: str, streamed_ids: set[str]) -> list[SSEEven
                 payload={"content": _content_str(msg.content), "name": msg.name},
             ))
     elif isinstance(msg, ToolMessage):
+        payload = {
+            "tool_call_id": msg.tool_call_id,
+            "content": _content_str(msg.content),
+            "name": msg.name,
+        }
+        # jev kb 门控观测标记（契约纯增量：仅门控显式注入时出现）。UI 据此显示
+        # 「jev 未介入」徽标；response_metadata 不进模型请求，LLM 不可见
+        jev_kb = (getattr(msg, "response_metadata", None) or {}).get("jev_kb")
+        if isinstance(jev_kb, str):
+            payload["jev_kb"] = jev_kb
         events.append(SSEEvent(
             type="tool_result",
             agent_path=agent_path,
-            payload={
-                "tool_call_id": msg.tool_call_id,
-                "content": _content_str(msg.content),
-                "name": msg.name,
-            },
+            payload=payload,
         ))
     # HumanMessage and other types are not forwarded (user input already known)
     return events

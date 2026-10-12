@@ -31,9 +31,24 @@ minio>=7.2
 filetype>=1.2
 python-docx>=1.1
 pymupdf>=1.24
-# ---- 打印件 PDF（无文本层扫描件）OCR 兜底：PP-OCRv4 ONNX、纯 pip、CPU、中文友好。
-#      未安装时知识库入库自动降级为"仅文本层提取"（行为同旧版），报错信息会提示安装。----
+# ---- docling 管线 RapidOCR 的 ONNX 推理后端（docling[rapidocr] extra 经
+#      docling-slim[feat-ocr-rapidocr-onnx] 落到本包）：PP-OCR、纯 pip、CPU、
+#      中文友好，仅扫描页兜底触发。legacy 引擎的独立 OCR 分支已退役
+#      （扫描件解析为 docling 专属），本包唯一消费方即 docling 管线。----
 rapidocr-onnxruntime>=1.3
+# ---- 知识库 docling 解析路径（plan: kb-docling-parse-display）：layout +
+#      TableFormer + RapidOCR(lang=["ch"])。锁 >=2.130,<3 防 API 漂移，升级须
+#      重跑 Phase A 验收（真 docling 冒烟见 scripts/smoke_docling_adapter.py，
+#      2.135.0 实测通过）。软依赖：未安装时 kb_parser_engine=docling 的入库显式
+#      failed（提示安装），默认 legacy 路径不受影响。生产禁运行时下载模型：
+#      预置 KB_DOCLING_ARTIFACTS_PATH（容器挂载见 docker-compose.yml runbook）。----
+docling[rapidocr]>=2.130,<3
+# ---- docling 2.135 读取 rapidocr.utils.model_resolver.PP_OCRV6_LANGS，该符号
+#      在 3.10.0 被移走（docling 自身约束 <4 过宽）——上界收紧至实测兼容；
+#      与 docling OCR 后端 rapidocr-onnxruntime（独立包）并存不冲突。----
+rapidocr>=3.9.1,<3.10
+# ---- docling 单元 lang 元数据（软依赖：缺位置 None，不阻断）----
+langdetect>=1.0.9
 # ---- 语音输入（STT）：AssemblyAI Streaming 客户端直连 wss。
 #      uvicorn[standard] 虽传递引入 websockets（ASGI WS 终止用），但本模块直接
 #      import 其客户端 API（>=13 的 websockets.asyncio.client，旧版自动回落），

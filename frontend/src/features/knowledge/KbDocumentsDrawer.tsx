@@ -2,8 +2,11 @@
    - 上传（拖拽/点击，仅 pdf/docx，服务端魔数判定）—— 仅注册，不解析
    - 待解析文件面板（上传后出现）：统一参数栏（可一键应用到全部）+ 每文件独立
      chunk size / overlap 配置与单独解析 + 批量「全部解析」
+     （docling 引擎下隐藏滑窗参数，改释为服务端结构单元预算——C1 双轨语义）
    - 文档表（解析中/已解析/失败）：状态卡 + 轮询 + 失败原因 tooltip + 重新解析
-   - 检索调试（管理面用，生产检索走 mcp-servers 的 kb_search） */
+   - 检索调试（管理面用，生产检索走 mcp-servers 的 kb_search）：
+     docling 命中带 heading_path 面包屑 + 图片资产缩略图 + 「原文定位」
+     PDF.js 叠框 viewer；legacy / docx 直解命中降级为文本卡片（B2 可空契约） */
 import {
   App as AntApp,
   Button,
@@ -20,19 +23,29 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import { FileText, Play, Search, Trash2, Upload as UploadIcon } from 'lucide-react'
+import {
+  Crosshair,
+  FileText,
+  Image as ImageIcon,
+  Play,
+  Search,
+  Trash2,
+  Upload as UploadIcon,
+} from 'lucide-react'
 import { ApiError } from '@/api/client'
 import {
   useDeleteDocument,
   useKbDocuments,
+  useKbParserEngine,
   useKbSearch,
   useParseDocument,
   useUploadDocument,
 } from '@/hooks/useKnowledge'
 import { useDragResize } from '@/hooks/useDragResize'
-import { formatBytes, formatDateTime } from '@/lib/format'
+import { formatBytes, formatDateTime, sanitizeKbText } from '@/lib/format'
 import { toastError, toastSuccess } from '@/lib/antdStatic'
 import { KbDocStatusTag } from './KbDocStatusTag'
+import { KbEvidenceViewer, type EvidenceAnchor } from './KbEvidenceViewer'
 import type { KbDocumentOut, KbSearchResult, KnowledgeBaseOut, UUID } from '@/types'
 
 const ACCEPT = '.pdf,.docx'
@@ -78,6 +91,10 @@ export function KbDocumentsDrawer({
   const parseDoc = useParseDocument(kbId)
   const search = useKbSearch(kbId)
   const { modal } = AntApp.useApp()
+  // 解析引擎双轨语义（C1）：docling=隐藏滑窗参数，改释为结构单元预算
+  const engineQuery = useKbParserEngine(open)
+  const engine = engineQuery.data?.engine ?? 'legacy'
+  const unitMaxChars = engineQuery.data?.unit_max_chars
 
   // 抽屉可拖拽调宽（左边缘手柄，默认隐形、悬停浮现）；宽度持久化到 localStorage。
   const { size: drawerWidth, onResizeStart, reset } = useDragResize({
@@ -92,6 +109,13 @@ export function KbDocumentsDrawer({
   const [query, setQuery] = useState('')
   const [topK, setTopK] = useState(5)
   const [results, setResults] = useState<KbSearchResult[]>([])
+  // 证据锚定 viewer 状态（D2）：同文档命中聚合锚点，页间跳转
+  const [viewer, setViewer] = useState<{
+    docUrl: string
+    docName: string
+    anchors: EvidenceAnchor[]
+    initialId?: string
+  } | null>(null)
 
   // 待解析（pending）进配置面板；其余（indexing/indexed/failed）进文档表
   const pendingDocs = (data ?? []).filter((d) => d.status === 'pending')
@@ -172,6 +196,59 @@ export function KbDocumentsDrawer({
     }
   }
 
+  /** 原文定位（D2）：聚合同文档命中 → 锚点列表（主锚点 + 图片资产锚点），
+   *  打开 PDF.js viewer。bbox/doc_url 缺失的命中无入口（文本态降级）。
+   *  initialId = 被点命中自己的锚点（主锚点缺失回落其首个资产锚点），
+   *  零锚框时明确拒绝——绝不静默落到第一条命中的位置。 */
+  const handleLocate = (hit: KbSearchResult) => {
+    if (!hit.doc_url) return
+    const same = results.filter((r) => r.doc_uri && r.doc_uri === hit.doc_uri)
+    const anchors: EvidenceAnchor[] = []
+    let initialId: string | undefined
+    for (const [ri, r] of same.entries()) {
+      const key = `${r.doc_id}:${r.chunk_index ?? ri}`
+      if (r.page && r.bbox) {
+        const id = `${key}:main`
+        anchors.push({
+          id,
+          page: r.page,
+          bbox: r.bbox,
+          title: sanitizeKbText(r.content).slice(0, 60) || '命中片段',
+          meta: r.kind === 'table' ? '表格单元' : undefined,
+        })
+        if (r === hit) initialId = id
+      }
+      for (const [ai, a] of (r.assets ?? []).entries()) {
+        if (a.page && a.bbox) {
+          const id = `${key}:a${ai}`
+          anchors.push({
+            id,
+            page: a.page,
+            bbox: a.bbox,
+            title: a.caption || '图片资产',
+            meta: '图',
+          })
+          // 主锚点缺失（本体无 bbox/页码）时回落到该条自己的首个资产锚点
+          if (r === hit && initialId === undefined) initialId = id
+        }
+      }
+    }
+    if (!anchors.length) {
+      toastError('该命中无可定位锚框（仅有页码或文本态命中）')
+      return
+    }
+    if (!initialId) {
+      toastError('该命中自身无可定位锚框（缺页码或坐标）')
+      return
+    }
+    setViewer({
+      docUrl: hit.doc_url,
+      docName: hit.filename,
+      anchors,
+      initialId,
+    })
+  }
+
   const columns: ColumnsType<KbDocumentOut> = [
     {
       title: '文件名',
@@ -195,7 +272,13 @@ export function KbDocumentsDrawer({
       key: 'chunk_params',
       width: 130,
       render: (_, r) =>
-        r.chunk_size != null ? (
+        r.parser_engine === 'docling' ? (
+          <Tooltip title={`结构单元直入（预算 ≤ ${unitMaxChars ?? 2000} 字符，服务端控制）`}>
+            <Tag color="purple" style={{ marginInlineEnd: 0 }}>
+              结构单元
+            </Tag>
+          </Tooltip>
+        ) : r.chunk_size != null ? (
           <Tooltip title="chunk size / overlap（解析生效值，重建沿用）">
             <Tag style={{ marginInlineEnd: 0 }}>
               {r.chunk_size} / {r.chunk_overlap ?? 0}
@@ -260,6 +343,7 @@ export function KbDocumentsDrawer({
             disabled={r.status === 'indexing'}
             storedSize={r.chunk_size ?? DEFAULT_CHUNK_SIZE}
             storedOverlap={r.chunk_overlap ?? DEFAULT_CHUNK_OVERLAP}
+            engine={engine}
             onParse={(size, overlap) => void handleParse(r, size, overlap)}
           />
           <Popconfirm
@@ -336,11 +420,14 @@ export function KbDocumentsDrawer({
             />
           </div>
 
-          {/* 待解析文件配置面板（存在 pending 文档时出现；解析开始后自动移出） */}
+          {/* 待解析文件配置面板（存在 pending 文档时出现；解析开始后自动移出；
+              docling 引擎隐藏滑窗参数——结构单元预算由服务端控制（C1 双轨） */}
           {pendingDocs.length > 0 ? (
             <PendingParsePanel
               docs={pendingDocs}
               busy={parseDoc.isPending}
+              engine={engine}
+              unitMaxChars={unitMaxChars}
               onParse={(doc, size, overlap) => handleParse(doc, size, overlap)}
               onDelete={(doc) => deleteDoc.mutate(doc.id)}
             />
@@ -421,32 +508,56 @@ export function KbDocumentsDrawer({
             {results.length > 0 ? (
               <Flex vertical gap={8} style={{ marginTop: 12 }}>
                 {results.map((r, i) => (
-                  <SearchHit key={`${r.doc_id}-${r.chunk_index ?? i}`} hit={r} />
+                  <SearchHit
+                    key={`${r.doc_id}-${r.chunk_index ?? i}`}
+                    hit={r}
+                    onLocate={handleLocate}
+                  />
                 ))}
               </Flex>
             ) : null}
           </div>
         </Flex>
       ) : null}
+
+      {/* 证据锚定 viewer（D2）：预签名原始 PDF + SVG 叠框。
+          keyed 条件渲染：每次定位新实例（挂载即加载、卸载即销毁文档句柄） */}
+      {viewer ? (
+        <KbEvidenceViewer
+          key={viewer.docUrl}
+          onClose={() => setViewer(null)}
+          docUrl={viewer.docUrl}
+          docName={viewer.docName}
+          anchors={viewer.anchors}
+          initialAnchorId={viewer.initialId}
+        />
+      ) : null}
     </Drawer>
   )
 }
 
 /** 待解析文件配置面板：
- *  - 头部「统一参数」（chunk size / overlap）+「应用到全部」+「全部解析」（按各行当前值顺序投递）
- *  - 每文件一行：文件信息 + 独立参数输入（优先级：行输入 > 已存值 > 统一参数 > 全局默认）+ 单独解析/删除
- *  - 维度重置的文档（status=pending 且带已存参数）回面板时会预填其历史参数 */
+ *  - legacy：头部「统一参数」（chunk size / overlap）+「应用到全部」+「全部解析」；
+ *    每文件一行独立参数输入（行输入 > 已存值 > 统一参数 > 全局默认）+ 单独解析/删除
+ *  - docling（C1 双轨）：滑窗参数隐藏——结构单元直入 ES，预算上界由服务端
+ *    kb_unit_max_chars 控制（面板仅提示，不暴露输入）；维度重置的文档回面板时
+ *    预填历史参数的逻辑仅 legacy 生效 */
 function PendingParsePanel({
   docs,
   busy,
+  engine,
+  unitMaxChars,
   onParse,
   onDelete,
 }: {
   docs: KbDocumentOut[]
   busy: boolean
+  engine: 'legacy' | 'docling'
+  unitMaxChars?: number
   onParse: (doc: KbDocumentOut, size?: number | null, overlap?: number | null) => Promise<boolean>
   onDelete: (doc: KbDocumentOut) => void
 }): ReactNode {
+  const isDocling = engine === 'docling'
   // 统一参数（null=未设置；作为各行占位与「应用」来源）
   const [unifiedSize, setUnifiedSize] = useState<number | null>(null)
   const [unifiedOverlap, setUnifiedOverlap] = useState<number | null>(null)
@@ -498,40 +609,52 @@ function PendingParsePanel({
         background: 'var(--color-bg-hover, rgba(0,0,0,0.02))',
       }}
     >
-      {/* 头部：说明 + 统一参数 + 批量操作 */}
+      {/* 头部：说明 + （legacy）统一参数 + 批量操作 */}
       <Flex justify="space-between" align="flex-start" gap={12} wrap style={{ paddingBottom: 10 }}>
         <Flex vertical>
           <Typography.Text strong>
             待解析文件（{docs.length}）
           </Typography.Text>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            逐个确认切块参数后解析；留空使用默认 {sizeHint} / {overlapHint}
+            {isDocling ? (
+              <>
+                docling 结构单元解析：按文档结构（标题/段落/表格）直入索引，预算上界
+                {unitMaxChars ? ` ${unitMaxChars} ` : ' '}
+                字符由服务端控制，无需逐文件配置
+              </>
+            ) : (
+              <>逐个确认切块参数后解析；留空使用默认 {sizeHint} / {overlapHint}</>
+            )}
           </Typography.Text>
         </Flex>
         <Flex gap={8} align="center" wrap>
-          <InputNumber
-            min={200}
-            max={8000}
-            precision={0}
-            value={unifiedSize ?? undefined}
-            placeholder={`统一切块 ${sizeHint}`}
-            onChange={(v) => setUnifiedSize(typeof v === 'number' ? v : null)}
-            style={{ width: 130 }}
-            disabled={busy}
-          />
-          <InputNumber
-            min={0}
-            max={2000}
-            precision={0}
-            value={unifiedOverlap ?? undefined}
-            placeholder={`统一重叠 ${overlapHint}`}
-            onChange={(v) => setUnifiedOverlap(typeof v === 'number' ? v : null)}
-            style={{ width: 130 }}
-            disabled={busy}
-          />
-          <Button size="small" onClick={applyToAll} disabled={busy}>
-            应用到全部
-          </Button>
+          {!isDocling ? (
+            <>
+              <InputNumber
+                min={200}
+                max={8000}
+                precision={0}
+                value={unifiedSize ?? undefined}
+                placeholder={`统一切块 ${sizeHint}`}
+                onChange={(v) => setUnifiedSize(typeof v === 'number' ? v : null)}
+                style={{ width: 130 }}
+                disabled={busy}
+              />
+              <InputNumber
+                min={0}
+                max={2000}
+                precision={0}
+                value={unifiedOverlap ?? undefined}
+                placeholder={`统一重叠 ${overlapHint}`}
+                onChange={(v) => setUnifiedOverlap(typeof v === 'number' ? v : null)}
+                style={{ width: 130 }}
+                disabled={busy}
+              />
+              <Button size="small" onClick={applyToAll} disabled={busy}>
+                应用到全部
+              </Button>
+            </>
+          ) : null}
           <Button
             type="primary"
             size="small"
@@ -544,7 +667,7 @@ function PendingParsePanel({
         </Flex>
       </Flex>
 
-      {/* 文件行：信息 + 独立参数 + 操作 */}
+      {/* 文件行：信息 + （legacy）独立参数 + 操作 */}
       {docs.map((d) => {
         const { size, overlap } = rowValues(d)
         return (
@@ -580,27 +703,31 @@ function PendingParsePanel({
                 {formatBytes(d.size)} · {d.page_count != null ? `${d.page_count} 页/段` : '页数未知'}
               </Typography.Text>
             </Flex>
-            <InputNumber
-              min={200}
-              max={8000}
-              precision={0}
-              value={size ?? undefined}
-              placeholder={`切块 ${sizeHint}`}
-              onChange={(v) => setRow(d.id, { size: typeof v === 'number' ? v : null })}
-              style={{ width: 110 }}
-              disabled={busy}
-            />
-            <InputNumber
-              min={0}
-              max={2000}
-              precision={0}
-              value={overlap ?? undefined}
-              placeholder={`重叠 ${overlapHint}`}
-              onChange={(v) => setRow(d.id, { overlap: typeof v === 'number' ? v : null })}
-              style={{ width: 110 }}
-              disabled={busy}
-            />
-            <Tooltip title="按当前参数解析此文件">
+            {!isDocling ? (
+              <>
+                <InputNumber
+                  min={200}
+                  max={8000}
+                  precision={0}
+                  value={size ?? undefined}
+                  placeholder={`切块 ${sizeHint}`}
+                  onChange={(v) => setRow(d.id, { size: typeof v === 'number' ? v : null })}
+                  style={{ width: 110 }}
+                  disabled={busy}
+                />
+                <InputNumber
+                  min={0}
+                  max={2000}
+                  precision={0}
+                  value={overlap ?? undefined}
+                  placeholder={`重叠 ${overlapHint}`}
+                  onChange={(v) => setRow(d.id, { overlap: typeof v === 'number' ? v : null })}
+                  style={{ width: 110 }}
+                  disabled={busy}
+                />
+              </>
+            ) : null}
+            <Tooltip title="解析此文件">
               <Button
                 type="link"
                 size="small"
@@ -624,18 +751,21 @@ function PendingParsePanel({
   )
 }
 
-/** 重新解析按钮 + 参数 Popover（文档表内，indexed/failed 用；空=沿用已存值） */
+/** 重新解析按钮 + 参数 Popover（文档表内，indexed/failed 用；空=沿用已存值）。
+ *  docling 引擎下不暴露滑窗参数（结构单元预算服务端控制）。 */
 function ParsePopover({
   loading,
   disabled,
   storedSize,
   storedOverlap,
+  engine,
   onParse,
 }: {
   loading: boolean
   disabled: boolean
   storedSize: number
   storedOverlap: number
+  engine: 'legacy' | 'docling'
   onParse: (chunkSize?: number | null, chunkOverlap?: number | null) => void
 }): ReactNode {
   const [open, setOpen] = useState(false)
@@ -655,32 +785,40 @@ function ParsePopover({
       title="重新解析"
       content={
         <Flex vertical gap={8} style={{ width: 240 }}>
-          <label style={{ fontSize: 12 }}>
-            切块大小（chunk size，当前 {storedSize}）
-            <InputNumber
-              min={200}
-              max={8000}
-              precision={0}
-              value={size ?? undefined}
-              placeholder={`沿用 ${storedSize}`}
-              onChange={(v) => setSize(typeof v === 'number' ? v : null)}
-              style={{ width: '100%', marginTop: 2 }}
-            />
-          </label>
-          <label style={{ fontSize: 12 }}>
-            重叠（overlap，当前 {storedOverlap}）
-            <InputNumber
-              min={0}
-              max={2000}
-              precision={0}
-              value={overlap ?? undefined}
-              placeholder={`沿用 ${storedOverlap}`}
-              onChange={(v) => setOverlap(typeof v === 'number' ? v : null)}
-              style={{ width: '100%', marginTop: 2 }}
-            />
-          </label>
+          {engine === 'legacy' ? (
+            <>
+              <label style={{ fontSize: 12 }}>
+                切块大小（chunk size，当前 {storedSize}）
+                <InputNumber
+                  min={200}
+                  max={8000}
+                  precision={0}
+                  value={size ?? undefined}
+                  placeholder={`沿用 ${storedSize}`}
+                  onChange={(v) => setSize(typeof v === 'number' ? v : null)}
+                  style={{ width: '100%', marginTop: 2 }}
+                />
+              </label>
+              <label style={{ fontSize: 12 }}>
+                重叠（overlap，当前 {storedOverlap}）
+                <InputNumber
+                  min={0}
+                  max={2000}
+                  precision={0}
+                  value={overlap ?? undefined}
+                  placeholder={`沿用 ${storedOverlap}`}
+                  onChange={(v) => setOverlap(typeof v === 'number' ? v : null)}
+                  style={{ width: '100%', marginTop: 2 }}
+                />
+              </label>
+            </>
+          ) : (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              docling 结构单元解析：按文档结构直入索引，预算上界由服务端控制
+            </Typography.Text>
+          )}
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            重新解析将替换该文档全部索引块；留空沿用当前参数
+            重新解析将替换该文档全部索引块{engine === 'legacy' ? '；留空沿用当前参数' : ''}
           </Typography.Text>
           <Button type="primary" size="small" loading={loading} onClick={submit}>
             重新解析
@@ -688,41 +826,103 @@ function ParsePopover({
         </Flex>
       }
     >
-      <Tooltip title={disabled ? '解析中' : '重新解析（可调切块参数）'}>
+      <Tooltip title={disabled ? '解析中' : '重新解析'}>
         <Button type="link" size="small" icon={<Play size={14} />} disabled={disabled} />
       </Tooltip>
     </Popover>
   )
 }
 
-/** 单条检索命中：来源 + 分页定位 + 内容片段 + 相似度 */
-function SearchHit({ hit }: { hit: KbSearchResult }): ReactNode {
+/** 单条检索命中（D2）：来源 + 面包屑 + 内容片段 + 图片资产缩略图 + 相似度；
+ *  doc_uri/bbox 存在 → 整行可点「原文定位」（PDF.js 叠框 viewer）；
+ *  缺失（legacy / docx 直解 / 归档失败兜底）→ 文本卡片降级，不出入口。 */
+function SearchHit({
+  hit,
+  onLocate,
+}: {
+  hit: KbSearchResult
+  onLocate: (hit: KbSearchResult) => void
+}): ReactNode {
+  const locatable =
+    !!hit.doc_url && (!!hit.bbox || !!hit.assets?.some((a) => a.bbox && a.page))
+  const thumbs = (hit.assets ?? []).filter((a) => a.thumb_b64).slice(0, 3)
   return (
     <div
+      onClick={locatable ? () => onLocate(hit) : undefined}
       style={{
         border: '1px solid var(--color-border)',
         borderRadius: 8,
         padding: '8px 12px',
         background: 'var(--color-bg-hover, rgba(0,0,0,0.02))',
+        cursor: locatable ? 'pointer' : undefined,
       }}
     >
       <Flex justify="space-between" align="center" gap={8}>
         <Space size={6} wrap>
           <FileText size={13} style={{ color: 'var(--color-text-tertiary)' }} />
-          <Typography.Text ellipsis style={{ maxWidth: 360, fontWeight: 500 }}>
+          <Typography.Text ellipsis style={{ maxWidth: 320, fontWeight: 500 }}>
             {hit.filename}
           </Typography.Text>
+          {hit.kind === 'table' ? <Tag color="purple">表格</Tag> : null}
           {hit.page ? <Tag>P{hit.page}</Tag> : null}
           {hit.chunk_index != null ? <Tag>#{hit.chunk_index}</Tag> : null}
         </Space>
-        <Tag color="blue">{scorePct(hit.score)}</Tag>
+        <Space size={6}>
+          {locatable ? (
+            <Button
+              size="small"
+              icon={<Crosshair size={13} />}
+              onClick={(e) => {
+                // 行级 onClick 已定位；阻止冒泡避免连续触发两次
+                e.stopPropagation()
+                onLocate(hit)
+              }}
+            >
+              原文定位
+            </Button>
+          ) : null}
+          <Tag color="blue">{scorePct(hit.score)}</Tag>
+        </Space>
       </Flex>
+      {hit.heading_path?.length ? (
+        <Typography.Text
+          type="secondary"
+          ellipsis
+          style={{ display: 'block', marginTop: 4, fontSize: 12 }}
+          title={hit.heading_path.join(' / ')}
+        >
+          {hit.heading_path.join(' / ')}
+        </Typography.Text>
+      ) : null}
       <Typography.Paragraph
         ellipsis={{ rows: 3 }}
         style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--color-text-secondary)' }}
       >
-        {hit.content}
+        {sanitizeKbText(hit.content)}
       </Typography.Paragraph>
+      {thumbs.length ? (
+        <Flex gap={6} style={{ marginTop: 8 }}>
+          {thumbs.map((a, i) => (
+            <Tooltip key={i} title={a.caption || '图片资产'}>
+              <img
+                src={`data:image/jpeg;base64,${a.thumb_b64}`}
+                alt={a.caption || '资产缩略图'}
+                style={{
+                  height: 56,
+                  borderRadius: 4,
+                  border: '1px solid var(--color-border)',
+                }}
+              />
+            </Tooltip>
+          ))}
+        </Flex>
+      ) : null}
+      {locatable && thumbs.length ? (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          <ImageIcon size={11} style={{ marginRight: 4, verticalAlign: -1 }} />
+          缩略图仅供预览；viewer 内点击图片锚框可定位原图区域
+        </Typography.Text>
+      ) : null}
     </div>
   )
 }

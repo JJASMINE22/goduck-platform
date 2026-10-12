@@ -147,7 +147,7 @@ export function dispatchStreamEvent(e: SSEEvent): void {
     }
     case 'tool_result': {
       const p = e.payload as unknown as ToolResultPayload
-      store.setToolResult(p.tool_call_id, p.content)
+      store.setToolResult(p.tool_call_id, p.content, p.jev_kb)
       break
     }
     case 'todos': {

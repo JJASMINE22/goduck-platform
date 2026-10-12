@@ -110,5 +110,6 @@ export function useDragResize(opts: UseDragResizeOptions = {}) {
   /** 重置为初始尺寸（建议绑到手柄 onDoubleClick）。 */
   const reset = useCallback(() => apply(initial), [apply, initial])
 
-  return { size, onResizeStart, reset }
+  /** 暴露钳制写入：供外部在上限变化（如容器变窄）时同步收敛已存尺寸。 */
+  return { size, onResizeStart, reset, apply }
 }

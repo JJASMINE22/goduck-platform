@@ -1,13 +1,19 @@
 """知识库领域服务（plan §5.3）：入库 + 文档/库生命周期 + 检索。
 
 职责：
-- KB/文档 CRUD（PG 状态卡）+ 入库（parse→split→embed→ES）+ 检索（ES kNN）。
+- KB/文档 CRUD（PG 状态卡）+ 入库（parse→embed→ES）+ 检索（ES kNN）。
 - chunk 文本/向量真值入 Elasticsearch；PG 仅状态/元数据；MinIO 留底原始字节。
+- 双解析引擎（plan: kb-docling-parse-display）：legacy（轻量基线：pymupdf
+  文本层+滑窗切块；**无 OCR**——扫描件解析归 docling 独有，职责分工明确）|
+  docling（结构单元 IR v1.1 直入 ES，splitter 退役仅预算护栏；分片边车断点
+  续跑；pdf 原文件归档 kb-src 产出 doc_uri 证据锚定，docx 直解单元无
+  anchor 文本态降级；管线内 RapidOCR 仅扫描页兜底）。
 - 维度 per-KB（kb.dims 为取值来源）：创建可设（默认全局）；变更须 force 确认——
   ES mapping 维度不可变 ⇒ drop 索引 + 文档状态重置（UPDATE，不删数据，留底保留，
   用户手动重新解析）。
 - 解析手动触发（parse→ingest）：chunk_size/overlap 随解析持久化到 doc 行（生效值），
-  reindex 沿用 → 重建可复现。
+  reindex 沿用 → 重建可复现；docling 路径忽略滑窗参数（预算护栏 kb_unit_max_chars
+  由全局配置供给，双轨语义不串）。
 
 一致性模型（回应「杜绝 PG 持久化但 MinIO/ES 报错悬挂」）：
 - 注册文档（register_document）：MinIO 上传在 PG 写入之前 → MinIO 失败即中止
@@ -67,18 +73,39 @@ def _embed_progress(done: int, total: int, lo: int = 5) -> int:
 
     嵌入是耗时主体，解析/收尾快：把已嵌入比例映射到 [lo,99]，留出首尾余量——
     解析完成即将嵌入≈lo%，全部嵌入完≈99%，最终 indexed 固定 100%。
-    lo 默认 5（无 OCR）；打印件文档 OCR 阶段占 2..50，嵌入从 51 起。
+    lo 默认 5（legacy：原生提取毫秒级）；docling 文档解析阶段占 2..50，
+    嵌入从 51 起。
     """
     if total <= 0:
         return lo
     return min(99, lo + round(done / total * (99 - lo)))
 
 
-def _ocr_progress(done: int, total: int) -> int:
-    """OCR 阶段进度 → 2..50（扫描件逐页识别，耗时主体让位给嵌入段）。"""
+def _shard_progress(done: int, total: int) -> int:
+    """docling 解析阶段进度 → 2..50（片级粒度：解析为耗时主体，嵌入段 51..99）。"""
     if total <= 0:
         return 2
     return min(50, 2 + round(done / total * 48))
+
+
+# langdetect 确定性（软依赖：未安装 → lang 置 None，不阻断）
+try:
+    from langdetect import DetectorFactory
+
+    DetectorFactory.seed = 0
+except ImportError:  # pragma: no cover - 环境差异
+    DetectorFactory = None  # type: ignore[assignment]
+
+
+def _detect_lang(text: str) -> Optional[str]:
+    """语言检测（langdetect 级，C3）：前 400 字符采样；任何异常 → None。"""
+    try:
+        from langdetect import detect
+
+        lang = detect(text[:400])
+        return str(lang) if lang else None
+    except Exception:
+        return None
 
 
 class KnowledgeService:
@@ -176,12 +203,15 @@ class KnowledgeService:
         existing = await dbmod.get_kb(self.pool, kb_id)
         if existing is None:
             raise KeyError(f"kb {kb_id} not found")  # -> 404
-        # ES：删索引（全部 chunk）；MinIO：删该库全部原始字节（含 OCR 边车）；PG：CASCADE
+        # ES：删索引（全部 chunk）；MinIO：删该库全部原始字节（含边车/分片 IR/
+        # kb-src 归档）；PG：CASCADE
         self.vector_factory.drop_index(str(kb_id))
         docs = await dbmod.list_kb_documents(self.pool, kb_id)
         for d in docs:
             if d.get("bucket_key"):
                 self.minio.remove_object(self._sidecar_key(d["bucket_key"]))
+                self.minio.remove_prefix(f"{d['bucket_key']}.shards/")
+                self.minio.remove_prefix(f"kb-src/{d['id']}/")
                 self.minio.remove_object(d["bucket_key"])
         await dbmod.delete_kb(self.pool, kb_id)
 
@@ -216,7 +246,7 @@ class KnowledgeService:
             # ① MinIO 先行：失败即中止，不插 PG 行（无悬挂）
             try:
                 self.minio.put_object(bucket_key, raw, content_type=mime)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.exception("MinIO 存储失败 (kb=%s)", kb_id)
                 raise RuntimeError(f"MinIO 存储失败: {e}") from e
 
@@ -251,6 +281,8 @@ class KnowledgeService:
         self.vector_factory.delete_by_doc_id(str(kb_id), str(doc_id))
         if doc.get("bucket_key"):
             self.minio.remove_object(self._sidecar_key(doc["bucket_key"]))
+            self.minio.remove_prefix(f"{doc['bucket_key']}.shards/")
+            self.minio.remove_prefix(f"kb-src/{doc_id}/")
             self.minio.remove_object(doc["bucket_key"])
         await dbmod.delete_kb_document(self.pool, doc_id)
 
@@ -303,7 +335,9 @@ class KnowledgeService:
         """入库：pending→indexing→indexed|failed（幂等：先删旧 chunk）。
 
         - 嵌入维度 = kb.dims（随库行走；None=全局默认）→ store/嵌入客户端按维度构建。
-        - 切块参数 = doc 行生效值（解析时持久化；NULL 历史行回落全局默认并回写）。
+        - 引擎分派（C1）：``kb_parser_engine=legacy``（默认）走 pymupdf+滑窗
+          （现状零改动）；``docling`` 走结构单元直入 ES（splitter 退役，仅预算
+          护栏，见 _ingest_docling）。
         - raw_bytes：兼容旧内存路径；手动解析流程恒为 None（从 MinIO 取）。
         - 进度：按 embedding_batch_size 分批嵌入，每批后回写 progress（0..100），
           前端经文档列表轮询渲染进度条。
@@ -326,57 +360,362 @@ class KnowledgeService:
                     raise ValueError("无原始字节可入库（既未透传内存，也无 MinIO 留底）")
                 raw = await self._read_bytes_async(doc["bucket_key"])
 
-            # 生效参数：doc 行优先，NULL（历史行）回落全局默认并回写（保证可复现）
-            eff_size = doc.get("chunk_size") or self.settings.kb_chunk_size
-            eff_overlap = doc.get("chunk_overlap") or self.settings.kb_chunk_overlap
-            if doc.get("chunk_size") is None:
-                await dbmod.update_kb_document_parse_params(
-                    self.pool, doc_id, eff_size, eff_overlap
-                )
-
-            # 提取（pdf 逐页，扫描页 OCR 兜底 / docx 整篇）→ 切块。
-            # OCR 在 worker 线程执行（数百页扫描件可达数十分钟，禁阻塞事件循环），
-            # 进度分两段：OCR 2..50（线程内经 run_coroutine_threadsafe 回写）→
-            # 嵌入 51..99（无 OCR 文档维持 5..99）。
-            pages, ocr_doc = await self._extract_pages_with_ocr(doc, doc_id, raw)
-            chunks = self._split_pages(
-                pages, str(kb_id), str(doc_id), doc["filename"], doc["mime"],
-                chunk_size=eff_size, chunk_overlap=eff_overlap,
-            )
-            if not chunks:
-                raise ValueError(self._empty_reason(doc["mime"], pages))
-
-            store = self.vector_factory.get(str(kb_id), dims)
-            # 幂等：先删该文档旧 chunk（应对重传/重试/重建；新块数少于旧块时清残留）
-            self.vector_factory.delete_by_doc_id(str(kb_id), str(doc_id))
-
-            # 分批嵌入 + 入库：按 embedding_batch_size 切片，逐批 add_documents（各自嵌入+写ES），
-            # 每批后回写 progress。单批耗时随硬件而定（NAS CPU ~2s/文本）⇒ progress 粒度 = 单批。
-            total = len(chunks)
-            batch_size = max(1, self.settings.embedding_batch_size)
-            for start in range(0, total, batch_size):
-                batch = chunks[start:start + batch_size]
-                batch_ids = [f"{doc_id}_{i}" for i in range(start, start + len(batch))]
-                store.add_documents(batch, ids=batch_ids)
-                await dbmod.update_kb_document_status(
-                    self.pool, doc_id, status="indexing",
-                    progress=_embed_progress(
-                        start + len(batch), total, lo=51 if ocr_doc else 5
-                    ),
-                )
-
-            await dbmod.update_kb_document_status(
-                self.pool, doc_id, status="indexed", chunk_count=total,
-                page_count=doc.get("page_count"), progress=100,
-            )
-            logger.info(
-                "ingested doc=%s chunks=%d kb=%s dims=%s chunk=%d/%d",
-                doc_id, total, kb_id, dims, eff_size, eff_overlap,
-            )
-        except Exception as e:  # noqa: BLE001
+            if self.settings.kb_parser_engine == "docling":
+                await self._ingest_docling(kb_id, doc_id, doc, dims, raw)
+            else:
+                await self._ingest_legacy(kb_id, doc_id, doc, dims, raw)
+        except Exception as e:
             logger.exception("ingest failed doc=%s kb=%s", doc_id, kb_id)
             await dbmod.update_kb_document_status(
                 self.pool, doc_id, status="failed", error=str(e)[:500]
+            )
+
+    async def _ingest_legacy(
+        self,
+        kb_id: uuid.UUID,
+        doc_id: uuid.UUID,
+        doc: dict,
+        dims: Optional[int],
+        raw: bytes,
+    ) -> None:
+        """legacy 入库路径（轻量基线）：pymupdf 文本层提取 + 滑窗切块
+        （RecursiveCharacterTextSplitter 仅此路径保留）。无 OCR——扫描件
+        （无文本层）产出空页，由 _empty_reason 报错指引 docling 引擎。"""
+        # 生效参数：doc 行优先，NULL（历史行）回落全局默认并回写（保证可复现）
+        eff_size = doc.get("chunk_size") or self.settings.kb_chunk_size
+        eff_overlap = doc.get("chunk_overlap") or self.settings.kb_chunk_overlap
+        if doc.get("chunk_size") is None:
+            await dbmod.update_kb_document_parse_params(
+                self.pool, doc_id, eff_size, eff_overlap
+            )
+
+        # 提取（pdf 逐页文本层 / docx 整篇单页，毫秒级同步直跑）→ 切块
+        pages = self._extract_pages(raw, doc["mime"])
+        chunks = self._split_pages(
+            pages, str(kb_id), str(doc_id), doc["filename"], doc["mime"],
+            chunk_size=eff_size, chunk_overlap=eff_overlap,
+        )
+        if not chunks:
+            raise ValueError(self._empty_reason(doc["mime"], pages))
+
+        await self._write_chunks(
+            kb_id, doc_id, dims, chunks,
+            lo=5, page_count=doc.get("page_count"),
+            parser_engine="legacy",  # 显式回写：防 docling→legacy 重解析后标记悬挂
+        )
+        logger.info(
+            "ingested(legacy) doc=%s chunks=%d kb=%s dims=%s chunk=%d/%d",
+            doc_id, len(chunks), kb_id, dims, eff_size, eff_overlap,
+        )
+
+    async def _write_chunks(
+        self,
+        kb_id: uuid.UUID,
+        doc_id: uuid.UUID,
+        dims: Optional[int],
+        chunks: list[Document],
+        *,
+        lo: int = 5,
+        chunk_total: Optional[int] = None,
+        page_count: Optional[int] = None,
+        parser_engine: Optional[str] = None,
+    ) -> None:
+        """分批嵌入 + ES 写入 + 进度/终态回写（两引擎共用尾部）。
+
+        幂等基座：先删该文档旧 chunk（应对重传/重试/重建；新块数少于旧块时
+        清残留）。progress 粒度 = 单批（单批耗时随硬件而定）。
+        """
+        total = chunk_total if chunk_total is not None else len(chunks)
+        store = self.vector_factory.get(str(kb_id), dims)
+        self.vector_factory.delete_by_doc_id(str(kb_id), str(doc_id))
+
+        ensured = False
+        if parser_engine == "docling":
+            # 既有索引 live 增列（B3）；langchain 首批建索引的场景在首批后补调
+            self.vector_factory.ensure_docling_fields(str(kb_id))
+            ensured = True
+
+        batch_size = max(1, self.settings.embedding_batch_size)
+        for start in range(0, len(chunks), batch_size):
+            batch = chunks[start:start + batch_size]
+            # _id 必须取 chunk 自带 chunk_index，而非列表位置：docling 的
+            # unit_index 在预算切分后重编号（图片/空单元被滤除致位置与序号
+            # 错位）。曾按位置生成 _id，anchor_cards 以 {doc_id}_{chunk_index}
+            # 确定性查询 miss → 锚定卡全量 null、命中降级纯文本行。legacy
+            # 两个值恒等不受影响；chunk_index 缺失回落位置序（防御未来引擎）。
+            batch_ids = [
+                f"{doc_id}_{c.metadata.get('chunk_index', i)}"
+                for i, c in enumerate(batch, start=start)
+            ]
+            store.add_documents(batch, ids=batch_ids)
+            if parser_engine == "docling" and not ensured:
+                self.vector_factory.ensure_docling_fields(str(kb_id))
+                ensured = True
+            await dbmod.update_kb_document_status(
+                self.pool, doc_id, status="indexing",
+                progress=_embed_progress(start + len(batch), total, lo=lo),
+            )
+
+        await dbmod.update_kb_document_status(
+            self.pool, doc_id, status="indexed", chunk_count=total,
+            page_count=page_count, parser_engine=parser_engine, progress=100,
+        )
+
+    # ============================ docling 路径（C1-C4）========================
+
+    # v3：边车校验新增 device（kb_docling_device）——设备切换（cpu↔cuda）会
+    # 带来 OCR/布局输出细微差异，参数不一致即判未命中重跑，维持"重建可复现"。
+    _SHARD_SIDECAR_VERSION = 3
+
+    @staticmethod
+    def _shard_sidecar_key(bucket_key: str, shard_index: int) -> str:
+        return f"{bucket_key}.shards/{shard_index}.ir.json"
+
+    @staticmethod
+    def _kb_src_key(doc_id: uuid.UUID, doc_version: int, filename: str) -> str:
+        """C4 原文件归档键：``kb-src/{doc_id}/v{doc_version}/{filename}.pdf``
+        （doc_uri 契约——仅 pdf 产出；文件名剥路径分隔符防键注入）。"""
+        safe = (
+            (filename or "document.pdf").replace("\\", "/").rsplit("/", 1)[-1].strip()
+            or "document.pdf"
+        )
+        return f"kb-src/{doc_id}/v{max(1, int(doc_version))}/{safe}"
+
+    async def _ingest_docling(
+        self,
+        kb_id: uuid.UUID,
+        doc_id: uuid.UUID,
+        doc: dict,
+        dims: Optional[int],
+        raw: bytes,
+    ) -> None:
+        """docling 入库路径（C1-C4）：分片解析 → 结构单元直入 ES。
+
+        - 分片调度（C2）：片 = 独立 convert + 独立 IR 边车
+          （{bucket_key}.shards/{n}.ir.json，形状/参数不匹配视为未命中）；
+          片级断点：中途 kill worker 后重试只补缺失片（既有纪律平移）。
+        - docx：声明式直解（无 shard、无 OCR、无 anchor，doc_uri 置空）。
+        - 进度：解析片 i/N → 2..50；嵌入 → 51..99（docling 解析为耗时主体）。
+        - embed 输入 = heading_path + "\\n" + text_ctx（语境前缀；ES 存原文
+          text_ctx，检索出口回放原文——reader 消费不掺面包屑）。
+        """
+        from app.services import docling_parser
+
+        if not docling_parser.docling_available():
+            raise RuntimeError(
+                "kb_parser_engine=docling 但未安装 docling"
+                "（pip install 'docling>=2.130,<3'），或将 KB_PARSER_ENGINE 切回 legacy"
+            )
+
+        st = self.settings
+        pdf_doc = is_pdf(doc["mime"])
+
+        page_count: Optional[int] = None
+        shards: list[Optional[tuple[int, int]]]
+        if pdf_doc:
+            page_count = await asyncio.to_thread(docling_parser.pdf_page_count, raw)
+            page_count = page_count or doc.get("page_count") or 0
+            if page_count <= 0:
+                raise ValueError("无法读取 PDF 页数（文件损坏？），无法分片解析")
+            shards = docling_parser.shard_ranges(
+                page_count, st.kb_docling_shard_pages
+            )
+        else:
+            shards = [None]  # docx：整篇单次直解
+
+        units: list[docling_parser.KnowledgeUnit] = []
+        n_shards = len(shards)
+        for i, shard in enumerate(shards):
+            units_i: Optional[list[docling_parser.KnowledgeUnit]] = None
+            if doc.get("bucket_key"):
+                units_i = await self._load_shard_sidecar(
+                    doc["bucket_key"], i, shard, st.kb_unit_max_chars,
+                    st.kb_docling_device,
+                )
+                if units_i is not None:
+                    logger.info(
+                        "doc=%s 命中分片 IR 缓存（%d/%d，%d 单元）",
+                        doc_id, i + 1, n_shards, len(units_i),
+                    )
+            if units_i is None:
+                units_i = await asyncio.to_thread(
+                    docling_parser.parse,
+                    raw, doc["mime"], shard,
+                    artifacts_path=st.kb_docling_artifacts_path or None,
+                    threads=st.kb_docling_threads,
+                    device=st.kb_docling_device,
+                    unit_max_chars=st.kb_unit_max_chars,
+                )
+                if pdf_doc and units_i:
+                    await asyncio.to_thread(self._attach_thumbs, raw, units_i)
+                if doc.get("bucket_key") and units_i:
+                    await self._save_shard_sidecar(
+                        doc["bucket_key"], i, shard, st.kb_unit_max_chars,
+                        st.kb_docling_device, units_i,
+                    )
+            await dbmod.update_kb_document_status(
+                self.pool, doc_id, status="indexing",
+                progress=_shard_progress(i + 1, n_shards),
+            )
+            units.extend(units_i)
+
+        embeddable = [
+            u for u in units if u.kind in ("text", "table") and u.text_ctx.strip()
+        ]
+        if not embeddable:
+            raise ValueError(
+                "解析后无可索引文本单元（空文档、解析失败或文档仅含图片资产）"
+            )
+
+        # C4 原文件归档（doc_uri 契约：仅 pdf）。失败降级为无锚定命中（文本
+        # 卡片），不阻断入库——锚定是增强，不是正确性依赖。
+        doc_uri: Optional[str] = None
+        if pdf_doc:
+            doc_uri = self._kb_src_key(
+                doc_id, doc.get("doc_version") or 1, doc["filename"]
+            )
+            try:
+                await asyncio.to_thread(
+                    self.minio.put_object, doc_uri, raw, "application/pdf"
+                )
+            except Exception:
+                logger.warning("kb-src 原文件归档失败（命中将降级为文本卡片）", exc_info=True)
+                doc_uri = None
+
+        chunks: list[Document] = []
+        for u in embeddable:
+            u.doc_uri = doc_uri
+            u.lang = _detect_lang(u.text_ctx)
+            embed_text = (
+                " > ".join(u.heading_path) + "\n" + u.text_ctx
+                if u.heading_path
+                else u.text_ctx
+            )
+            chunks.append(
+                Document(
+                    page_content=embed_text,
+                    metadata={
+                        "kb_id": str(kb_id),
+                        "doc_id": str(doc_id),
+                        "filename": doc["filename"],
+                        "mime": doc["mime"],
+                        "chunk_index": u.unit_index,
+                        "page": u.page,
+                        "kind": u.kind,
+                        "heading_path": u.heading_path or None,
+                        "text_ctx": u.text_ctx,
+                        "lang": u.lang,
+                        "doc_uri": u.doc_uri,
+                        "page_rotate": u.page_rotate,
+                        "bbox": u.bbox,
+                        "assets": u.assets or None,
+                    },
+                )
+            )
+
+        await self._write_chunks(
+            kb_id, doc_id, dims, chunks,
+            lo=51, chunk_total=len(embeddable),
+            page_count=page_count or doc.get("page_count"),
+            parser_engine="docling",
+        )
+        logger.info(
+            "ingested(docling) doc=%s units=%d(embed=%d) kb=%s shards=%d max_chars=%d",
+            doc_id, len(units), len(embeddable), kb_id, n_shards, st.kb_unit_max_chars,
+        )
+
+    @staticmethod
+    def _attach_thumbs(raw: bytes, units: list) -> None:
+        """资产缩略图（best-effort）：绑定资产的锚点区域低清渲染入 IR
+        （随边车缓存；仅命中列表预览用——VLM/reader 原图回源走 MinIO，D3）。"""
+        from app.services import docling_parser
+
+        anchors: list[tuple[int, dict]] = []
+        slots: list[tuple[int, int]] = []
+        for ui, u in enumerate(units):
+            for ai, a in enumerate(u.assets):
+                if isinstance(a.get("bbox"), dict) and a.get("page"):
+                    anchors.append((a["page"], a["bbox"]))
+                    slots.append((ui, ai))
+        if not anchors:
+            return
+        thumbs = docling_parser.render_anchor_thumbs(raw, anchors)
+        for (ui, ai), thumb in zip(slots, thumbs):
+            if thumb:
+                units[ui].assets[ai]["thumb_b64"] = thumb
+
+    async def _load_shard_sidecar(
+        self,
+        bucket_key: str,
+        shard_index: int,
+        shard: Optional[tuple[int, int]],
+        unit_max_chars: int,
+        device: str,
+    ) -> Optional[list]:
+        """读分片 IR 边车；形状/参数不匹配（版本升级、预算/设备调整、分片重排）
+        一律视为未命中（既有纪律），绝不带病复活缓存。"""
+        from app.services import docling_parser
+
+        def _read() -> Optional[dict]:
+            key = self._shard_sidecar_key(bucket_key, shard_index)
+            if not self.minio.object_exists(key):
+                return None
+            try:
+                data = json.loads(self.minio.get_object(key))
+                return data if isinstance(data, dict) else None
+            except Exception:
+                return None
+
+        data = await asyncio.to_thread(_read)
+        if data is None:
+            return None
+        if (
+            data.get("version") != self._SHARD_SIDECAR_VERSION
+            or data.get("engine") != "docling"
+            or data.get("ir_version") != docling_parser.IR_VERSION
+            or data.get("unit_max_chars") != unit_max_chars
+            or data.get("device") != device
+            or data.get("shard") != (list(shard) if shard else None)
+        ):
+            return None
+        return docling_parser.units_from_payload(data.get("units"))
+
+    async def _save_shard_sidecar(
+        self,
+        bucket_key: str,
+        shard_index: int,
+        shard: Optional[tuple[int, int]],
+        unit_max_chars: int,
+        device: str,
+        units: list,
+    ) -> None:
+        from app.services import docling_parser
+
+        payload = json.dumps(
+            {
+                "version": self._SHARD_SIDECAR_VERSION,
+                "engine": "docling",
+                "ir_version": docling_parser.IR_VERSION,
+                "shard": list(shard) if shard else None,
+                "unit_max_chars": unit_max_chars,
+                "device": device,
+                "units": docling_parser.units_to_payload(units),
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+        def _write() -> None:
+            self.minio.put_object(
+                self._shard_sidecar_key(bucket_key, shard_index),
+                payload,
+                content_type="application/json",
+            )
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception:
+            logger.warning(
+                "分片 IR 边车写入失败（不影响入库，重解析将重跑该分片）", exc_info=True
             )
 
     # ============================ Search ====================================
@@ -454,153 +793,107 @@ class KnowledgeService:
         merged = merged[:k]
 
         results: list[dict] = []
+        # doc_uri → 预签名 URL（D1）：同文档命中共享一次签名；失败降级为
+        # 仅 doc_uri（前端不出 viewer 入口）。legacy/无 anchor 命中全 None——
+        # B2 可空契约：存在即锚定、缺失即文本态降级。
+        presigned: dict[str, str] = {}
         for d, score in merged:
             md = d.metadata or {}
+            doc_uri = md.get("doc_uri")
+            doc_url: Optional[str] = None
+            if doc_uri:
+                if doc_uri not in presigned:
+                    try:
+                        presigned[doc_uri] = self.minio.presign_get(doc_uri)
+                    except Exception:
+                        logger.warning("doc_uri 预签名失败 %s", doc_uri, exc_info=True)
+                        presigned[doc_uri] = ""
+                doc_url = presigned[doc_uri] or None
             results.append(
                 {
-                    "content": d.page_content,
+                    "content": md.get("text_ctx") or d.page_content,
                     "score": float(score),
                     "filename": md.get("filename", ""),
                     "doc_id": md.get("doc_id"),
                     "page": md.get("page"),
                     "chunk_index": md.get("chunk_index"),
                     "kb_id": md.get("kb_id"),
+                    "kind": md.get("kind"),
+                    "heading_path": md.get("heading_path"),
+                    "page_rotate": md.get("page_rotate"),
+                    "doc_uri": doc_uri,
+                    "doc_url": doc_url,
+                    "bbox": md.get("bbox"),
+                    "assets": md.get("assets"),
                 }
             )
         return results
 
-    # ============================ Parsing helpers ===========================
+    # ============================ 锚定卡（聊天侧补全）=========================
 
-    async def _extract_pages_with_ocr(
-        self, doc: dict, doc_id: uuid.UUID, raw: bytes
-    ) -> tuple[list[tuple[int, str]], bool]:
-        """提取（pdf：文本层优先 + 扫描页 OCR 兜底；docx：整篇单页）。
+    async def anchor_cards(self, items: list[dict]) -> list[Optional[dict]]:
+        """kb_search 工具结果的锚定补全（聊天侧渲染通道）。
 
-        → (pages, ocr_doc)：ocr_doc=该文档走过 OCR（或命中其结果缓存）→
-        嵌入进度段让位（51..99），否则退回原生提取（毫秒级，同步直跑）。
+        输入 = 工具结果 hits 的键组（kb_id/doc_id/chunk_index，确定性 chunk id
+        ``{doc_id}_{chunk_index}`` 两引擎同构）；输出与输入等长对位，缺失/无锚
+        的位为 None（legacy / docx 直解命中降级为纯文本行）。
 
-        MinIO 边车缓存（{bucket_key}.pages.json）：OCR 结果（含原生页文本）
-        整体留底——reindex/调整切块参数重新解析时跳过重 OCR（数百页扫描件
-        × 1-3s/页 的成本只付一次）。缓存键含 dpi/min_chars（参数变更自动
-        失效重跑）；原始字节变更必然伴随新 doc_id，无悬挂缓存风险。
+        与 mcp-servers 解耦的关键：kb_search 面向 LLM 只回文本；锚定元数据
+        （bbox/assets/thumb）由前端持 hits 键组来 backend 懒取——本进程持有
+        MinIO（doc_uri → 预签名），且懒签规避工具结果持久化后 URL 过期。
         """
-        from app.services import pdf_ocr
-
-        if (
-            not is_pdf(doc["mime"])
-            or not self.settings.kb_pdf_ocr_enabled
-            or not pdf_ocr.ocr_available()
-        ):
-            return self._extract_pages(raw, doc["mime"]), False
-
-        dpi = self.settings.kb_pdf_ocr_dpi
-        min_chars = self.settings.kb_pdf_ocr_min_chars
-
-        if doc.get("bucket_key"):
-            cached = await self._load_pages_sidecar(doc["bucket_key"], dpi, min_chars)
-            if cached is not None:
-                logger.info("doc=%s 命中 OCR 提取缓存（%d 页）", doc_id, len(cached))
-                return cached, True
-
-        loop = asyncio.get_running_loop()
-
-        def on_page(done: int, total: int) -> None:
-            # 工作线程 → 事件循环封送；进度回写失败不致命（DB 抖动），静默消费
-            fut = asyncio.run_coroutine_threadsafe(
-                dbmod.update_kb_document_status(
-                    self.pool, doc_id, status="indexing",
-                    progress=_ocr_progress(done, total),
-                ),
-                loop,
+        presigned: dict[str, str] = {}
+        out: list[Optional[dict]] = []
+        for item in items:
+            kb_id = str(item["kb_id"])
+            chunk_id = f"{item['doc_id']}_{item['chunk_index']}"
+            source = await asyncio.to_thread(
+                self.vector_factory.get_chunk_source, kb_id, chunk_id
             )
-            fut.add_done_callback(lambda f: f.exception())
-
-        pages, ocr_pages = await asyncio.to_thread(
-            pdf_ocr.extract_pdf_pages, raw, dpi=dpi, min_chars=min_chars, on_page=on_page
-        )
-        # 全空（OCR 整体失败/纯图形文档）不落缓存——保留重试机会；
-        # 混合文档（含原生文本）提取结果确定，正常留底。
-        if ocr_pages and doc.get("bucket_key") and any(t.strip() for _, t in pages):
-            await self._save_pages_sidecar(doc["bucket_key"], pages, dpi, min_chars)
-        return pages, ocr_pages > 0
-
-    _SIDECAR_VERSION = 1
-
-    @staticmethod
-    def _sidecar_key(bucket_key: str) -> str:
-        return f"{bucket_key}.pages.json"
-
-    async def _load_pages_sidecar(
-        self, bucket_key: str, dpi: int, min_chars: int
-    ) -> Optional[list[tuple[int, str]]]:
-        """读边车缓存；形状/参数不匹配（版本升级、dpi 调整）一律视为未命中。"""
-
-        def _read() -> Optional[dict]:
-            key = self._sidecar_key(bucket_key)
-            if not self.minio.object_exists(key):
-                return None
-            try:
-                data = json.loads(self.minio.get_object(key))
-                return data if isinstance(data, dict) else None
-            except Exception:
-                return None
-
-        data = await asyncio.to_thread(_read)
-        if data is None:
-            return None
-        if (
-            data.get("version") != self._SIDECAR_VERSION
-            or data.get("dpi") != dpi
-            or data.get("min_chars") != min_chars
-        ):
-            return None
-        raw_pages = data.get("pages")
-        if not isinstance(raw_pages, list):
-            return None
-        out: list[tuple[int, str]] = []
-        for p in raw_pages:
-            if not (isinstance(p, (list, tuple)) and len(p) == 2):
-                return None
-            out.append((int(p[0]), str(p[1])))
+            if source is None:
+                out.append(None)
+                continue
+            md = source.get("metadata") or {}
+            doc_uri = md.get("doc_uri")
+            if doc_uri and doc_uri not in presigned:
+                try:
+                    presigned[doc_uri] = self.minio.presign_get(doc_uri)
+                except Exception:
+                    logger.warning("doc_uri 预签名失败 %s", doc_uri, exc_info=True)
+                    presigned[doc_uri] = ""
+            out.append(
+                {
+                    "content": md.get("text_ctx") or source.get("text", ""),
+                    "filename": md.get("filename", ""),
+                    "heading_path": md.get("heading_path"),
+                    "page": md.get("page"),
+                    "page_rotate": md.get("page_rotate"),
+                    "kind": md.get("kind"),
+                    "doc_uri": doc_uri,
+                    "doc_url": (presigned.get(doc_uri) or None) if doc_uri else None,
+                    "bbox": md.get("bbox"),
+                    "assets": md.get("assets"),
+                }
+            )
         return out
 
-    async def _save_pages_sidecar(
-        self, bucket_key: str, pages: list[tuple[int, str]], dpi: int, min_chars: int
-    ) -> None:
-        payload = json.dumps(
-            {
-                "version": self._SIDECAR_VERSION,
-                "dpi": dpi,
-                "min_chars": min_chars,
-                "pages": [[no, text] for no, text in pages],
-            },
-            ensure_ascii=False,
-        ).encode("utf-8")
+    # ============================ Parsing helpers ===========================
 
-        def _write() -> None:
-            self.minio.put_object(
-                self._sidecar_key(bucket_key), payload, content_type="application/json"
-            )
-
-        try:
-            await asyncio.to_thread(_write)
-        except Exception:
-            logger.warning("OCR 结果边车写入失败（不影响入库，重解析将重跑 OCR）", exc_info=True)
+    # （历史注记）legacy 曾有 pdf_ocr 扫描页 OCR 兜底 + {bucket_key}.pages.json
+    # 结果边车（dpi/min_chars 键控）。已随「扫描件解析归 docling 独有」的分工
+    # 一并退役：legacy 只做原生文本层提取，扫描件经 _empty_reason 报错指引
+    # 切换 docling 引擎。MinIO 中的存量 .pages.json 对象成为无害遗留，可另行
+    # 人工清理。docling 侧的 IR 分片边车（.shards/*.ir.json）不受影响。
 
     @staticmethod
     def _empty_reason(mime: str, pages: list[tuple[int, str]]) -> str:
-        """空文档报错文案：区分"扫描件且 OCR 缺位"（可行动）与一般空文档。"""
-        from app.services import pdf_ocr
-
+        """空文档报错文案：区分"扫描件"（可行动：切 docling 引擎重解析）
+        与一般空文档。"""
         if is_pdf(mime) and pages and not any(t.strip() for _, t in pages):
-            if pdf_ocr.ocr_available():
-                return (
-                    "解析后无可索引文本：PDF 无文本层，OCR 也未识别出内容"
-                    "（扫描质量过低或为纯图形页）"
-                )
             return (
-                "解析后无可索引文本：PDF 为无文本层扫描件，且 OCR 未启用——"
-                "请安装 rapidocr-onnxruntime 或开启 kb_pdf_ocr_enabled"
+                "解析后无可索引文本：PDF 为无文本层扫描件——legacy 引擎不支持"
+                " OCR（扫描件解析为 docling 引擎专属能力），请将部署配置"
+                " KB_PARSER_ENGINE=docling 后对该文档重新解析"
             )
         return "解析后无可索引文本（空文档或解析失败）"
 
@@ -617,7 +910,7 @@ class KnowledgeService:
         """切块（按文档生效参数构造 splitter）→ 带 metadata。
 
         RecursiveCharacterTextSplitter 无状态且构造廉价，按参即时构造不缓存。
-        pages 由 _extract_pages_with_ocr 产出（pdf 逐页 / docx 整篇单页）；
+        pages 由 _extract_pages 产出（pdf 逐页 / docx 整篇单页）；
         空页在此统一过滤。
         """
         splitter = RecursiveCharacterTextSplitter(
@@ -647,8 +940,8 @@ class KnowledgeService:
     def _extract_pages(raw: bytes, mime: str) -> list[tuple[int, str]]:
         """→ [(page_no, text)]。原生提取（pdf 逐页文本层 / docx 整篇单页）。
 
-        pdf 无文本层（扫描件）时逐页为空——OCR 兜底见 _extract_pages_with_ocr，
-        本方法是其降级路径（OCR 关闭/未安装）与 docx 的直通路径。
+        pdf 无文本层（扫描件）时逐页为空——legacy 不做 OCR，由上层
+        _empty_reason 报错指引切换 docling 引擎（扫描件解析为其专属能力）。
         """
         if is_pdf(mime):
             try:
@@ -659,7 +952,7 @@ class KnowledgeService:
                     for i in range(pdf.page_count):
                         out.append((i + 1, pdf[i].get_text("text")))
                 return out
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("pdf 解析失败，将作空文档处理")
                 return []
         if is_docx(mime):
@@ -669,7 +962,7 @@ class KnowledgeService:
                 doc = Document(io.BytesIO(raw))
                 text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
                 return [(1, text)] if text else []
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("docx 解析失败，将作空文档处理")
                 return []
         return []

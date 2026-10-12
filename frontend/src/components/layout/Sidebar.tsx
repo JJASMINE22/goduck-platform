@@ -1,11 +1,13 @@
 /* 侧边导航 —— 对应 DESIGN §9 路由结构。AntD Menu + react-router 导航。
-   能力驱动（F2）：知识库菜单仅在后端 kb_enabled=true 时出现（单一真相源 /health）。 */
+    能力驱动（F2）：知识库菜单仅在后端 kb_enabled=true 时出现（单一真相源 /health）。
+    底部为用户区（账号芯片 + 切换 Popover）：身份常驻导航末端，顶栏不再承载。 */
 import { Bot, BookOpen, CalendarClock, Cpu, Database, MessagesSquare, Network } from 'lucide-react'
 import { Menu } from 'antd'
 import type { MenuProps } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useMemo, type ReactNode } from 'react'
 import { useCapabilities } from '@/hooks/useCapabilities'
+import { UserSwitcher } from './UserSwitcher'
 
 type MenuItem = Required<MenuProps>['items'][number]
 
@@ -78,6 +80,18 @@ export function Sidebar({ collapsed = false }: { collapsed?: boolean }): ReactNo
         onClick={onClick}
         style={{ flex: 1, borderInlineEnd: 'none', overflowX: 'hidden', overflowY: 'auto', paddingBottom: 8 }}
       />
+      {/* 用户区（菜单下方、折叠钮上方）：展开为整行芯片，折叠为居中头像圆钮 */}
+      <div
+        style={{
+          flexShrink: 0,
+          display: 'flex',
+          justifyContent: 'center',
+          padding: collapsed ? '10px 0 12px' : '10px 12px 12px',
+          borderTop: '1px solid var(--color-border-soft)',
+        }}
+      >
+        <UserSwitcher collapsed={collapsed} />
+      </div>
     </div>
   )
 }

@@ -18,6 +18,7 @@ from psycopg_pool import AsyncConnectionPool
 from app.models import db as dbmod
 from app.models.schemas import KbRef, UploadOut
 from app.services.thinking_patch import extract_reasoning
+from app.services.tool_content import content_to_str
 
 logger = logging.getLogger(__name__)
 
@@ -600,7 +601,9 @@ def _serialize_message(
         "id": getattr(msg, "id", None),
         "role": role,
         "name": getattr(msg, "name", None),
-        "content": display if isinstance(display, str) else str(display),
+        # 块列表（MCP wire 形态）提取 text 拼接——str() 会产出 Python repr，
+        # 前端 JSON.parse 必败（kb_search 卡片曾据此误报「检索失败」）
+        "content": content_to_str(display),
     }
     # 思考内容回显（仅 ai 消息携带，GLM/DeepSeek reasoning_content 随 checkpoint
     # 持久化）：前端历史回放据此重建"思考过程"折叠块，与实时流 ThinkingBlock
@@ -618,6 +621,10 @@ def _serialize_message(
     tool_call_id = getattr(msg, "tool_call_id", None)
     if tool_call_id:
         out["tool_call_id"] = tool_call_id
+        # jev kb 门控观测标记（仅 tool 消息；门控注入时才有，与 SSE 通道同键）
+        jev_kb = (getattr(msg, "response_metadata", None) or {}).get("jev_kb")
+        if isinstance(jev_kb, str):
+            out["jev_kb"] = jev_kb
     if attachments:
         out["attachments"] = attachments
     if kbs:

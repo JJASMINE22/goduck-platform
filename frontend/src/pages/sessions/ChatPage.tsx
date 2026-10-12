@@ -569,6 +569,30 @@ export function ChatPage(): ReactNode {
     return unsub
   }, [scrollToBottom])
 
+  // —— 贴底鲁棒化（内容高度沉降跟随）——
+  // 历史灌入后的单次 scrollTop=scrollHeight 会败给异步撑高：mermaid/KaTeX/
+  // 图片在滚动之后才落定高度，把最新一轮推到视口下方（进入会话不在最底的
+  // 根因）。ResizeObserver 观察阅读列实际高度，贴底且未悬停期间一变即追底，
+  // 高度稳定后自然静止；上滑翻历史（pinnedRef=false）或悬停瞄操作时零打扰。
+  // rAF 合帧：连续撑高（流式/多图加载）至多排队一次滚动，与上方 store 订阅
+  // 互为兜底（滚动幂等，重复触发无害）。依赖 session?.id：加载完成/切换会话
+  // 时滚动 DOM 才挂载，届时重绑观察。
+  useEffect(() => {
+    const column = scrollRef.current?.querySelector<HTMLElement>('.chat-panel__column')
+    if (!column || typeof ResizeObserver === 'undefined') return
+    let raf = 0
+    const ro = new ResizeObserver(() => {
+      if (!pinnedRef.current || hoverRef.current) return
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(scrollToBottom)
+    })
+    ro.observe(column)
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+    }
+  }, [session?.id, scrollToBottom])
+
   // 页面标题/动作上提顶部 Header 卡（与列表页一致的模块化布局）。
   // 每次渲染重注册：状态 Tag（生成中/待审批）与动作回调闭包保持新鲜；
   // 早退分支（加载中）也会注册，标题用短 id 兜底。
@@ -717,8 +741,10 @@ export function ChatPage(): ReactNode {
               </div>
               </div>
               {/* 回合导航轨：首个回合落定即渲染（流式/待审批中的末轮暂不入轨）；
-                  形态随面板宽度分级（容器查询，见 index.css） */}
-              <TurnRail scrollRef={scrollRef} />
+                  形态随面板宽度分级（容器查询，见 index.css）。
+                  key=sessionId：同路由切换会话时重挂复位折叠态（TurnRail 内部
+                  useState 不随 store reset 清空） */}
+              <TurnRail key={sessionId} scrollRef={scrollRef} />
 
               {/* 玻璃 dock：composer 悬浮于滚动区底部（流体玻璃取景消息流，
                   发送后消息从玻璃下滚过、模糊可见）；dock 本身不拦截指针，

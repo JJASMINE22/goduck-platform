@@ -35,6 +35,22 @@ from app.services.embedding import build_embeddings
 
 logger = logging.getLogger(__name__)
 
+# docling 结构单元字段（B3）：既有索引 live 增列（put_mapping 增量）。
+# 纯增量契约——dense_vector 不动、无 reindex、不停写；legacy 单元缺省为 null
+# （数据双轨期）。bbox/assets 只进 _source 不索引（object enabled:false）。
+# 逐字段独立 put_mapping：单字段类型冲突（早期动态映射先建了 text 之类）
+# 只降级该字段并告警，不阻塞其余字段与入库（lang/整型过滤 v1 不依赖）。
+_DOCLING_FIELDS: dict[str, dict] = {
+    "heading_path": {"type": "text"},
+    "text_ctx": {"type": "text"},
+    "kind": {"type": "keyword"},
+    "lang": {"type": "keyword"},
+    "doc_uri": {"type": "keyword"},
+    "page_rotate": {"type": "integer"},
+    "bbox": {"type": "object", "enabled": False},
+    "assets": {"type": "object", "enabled": False},
+}
+
 
 def _es_kwargs(settings: Settings) -> dict:
     """从 settings 提取 ES 认证参数（供 ElasticsearchStore 与原生 client 共用）。"""
@@ -135,8 +151,53 @@ class VectorStoreFactory:
         try:
             resp = self._client.indices.get_mapping(index=index_name)
             return resp[index_name]["mappings"]["properties"]["vector"]["dims"]
-        except Exception:  # noqa: BLE001
+        except Exception:
             # 索引不存在（404）/ 无 vector 字段 → 空库，无真值
+            return None
+
+    def ensure_docling_fields(self, kb_id: str) -> None:
+        """给既有索引 live 增列 docling 字段（幂等；索引不存在 → 静默跳过）。
+
+        调用时机（docling 入库路径）：写前调一次（覆盖既有索引）；索引由
+        langchain 首批 add_documents 自动创建的场景，首批成功后再补调一次。
+        首批动态映射可能先建出 text 型 lang/doc_uri——put_mapping 冲突即保持
+        动态类型（检索出口从 _source 取值，不受 mapping 类型影响）。
+        """
+        index_name = f"kb_{kb_id}"
+        try:
+            resp = self._client.indices.get_mapping(index=index_name)
+            existing = (
+                resp[index_name].get("mappings", {}).get("properties", {}).get("metadata", {})
+            )
+            existing_sub = existing.get("properties", {}) if isinstance(existing, dict) else {}
+        except Exception:
+            return  # 索引不存在（空库）→ 无可增列
+        for field_name, spec in _DOCLING_FIELDS.items():
+            if field_name in existing_sub:
+                continue  # 幂等：已显式映射（动态映射先建的字段也跳过，避免冲突）
+            try:
+                self._client.indices.put_mapping(
+                    index=index_name,
+                    body={"properties": {"metadata": {"properties": {field_name: spec}}}},
+                )
+            except Exception as e:
+                logger.warning(
+                    "kb=%s 增列 metadata.%s 失败（保持动态映射，不影响入库）: %s",
+                    kb_id, field_name, e,
+                )
+
+    def get_chunk_source(self, kb_id: str, chunk_id: str) -> Optional[dict]:
+        """按确定性 chunk id（``{doc_id}_{chunk_index}``，两引擎同构）读单个
+        chunk 的 ``_source``（text/metadata，不含向量字段也可用）。
+
+        索引不存在 / chunk 缺失 → None（聊天侧锚定卡按空位降级，非故障）。
+        供 knowledge_service.anchor_cards（kb_search 工具结果的锚定补全）。
+        """
+        try:
+            resp = self._client.get(index=f"kb_{kb_id}", id=chunk_id)
+            source = resp.get("_source")
+            return source if isinstance(source, dict) else None
+        except Exception:
             return None
 
     def drop_index(self, kb_id: str) -> None:
@@ -149,7 +210,7 @@ class VectorStoreFactory:
         try:
             self._client.indices.delete(index=index_name, ignore_unavailable=True)
             logger.info("已删除 ES 索引 %s", index_name)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("删除 ES 索引 %s 失败: %s", index_name, e)
         # 失效缓存：单库缓存按 kb_id 前缀；多索引缓存键可能内含该索引名（逗号拼接）
         self._by_kb = {k: v for k, v in self._by_kb.items() if k[0] != kb_id}
@@ -171,12 +232,12 @@ class VectorStoreFactory:
                 refresh=True,
                 conflicts="proceed",  # 并发版本冲突时继续删除其余
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             # 索引可能尚未创建（文档从未 ingest 成功）→ 视作无 chunk 可删，吞掉。
             logger.debug("delete_by_query %s doc=%s: %s", index_name, doc_id, e)
 
     def close(self) -> None:
         try:
             self._client.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass

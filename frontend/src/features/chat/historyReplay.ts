@@ -106,6 +106,7 @@ export function buildHistoryReplay(history: MessageOut[]): HistoryReplay {
         if (card) {
           card.result = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
           card.hasResult = true
+          card.jevKb = m.jev_kb // 门控观测标记（unavailable），与实时流同语义
         }
         break
       }

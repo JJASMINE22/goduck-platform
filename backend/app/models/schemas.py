@@ -561,6 +561,12 @@ class KbDocumentOut(BaseModel):
     progress: Optional[int] = None
     chunk_size: Optional[int] = None
     chunk_overlap: Optional[int] = None
+    doc_version: Optional[int] = Field(
+        default=1, description="kb-src 归档版本（当前恒 1；语义扩展点见 db 迁移注释）"
+    )
+    parser_engine: Optional[str] = Field(
+        default=None, description="产出当前 chunk 的引擎（legacy|docling；NULL=legacy/历史行）"
+    )
     error: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -573,6 +579,9 @@ class KbParseRequest(BaseModel):
 
 
 class KbSearchResult(BaseModel):
+    """检索命中（D1）：docling 证据锚定字段全可空——legacy 单元 / docx 直解
+    单元 / 归档失败兜底同轨 None，前端"存在即锚定、缺失即文本态降级"（B2 契约）。"""
+
     content: str
     score: float
     filename: str
@@ -580,6 +589,56 @@ class KbSearchResult(BaseModel):
     page: Optional[int] = None
     chunk_index: Optional[int] = None
     kb_id: Optional[uuid.UUID] = None
+    # ---- docling 结构单元扩展（对 legacy 命中恒为缺省）----
+    kind: Optional[str] = Field(default=None, description="单元类型 text|table")
+    heading_path: Optional[list[str]] = Field(default=None, description="标题面包屑")
+    page_rotate: Optional[int] = None
+    doc_uri: Optional[str] = Field(default=None, description="证据源 MinIO 键（kb-src/...）")
+    doc_url: Optional[str] = Field(default=None, description="doc_uri 预签名 URL（viewer 消费）")
+    bbox: Optional[dict] = Field(
+        default=None, description="归一化锚框 {x0,y0,x1,y1}（左上原点 0..1）"
+    )
+    assets: Optional[list[dict]] = Field(
+        default=None, description="绑定图片资产 [{kind,page,bbox,caption,thumb_b64}]"
+    )
+
+
+class KbParserEngineOut(BaseModel):
+    """解析引擎状态下发（C1）：驱动前端解析面板双轨语义（docling 隐藏滑窗
+    参数、改释为结构单元预算），与后端 kb_parser_engine/kb_unit_max_chars 同源。"""
+
+    engine: str = Field(description="legacy | docling")
+    unit_max_chars: int = Field(description="结构单元预算上界（仅 docling 路径生效）")
+
+
+class KbAnchorCardItem(BaseModel):
+    """锚定卡取回键组 = kb_search 工具结果 hits 的定位键（确定性 chunk id）。"""
+
+    kb_id: uuid.UUID
+    doc_id: uuid.UUID
+    chunk_index: int = Field(ge=0)
+
+
+class KbAnchorCardsRequest(BaseModel):
+    """聊天侧 kb_search 工具卡的锚定补全（批量，懒取）。"""
+
+    items: list[KbAnchorCardItem] = Field(min_length=1, max_length=50)
+
+
+class KbAnchorCard(BaseModel):
+    """单命中锚定卡：docling 证据锚定字段全可空（B2 可空契约；legacy/缺失位
+    前端降级为纯文本行）。thumb_b64 仅列表预览；VLM/reader 原图回源走 MinIO。"""
+
+    content: str
+    filename: str = ""
+    heading_path: Optional[list[str]] = None
+    page: Optional[int] = None
+    page_rotate: Optional[int] = None
+    kind: Optional[str] = None
+    doc_uri: Optional[str] = None
+    doc_url: Optional[str] = None
+    bbox: Optional[dict] = None
+    assets: Optional[list[dict]] = None
 
 
 # ---------------------------------------------------------------------------

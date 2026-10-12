@@ -1,9 +1,10 @@
-/* 会话页「工作区」视图（与会话同级的页内页面）—— 全页双卡分栏：目录树卡 | 预览卡。
+/* 会话页「工作区」视图（与会话同级的页内页面）—— 树卡全宽 + 预览浮层遮挡：
     - 文件树：AntD Tree + showLine（层级连线 + 叶线，接近 tree 命令观感），递归渲染
       （后端已限条目/深度）。
     - 行内悬停操作：下载（文件直链 / 目录 zip）、删除（Popconfirm，递归删目录）。
-    - 选中文件 → 右侧分栏 WorkspaceFilePreview（按类型分派）；未选中时树占满全宽，
-      选中后树收窄为左栏，宽度可拖拽（panel-resizer，向右拖变宽，双击重置）。
+    - 选中文件 → 右侧浮起预览卡（按类型分派）覆盖在树卡右段之上：树始终全宽、
+      排版恒定（不因打开/拖拽而重排换行），拖拽仅改变遮挡范围，可拖至近全宽
+      （左侧留 TREE_REVEAL 窄缝，上限随容器宽动态变化）；双击重置宽度。
     - 选中态由 ChatPage 受控注入（selected/onSelect）：聊天时间线"文件变更卡片"
       点击文件行可一步切到工作区并选中。
     - 树节点徽标：订阅 chatStore.fileChanges，本回合被 agent 落盘/编辑/删除的
@@ -11,7 +12,7 @@
     - 删除是用户裁剪历史产物的行为，不影响智能体逻辑；选中文件被删后预览自动关闭。 */
 import { Button, Empty, Popconfirm, Skeleton, Space, Tooltip, Tree, Typography } from 'antd'
 import type { DataNode } from 'antd/es/tree'
-import { type ReactNode, useCallback, useMemo } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Download, Folder, File as FileIcon, FolderOpen, RefreshCw, Trash2 } from 'lucide-react'
 import { workspaceApi } from '@/api/workspace'
 import { useDeleteWorkspaceItem, useWorkspaceTree } from '@/hooks/useWorkspace'
@@ -23,8 +24,11 @@ import { WorkspaceFilePreview } from './WorkspaceFilePreview'
 
 const { Text } = Typography
 
-/** 文件树栏宽度（选中文件后分栏，拖拽分隔条调整） */
-const TREE_WIDTH = { min: 200, max: 560, default: 320 } as const
+/** 预览浮层宽度下限与默认值；上限为动态值（容器宽 - TREE_REVEAL），max 仅作
+    测量前的保守兜底 */
+const PREVIEW_WIDTH = { min: 320, max: 1600, default: 480 } as const
+/** 浮层拖到最宽时左侧保留的树卡窄缝：边界线与拖拽手柄始终可见、可拖回 */
+const TREE_REVEAL = 64
 
 /** 选中文件（受控：由 ChatPage 持有，跨视图切换/卡片跳转共享） */
 export interface WorkspaceSelection {
@@ -158,18 +162,41 @@ export function WorkspaceView({
   // 本回合文件变更 → 树徽标（store 清空即失：新回合开始徽标自动消失）
   const fileChanges = useChatStore((s) => s.fileChanges)
   const badges = useMemo(() => mergeFileChangesByPath(fileChanges), [fileChanges])
-  // 左栏宽度：手柄在树右缘（edge='right'，向右拖变宽）；双击重置；宽度持久化跨刷新保留
+  // 预览浮层宽度：手柄在浮层左缘（edge='left'，向左拖遮得更宽）；双击重置；
+  // 宽度持久化跨刷新保留。树卡恒为全宽，排版不随打开/拖拽变化。
+  // 上限动态：可拖至近全宽（容器宽 - TREE_REVEAL，左侧留窄缝），由 ResizeObserver
+  // 实测 .ws-view 宽度得出；测量前用 PREVIEW_WIDTH.max 兜底。
+  const viewRef = useRef<HTMLDivElement | null>(null)
+  const [viewWidth, setViewWidth] = useState(0)
+  useEffect(() => {
+    const el = viewRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) setViewWidth(entry.contentRect.width)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const maxPreview =
+    viewWidth > 0
+      ? Math.max(PREVIEW_WIDTH.min, Math.round(viewWidth - TREE_REVEAL))
+      : PREVIEW_WIDTH.max
   const {
-    size: treeWidth,
-    onResizeStart: onTreeResizeStart,
-    reset: resetTreeWidth,
+    size: previewWidth,
+    onResizeStart: onPreviewResizeStart,
+    reset: resetPreviewWidth,
+    apply: applyPreviewWidth,
   } = useDragResize({
-    initial: TREE_WIDTH.default,
-    min: TREE_WIDTH.min,
-    max: TREE_WIDTH.max,
-    edge: 'right',
-    storageKey: 'ws-tree-width',
+    initial: PREVIEW_WIDTH.default,
+    min: PREVIEW_WIDTH.min,
+    max: maxPreview,
+    edge: 'left',
+    storageKey: 'ws-preview-width',
   })
+  // 容器变窄（窗口缩放）或旧持久化值超新上限时收敛：保证状态值 = 实际显示宽
+  useEffect(() => {
+    if (previewWidth > maxPreview) applyPreviewWidth(maxPreview)
+  }, [previewWidth, maxPreview, applyPreviewWidth])
 
   // 删除为事件驱动（非 effect）：成功后失效树（hook 全局 onSuccess）+ 关闭预览分栏
   // （当被删项正是打开的文件，或被删目录包含该文件时）。mutate 引用稳定（react-query 保证）。
@@ -194,11 +221,8 @@ export function WorkspaceView({
   )
 
   return (
-    <div className="ws-view">
-      <aside
-        className="ws-view__tree"
-        style={selected ? { width: treeWidth, flexShrink: 0 } : { flex: 1, minWidth: 0 }}
-      >
+    <div className="ws-view" ref={viewRef}>
+      <aside className="ws-view__tree" style={{ flex: 1, minWidth: 0 }}>
         <div className="ws-view__tree-header">
           <Space size={6}>
             <FolderOpen size={15} />
@@ -251,13 +275,16 @@ export function WorkspaceView({
 
       {selected ? (
         <>
+          {/* 手柄锚在 .ws-view（而非预览卡内）——预览卡 overflow:hidden 不会裁切探出的
+              热区；right 随 previewWidth 联动，10px 热区中心对齐浮层左缘 */}
           <div
-            className="panel-resizer"
-            onMouseDown={onTreeResizeStart}
-            onDoubleClick={resetTreeWidth}
-            title="拖拽调整文件树宽度（双击重置）"
+            className="panel-resizer ws-view__resizer"
+            style={{ right: previewWidth - 5 }}
+            onMouseDown={onPreviewResizeStart}
+            onDoubleClick={resetPreviewWidth}
+            title="拖拽调整预览宽度（双击重置）"
           />
-          <section className="ws-view__preview">
+          <section className="ws-view__preview ws-view__preview--float" style={{ width: previewWidth }}>
             {/* key=文件路径：切换文件时重挂载，滚动复位且不闪现上一文件内容 */}
             <WorkspaceFilePreview
               key={selected.path}

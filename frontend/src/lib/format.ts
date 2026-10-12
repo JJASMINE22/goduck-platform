@@ -36,3 +36,12 @@ export function shortId(uuid: string | null | undefined): string {
   if (!uuid) return '—'
   return uuid.slice(0, 8)
 }
+
+/** 提取文本展示清洗：去除 C0 控制符与 DEL（保留 \n \t；U+001A 为 docling
+ *  对无 Unicode 映射字形的替换输出，浏览器渲染为可见乱符号）。
+ *  仅作用于展示面，ES 真值不动。 */
+export function sanitizeKbText(text: string | null | undefined): string {
+  if (!text) return ''
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+}

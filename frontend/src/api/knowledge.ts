@@ -4,8 +4,11 @@
    - 上传仅注册不解析；仅收 pdf/docx，前端只传 file（mime 服务端魔数判定，准则 F6）。 */
 import { del, get, post, postForm, put } from './client'
 import type {
+  KbAnchorCard,
+  KbAnchorCardItem,
   KbDocumentOut,
   KbParseRequest,
+  KbParserEngine,
   KbSearchResult,
   KnowledgeBaseCreate,
   KnowledgeBaseOut,
@@ -23,6 +26,13 @@ export const knowledgeApi = {
     put<KnowledgeBaseOut>(`/knowledge-bases/${id}`, body),
 
   remove: (id: UUID) => del<{ ok: boolean }>(`/knowledge-bases/${id}`),
+
+  /** 解析引擎状态（C1 双轨语义：docling=滑窗参数隐藏，改释结构单元预算） */
+  parserEngine: () => get<KbParserEngine>('/knowledge-bases/parser-engine'),
+
+  /** kb_search 工具结果的锚定卡批量补全（聊天侧懒取：预签名 URL + bbox + 资产缩略图） */
+  anchorCards: (items: KbAnchorCardItem[]) =>
+    post<Array<KbAnchorCard | null>>('/knowledge-bases/anchor-cards', { items }),
 
   // —— 文档 ——
   listDocuments: (kbId: UUID) => get<KbDocumentOut[]>(`/knowledge-bases/${kbId}/documents`),

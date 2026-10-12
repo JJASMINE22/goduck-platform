@@ -23,6 +23,7 @@ export const queryKeys = {
   skills: ['skills'] as const,
   skillDescription: (name: string) => ['skills', name, 'description'] as const,
   knowledgeBases: ['knowledge-bases'] as const,
+  kbParserEngine: ['knowledge-bases', 'parser-engine'] as const,
   kbDocuments: (kbId: string) => ['knowledge-bases', kbId, 'documents'] as const,
   // 能力查询键含 agentId 维度（会话-智能体解耦 §4.4）：切换选中智能体即
   // keyed refetch（无需手动 invalidate）；'' = 缺省回落 last_agent_id

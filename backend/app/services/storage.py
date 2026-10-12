@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from minio import Minio
 
@@ -60,6 +59,27 @@ class MinioStorage:
             self.client.remove_object(self.bucket, bucket_key)
         except Exception as e:
             logger.warning("删除 MinIO 对象失败 %s: %s", bucket_key, e)
+
+    def remove_prefix(self, prefix: str) -> None:
+        """删除某前缀下全部对象（尽力而为）：docling 分片边车
+        （{bucket_key}.shards/）与 kb-src 归档（kb-src/{doc_id}/）的清理用。"""
+        try:
+            objects = self.client.list_objects(self.bucket, prefix=prefix, recursive=True)
+            for obj in objects:
+                self.client.remove_object(self.bucket, obj.object_name)
+        except Exception as e:
+            logger.warning("删除 MinIO 前缀对象失败 %s: %s", prefix, e)
+
+    def presign_get(self, bucket_key: str, expires_seconds: int = 3600) -> str:
+        """对象 GET 预签名 URL（doc_uri → 前端 PDF.js 按需拉取原始 PDF；
+        HTTP Range 由 MinIO 原生支持，viewer 侧 disableAutoFetch 按页取流）。"""
+        from datetime import timedelta
+
+        return self.client.presigned_get_object(
+            self.bucket,
+            bucket_key,
+            expires=timedelta(seconds=max(60, expires_seconds)),
+        )
 
 
 def build_minio_storage(settings: Settings) -> MinioStorage:

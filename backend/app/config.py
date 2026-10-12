@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -127,14 +127,32 @@ class Settings(BaseSettings):
     kb_chunk_size: int = 800
     kb_chunk_overlap: int = 120
     kb_ingestion_concurrency: int = 2
-    # 打印件 PDF（无文本层扫描件）OCR 兜底：依赖 rapidocr-onnxruntime（未安装自动
-    # 降级为仅文本层提取，行为同旧版；空文档报错信息会提示安装）。
-    kb_pdf_ocr_enabled: bool = True
-    # OCR 渲染 DPI：200 对常规印刷扫描件足够；小字号工程手册可提到 300
-    # （页面像素数×2.25，OCR 耗时同步放大）。
-    kb_pdf_ocr_dpi: int = Field(default=200, ge=72, le=600)
-    # 页文本层字符数低于该阈值 → 视为扫描页触发 OCR（原生文本层页零成本直通）。
-    kb_pdf_ocr_min_chars: int = Field(default=16, ge=1)
+    # ---- 解析引擎开关（plan: kb-docling-parse-display C1）----
+    # legacy=轻量基线（pymupdf 文本层 + 滑窗切块；**无 OCR**——扫描件解析为
+    # docling 专属，扫描件在 legacy 下报"无可索引文本"并指引切换引擎）；
+    # docling=结构单元直入 ES（splitter 退役，仅预算护栏）。默认 legacy：
+    # 灰度切换，存量库与存量 chunk 不受影响（新字段对 legacy 单元可空）。
+    kb_parser_engine: Literal["legacy", "docling"] = "legacy"
+    # 长文档分片硬约束（片 = 独立 docling convert + 独立 IR 边车；实测 3218 页
+    # 整册 convert 禁止）。默认 100，Phase A 单页耗时数据校准。
+    kb_docling_shard_pages: int = Field(default=100, ge=10, le=1000)
+    # CPU 并行度旋钮（AcceleratorOptions.num_threads；convert 本身进程内串行，
+    # 不做多实例并行 convert——CPU 下互抢核）。GPU 设备下 torch 算子不吃该值，
+    # 设备回落 cpu 时仍生效。
+    kb_docling_threads: int = Field(default=4, ge=1, le=64)
+    # 推理设备（AcceleratorOptions.device）：auto=按 torch 探测 cuda→mps→cpu
+    # 自动选择（无 GPU 安全回落 cpu）；cpu/cuda/mps 显式锁定。注意 auto 使
+    # 解析行为依赖部署环境（GPU/OCR provider 差异带来输出细微不同），该值
+    # 已纳入分片 IR 边车校验（变更即缓存失效重跑解析）。
+    kb_docling_device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+    # 生产禁运行时下载模型：预置权重目录（空=开发期由 docling 自动下载）。
+    kb_docling_artifacts_path: str = ""
+    # 结构单元预算上界（超预算在子区域边界再切；与 legacy kb_chunk_size 分开
+    # 命名防双轨语义串线。无 overlap 不是"上下文变多"而是"盲切风险消失"，
+    # 放大目的=保护结构单元完整性。默认 2000，Phase A 单元长度分布 p95 校准；
+    # 硬上限核查：预算不得越过 TEI 端点实际 max sequence length，否则静默
+    # 截断制造新的边界盲切——调大前先核对 TEI 部署参数）。
+    kb_unit_max_chars: int = Field(default=2000, ge=200, le=32000)
 
     # ---- Jev Shell 守卫（allow_shell HITL 减负；plan: jev-shell-guard）----
     # 判决只决定"是否跳过人工"，HITL 保持 fail-closed 基底：Jev 不可用/超时/解析

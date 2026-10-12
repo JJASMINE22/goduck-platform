@@ -15,7 +15,9 @@ checkpoint 看到的都是滤后版本（shadow 只判不滤 / annotate 只标�
   identity 保持）——门控故障绝不杀死工具结果；
 - fail-closed = passthrough = 现状行为：JevUnavailable（超时/HTTP 非 2xx/
   响应畸形）原样透传；k_boost 生效时按 ES 序截回原始 k（故障形态也不放大
-  上下文）；
+  上下文）。unavailable 分支额外在 response_metadata 打 `jev_kb` 观测标记
+  （UI 侧信道：SSE/历史序列化读取显示「jev 未介入」；该字段不进模型请求，
+  LLM 可见形态与 content 逐字节不变）；
 - 不对称 drop 规则：举证责任在"滤"侧——rel/info 两题同时高置信为否才
   drop，任一维度存疑（p 中间/conf 低）一律保留（歧义 = 维持现状）；
 - keep_floor 兜底：ES 序前 N 条无论判决如何永不 drop（只修剪尾部，不斩首），
@@ -296,7 +298,9 @@ class KbRerankGate:
     """kb 检索门控判决器：parse → 判决（缓存）→ mode 分支 → 改写/透传。
 
     process 永不抛出（RubricJudge 同纪律）：任何意外异常兜底为原对象返回。
-    passthrough 一律返回原对象（identity 保持）；改写一律构造新 ToolMessage
+    passthrough 一律返回原对象（identity 保持）——唯一例外是 unavailable 分支：
+    返回浅拷贝并打 response_metadata['jev_kb'] 观测标记（content 等字段原引用，
+    LLM 可见形态不变，见 _stamp_jev_unavailable）；改写一律构造新 ToolMessage
     （tool_call_id/name 永不改）。阈值随图构建烘焙（TTL 语义与两出口一致）。
 
     审计边界：进入判决路径的调用一行（parse ok 即入：filtered / annotated /
@@ -447,7 +451,8 @@ class KbRerankGate:
                 latency_ms, model = verdict.latency_ms, verdict.model
             except (JevUnavailable, ValueError) as e:
                 # 判决不可用（含畸形答案）→ 透传；k_boost 生效时按 ES 序截回
-                # k0——不可用时上下文形态也必须等于现状
+                # k0——不可用时上下文形态也必须等于现状。返回值统一打
+                # response_metadata 观测标记（UI 显示「jev 未介入」；LLM 不可见）
                 logger.warning("jev kb judge unavailable (fail-closed → passthrough): %s", e)
                 self._audit(
                     source="unavailable",
@@ -459,8 +464,8 @@ class KbRerankGate:
                     annotation=str(e),
                 )
                 if k0 is not None and len(hits) > k0:
-                    return self._rewrite(result, payload, hits[:k0])
-                return result
+                    return _stamp_jev_unavailable(self._rewrite(result, payload, hits[:k0]))
+                return _stamp_jev_unavailable(result)
             self._cache_put(key, (judgments, answers, raw, latency_ms, model))
         # 5. 本地合成 → 三态出口
         raw_drops = [j.drop(self._drop_p, self._drop_conf) for j in judgments]
@@ -591,6 +596,20 @@ def _mirror_content(original: Any, new_text: str) -> Any:
     if isinstance(original, str):
         return new_text
     return [{**original[0], "text": new_text}]
+
+
+def _stamp_jev_unavailable(result: ToolMessage) -> ToolMessage:
+    """unavailable 透传的观测标记：浅拷贝 + response_metadata['jev_kb']。
+
+    model_copy 浅拷贝——content/status/tool_call_id/name/artifact 全部原引用
+    保持，LLM 可见形态逐字节等于现状（response_metadata 不进模型请求）；
+    仅 SSE（stream_adapter tool_result 载荷）与历史（_serialize_message）
+    读取该键，前端显示「jev 未介入（判决不可用）」徽标。观测增强非行为
+    变更：失败语义仍是 fail-closed 透传，不产生 error、不改写 hits。
+    """
+    meta = dict(getattr(result, "response_metadata", None) or {})
+    meta["jev_kb"] = "unavailable"
+    return result.model_copy(update={"response_metadata": meta})
 
 
 class JevKbRerankMiddleware(AgentMiddleware):

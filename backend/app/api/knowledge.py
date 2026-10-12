@@ -15,13 +15,17 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 
 from app.deps import get_appstate
 from app.models.schemas import (
+    KbAnchorCard,
+    KbAnchorCardsRequest,
     KbDocumentOut,
     KbParseRequest,
+    KbParserEngineOut,
     KbSearchResult,
     KnowledgeBaseCreate,
     KnowledgeBaseOut,
@@ -213,6 +217,39 @@ async def reindex_document(kb_id: uuid.UUID, doc_id: uuid.UUID, request: Request
 
 
 # ============================ Search (debug) ================================
+
+@router.get("/parser-engine", response_model=KbParserEngineOut)
+async def get_parser_engine(request: Request):
+    """解析引擎状态下发（C1）：前端据此切换解析面板双轨语义（docling=隐藏
+    滑窗参数，改释为结构单元预算）。"""
+    st = _appstate(request)
+    return KbParserEngineOut(
+        engine=st.settings.kb_parser_engine,
+        unit_max_chars=st.settings.kb_unit_max_chars,
+    )
+
+
+@router.post("/anchor-cards", response_model=list[Optional[KbAnchorCard]])
+async def get_anchor_cards(body: KbAnchorCardsRequest, request: Request):
+    """kb_search 工具结果的锚定卡批量补全（聊天侧渲染通道）。
+
+    输入 = 工具结果 hits 的 (kb_id, doc_id, chunk_index) 键组；输出等长对位，
+    缺失/无锚位为 null。kb_search（mcp-servers，面向 LLM）只回文本，锚定
+    元数据由前端持键组在此懒取：本端点持有 MinIO 出预签名 doc_url，懒签
+    规避工具结果持久化后 URL 过期（1h）。
+    """
+    svc = _service(request)
+    return await svc.anchor_cards(
+        [
+            {
+                "kb_id": it.kb_id,
+                "doc_id": it.doc_id,
+                "chunk_index": it.chunk_index,
+            }
+            for it in body.items
+        ]
+    )
+
 
 @router.get("/{kb_id}/search", response_model=list[KbSearchResult])
 async def search_kb(

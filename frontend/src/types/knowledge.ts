@@ -51,9 +51,13 @@ export interface KbDocumentOut {
   status: string
   chunk_count?: number | null
   progress?: number | null
-  /** 解析切块参数（生效值，解析触发时写入；NULL=历史行未解析过） */
+  /** 解析切块参数（生效值，解析触发时写入；NULL=历史行未解析过；docling 路径忽略） */
   chunk_size?: number | null
   chunk_overlap?: number | null
+  /** kb-src 归档版本（当前恒 1） */
+  doc_version?: number | null
+  /** 产出当前 chunk 的引擎（'legacy'|'docling'；NULL=legacy/历史行） */
+  parser_engine?: string | null
   error?: string | null
   created_at: ISODateTime
   updated_at: ISODateTime
@@ -65,7 +69,33 @@ export interface KbParseRequest {
   chunk_overlap?: number | null
 }
 
-/** GET /knowledge-bases/{id}/search 调试检索结果（管理面用） */
+/** GET /knowledge-bases/parser-engine —— 解析引擎状态（C1 双轨语义驱动） */
+export interface KbParserEngine {
+  engine: 'legacy' | 'docling'
+  /** 结构单元预算上界（仅 docling 路径生效） */
+  unit_max_chars: number
+}
+
+/** 归一化锚框（左上原点 0..1；B2 契约：可空 = 文本态降级） */
+export interface KbBbox {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+
+/** 命中绑定的图片资产（图-图注绑定；thumb 仅供列表预览） */
+export interface KbHitAsset {
+  kind: 'picture'
+  page?: number | null
+  bbox?: KbBbox | null
+  caption?: string | null
+  thumb_b64?: string | null
+}
+
+/** GET /knowledge-bases/{id}/search 调试检索结果（管理面用）。
+ *  docling 证据锚定字段全可空——legacy / docx 直解 / 归档失败兜底同轨 null
+ *  （存在即锚定、缺失即文本态降级，B2 可空契约）。 */
 export interface KbSearchResult {
   content: string
   score: number
@@ -74,6 +104,53 @@ export interface KbSearchResult {
   page?: number | null
   chunk_index?: number | null
   kb_id?: UUID | null
+  kind?: string | null
+  heading_path?: string[] | null
+  page_rotate?: number | null
+  /** 证据源 MinIO 键（kb-src/...） */
+  doc_uri?: string | null
+  /** doc_uri 预签名 URL（viewer 消费；过期需重新检索获取） */
+  doc_url?: string | null
+  bbox?: KbBbox | null
+  assets?: KbHitAsset[] | null
+}
+
+/** POST /knowledge-bases/anchor-cards 取回键组（= kb_search 工具结果 hits 的定位键） */
+export interface KbAnchorCardItem {
+  kb_id: UUID
+  doc_id: UUID
+  chunk_index: number
+}
+
+/** 单命中锚定卡（聊天侧 kb_search 工具卡懒取；可空字段语义同 KbSearchResult） */
+export interface KbAnchorCard {
+  content: string
+  filename: string
+  heading_path?: string[] | null
+  page?: number | null
+  page_rotate?: number | null
+  kind?: string | null
+  doc_uri?: string | null
+  doc_url?: string | null
+  bbox?: KbBbox | null
+  assets?: KbHitAsset[] | null
+}
+
+/** mcp kb_search 工具结果的载荷形状（mcp-servers/routers/knowledge.py 契约） */
+export interface KbSearchToolPayload {
+  result: 'ok' | 'error'
+  query?: string
+  total?: number
+  message?: string
+  hits?: Array<{
+    content: string
+    score: number
+    filename: string
+    doc_id: UUID | null
+    page?: number | null
+    chunk_index?: number | null
+    kb_id?: UUID | null
+  }>
 }
 
 /** GET /sessions/{id}/knowledge-capability —— 驱动会话框 KB 选择器可见性（准则 F2） */

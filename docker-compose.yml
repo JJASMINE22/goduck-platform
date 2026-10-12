@@ -96,6 +96,25 @@ services:
       EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-24}
       KB_ENABLED: ${KB_ENABLED:-true}
       KB_STORE_MINIO: ${KB_STORE_MINIO:-true}
+      # ---- 知识库 docling 解析引擎（plan: kb-docling-parse-display）----
+      # legacy（默认）零依赖；切 docling 前必须先做模型卷预热（见下方注释 runbook）。
+      KB_PARSER_ENGINE: ${KB_PARSER_ENGINE:-legacy}
+      KB_DOCLING_SHARD_PAGES: ${KB_DOCLING_SHARD_PAGES:-100}
+      KB_DOCLING_THREADS: ${KB_DOCLING_THREADS:-4}
+      # 推理设备 auto/cpu/cuda/mps（auto=按 torch 探测，无 GPU 回落 cpu）。
+      # 容器内用 GPU 需 runtime: nvidia / device_requests 显式声明（默认未开）。
+      KB_DOCLING_DEVICE: ${KB_DOCLING_DEVICE:-auto}
+      KB_UNIT_MAX_CHARS: ${KB_UNIT_MAX_CHARS:-2000}
+      # 权重目录 = 命名卷内 artifacts/（<org--repo> 子目录布局，docling 缺件
+      # 即 FileNotFoundError 显式失败，绝不运行时下载）；HF_HOME 指向同卷
+      # hf-cache/ 兜住经 huggingface_hub 运行时加载的模型（layout 骨干等）。
+      # HF_HUB_OFFLINE 默认 1：离线纪律——预热期显式置 0 放行下载。
+      # 简化模式（免 artifacts 预热）：.env 置 KB_DOCLING_ARTIFACTS_PATH=（空，
+      # 注意用 `-` 形式才能区分"空"与"未设"）+ HF_HUB_OFFLINE=0 → 首次 docling
+      # 解析时模型经 HF hub 下载进卷内 hf-cache/，之后复用；稳定后可切回 1。
+      KB_DOCLING_ARTIFACTS_PATH: ${KB_DOCLING_ARTIFACTS_PATH-/models/docling/artifacts}
+      HF_HOME: ${HF_HOME:-/models/docling/hf-cache}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       # ---- 语音输入（STT 触发会话，AssemblyAI Streaming）----
       # key 缺省为空 → 后端降级：voice 路由不挂载、健康能力位 false（前端无麦克风入口）。
       VOICE_ENABLED: ${VOICE_ENABLED:-false}
@@ -106,6 +125,15 @@ services:
     expose: ["8000"]                       # 仅内部网络可见，不对宿主发布
     volumes:
       - goduck_backend_data:/data          # workspace/memories/skills 持久化
+      # docling 模型卷（artifacts/ + hf-cache/ 双布局）。runbook：
+      # ① 预热（一次性，联网，与运行镜像同 docling 版本）：
+      #    docker compose run --rm -e HF_HUB_OFFLINE=0 backend \
+      #      docling-tools models download layout tableformer rapidocr -o /models/docling/artifacts
+      # ② 冻结验证（断网复跑，失败信息会点名缺失仓库，按提示补
+      #    `docling-tools models download-hf-repo <repo>` 后重跑）：
+      #    上传一份真实 PDF 到任一知识库并 KB_PARSER_ENGINE=docling 重解析成功
+      # ③ 运行期恒 HF_HUB_OFFLINE=1；docling 升级（requirements 版本变更）= 重跑 ①②
+      - goduck_docling_models:/models/docling
     depends_on:
       postgres:
         condition: service_healthy
@@ -141,3 +169,4 @@ volumes:
   goduck_miniodata:
   goduck_backend_data:
   goduck_esdata:
+  goduck_docling_models:

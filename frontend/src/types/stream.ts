@@ -71,6 +71,10 @@ export interface ToolResultPayload {
   tool_call_id: string
   content: string
   name?: string | null
+  /** jev kb 门控观测标记（契约纯增量：仅门控 unavailable 注入时出现）。
+   *  来自 ToolMessage.response_metadata，不进模型请求；卡片据此显示
+   *  「jev 未介入（判决不可用）」徽标，检索结果本身不受影响 */
+  jev_kb?: 'unavailable'
 }
 
 export interface ErrorPayload {

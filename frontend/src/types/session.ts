@@ -55,6 +55,9 @@ export interface MessageOut {
   // 仅 ai 消息：思考内容（additional_kwargs.reasoning_content，随 checkpoint 持久化），
   // 历史回放据此重建"思考过程"折叠块——与实时流 ThinkingBlock 同构
   reasoning?: string | null
+  // 仅 tool 消息：jev kb 门控观测标记（response_metadata.jev_kb 随 checkpoint
+  // 持久化）——与实时流 ToolResultPayload.jev_kb 同键同语义
+  jev_kb?: 'unavailable'
 }
 
 /** 回撤一个会话回合（schemas.py WithdrawRequest / WithdrawResponse） */

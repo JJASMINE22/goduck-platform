@@ -286,6 +286,11 @@ _MIGRATIONS = [
     "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS progress INT",
     "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS chunk_size INT",
     "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS chunk_overlap INT",
+    # docling 路径（plan: kb-docling-parse-display）：kb-src 归档键内嵌版本
+    # （v{doc_version}；当前恒 1，语义扩展点="文档或转换器版本变更"）与
+    # 产出当前 chunk 的解析引擎（NULL=legacy/历史行——数据双轨期判别源）。
+    "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS doc_version INT NOT NULL DEFAULT 1",
+    "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS parser_engine VARCHAR",
     "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc TEXT",
     "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc_model TEXT",
     "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc_at TIMESTAMPTZ",
@@ -1089,7 +1094,7 @@ _KB_COLUMNS_QUALIFIED = ", ".join(f"kb.{c}" for c in _KB_COLUMNS.split(", "))
 _KBDOC_COLUMNS = (
     "id, kb_id, bucket_key, filename, mime, size, page_count, "
     "status, chunk_count, progress, chunk_size, chunk_overlap, error, "
-    "created_at, updated_at"
+    "doc_version, parser_engine, created_at, updated_at"
 )
 
 
@@ -1291,21 +1296,25 @@ async def update_kb_document_status(
     error: Optional[str] = None,
     page_count: Optional[int] = None,
     progress: Optional[int] = None,
+    parser_engine: Optional[str] = None,
 ) -> Optional[dict]:
     """Transition a document's status (pending|indexing|indexed|failed).
 
-    chunk_count/page_count/progress: COALESCE keeps existing when None. error is set
-    explicitly (pass None to clear a prior failure message). progress 0..100：
-    indexing 期间随嵌入批次推进（调用方逐批传入）；indexed 时传 100。"""
+    chunk_count/page_count/progress/parser_engine: COALESCE keeps existing when
+    None. error is set explicitly (pass None to clear a prior failure message).
+    progress 0..100：indexing 期间随嵌入批次推进（调用方逐批传入）；indexed
+    时传 100。parser_engine 仅终态回写（indexed），标记产出当前 chunk 的引擎。"""
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"UPDATE kb_document SET status = %s, "
                 f"chunk_count = COALESCE(%s, chunk_count), error = %s, "
                 f"page_count = COALESCE(%s, page_count), "
-                f"progress = COALESCE(%s, progress), updated_at = now() "
+                f"progress = COALESCE(%s, progress), "
+                f"parser_engine = COALESCE(%s, parser_engine), "
+                f"updated_at = now() "
                 f"WHERE id = %s RETURNING {_KBDOC_COLUMNS}",
-                (status, chunk_count, error, page_count, progress, doc_id),
+                (status, chunk_count, error, page_count, progress, parser_engine, doc_id),
             )
             return await cur.fetchone()
 
@@ -1339,7 +1348,8 @@ async def reset_kb_documents(
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE kb_document SET status = 'pending', chunk_count = NULL, "
-                "progress = NULL, error = NULL, updated_at = now() "
+                "progress = NULL, error = NULL, parser_engine = NULL, "
+                "updated_at = now() "
                 "WHERE kb_id = %s",
                 (kb_id,),
             )
