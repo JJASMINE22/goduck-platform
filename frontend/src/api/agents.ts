@@ -8,6 +8,7 @@ import type {
   AgentOut,
   AgentUpdate,
   RestoreRequest,
+  TopologyGraph,
   UUID,
   ValidateRequest,
   ValidateResponse,
@@ -28,8 +29,11 @@ export const agentsApi = {
   /** 详情 + 当前 active mermaid（悬浮预览） */
   get: (id: UUID) => get<AgentDetail>(`/agents/${id}`),
 
-  /** Mermaid 文本（PlainTextResponse） */
+  /** Mermaid 文本（PlainTextResponse；导出/外部消费，UI 预览已改用 topology.json） */
   topologyMmd: (id: UUID) => fetchText(`/agents/${id}/topology.mmd`),
+
+  /** 结构化委派拓扑（渲染就绪 nodes/edges，悬浮预览直接消费） */
+  topologyJson: (id: UUID) => get<TopologyGraph>(`/agents/${id}/topology.json`),
 
   /** 配置历史（还原选择） */
   history: (id: UUID) => get<AgentHistoryItem[]>(`/agents/${id}/history`),

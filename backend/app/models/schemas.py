@@ -100,6 +100,54 @@ class ValidateResponse(BaseModel):
     mermaid: Optional[str] = None
 
 
+class TopologyNodeCaps(BaseModel):
+    """节点能力摘要（拓扑预览详情条的渲染源）。列表为空 / bool 为 False = 未启用。"""
+
+    tools: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list, description="技能短名（/skills/<n>/ → n）")
+    hitl: list[str] = Field(default_factory=list, description="启用的 HITL 中断键（write/read/edit...）")
+    memory: bool = False
+    workspace: bool = False
+    shell: bool = False
+    rubric: bool = False
+    task_planning: bool = False
+
+
+class TopologyNode(BaseModel):
+    id: str
+    role: Literal["main", "sub", "ghost"] = Field(
+        description="main=主代理网关 | sub=子代理 | ghost=框架自动注入的委派目标"
+    )
+    name: Optional[str] = Field(default=None, description="子代理名；main/ghost 缺省由前端给出展示文案")
+    summary: Optional[str] = Field(default=None, description="单行摘要：main=system_prompt 首行，sub=description 首行")
+    depth: int = Field(default=0, ge=0, description="根为 0，逐层 +1")
+    is_dicted: bool = Field(default=False, description="dicted 叶子（仅 sub 有意义）")
+    dynamic_dispatch: bool = Field(default=False, description="启用 task() 动态编排下挂子代理")
+    caps: TopologyNodeCaps = Field(default_factory=TopologyNodeCaps)
+
+
+class TopologyEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    kind: Literal["task", "auto"] = Field(default="task", description="task=显式委派 | auto=框架自动注入")
+
+
+class TopologyGraph(BaseModel):
+    """GET /agents/{id}/topology.json —— 渲染就绪的委派拓扑（前端 React Flow 直接消费）。
+
+    与 topology.mmd 同源（AgentConfig 树），但保留结构（角色/能力/深度）而非降维成
+    mermaid 文本，前端无需再解析。
+    """
+
+    agent_id: uuid.UUID
+    agent_name: str
+    model_name: Optional[str] = None
+    usage: Literal["chat", "cron"] = Field(default="chat")
+    nodes: list[TopologyNode]
+    edges: list[TopologyEdge]
+
+
 # ---------------------------------------------------------------------------
 # Session
 # ---------------------------------------------------------------------------

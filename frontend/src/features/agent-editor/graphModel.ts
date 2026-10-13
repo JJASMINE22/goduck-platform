@@ -127,6 +127,16 @@ export function descendantIds(nodes: AgentGraphNode[], id: string): Set<string> 
   return result
 }
 
+/** 上下游链路集（含自身）：上游 = 到根的祖先链（谁能委派到它），下游 = 全部子孙
+ *  （它能委派到谁）。画布悬浮链路高亮用（intent-trace 语义）。 */
+export function chainSet(nodes: AgentGraphNode[], id: string): Set<string> {
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const out = new Set<string>([id])
+  for (let p = byId.get(id)?.parentId ?? null; p; p = byId.get(p)?.parentId ?? null) out.add(p)
+  for (const did of descendantIds(nodes, id)) out.add(did)
+  return out
+}
+
 /** 是否存在 id（含其自身）—— 换父级前检测潜在环 */
 export function isDescendantOrSelf(nodes: AgentGraphNode[], maybeChild: string, ancestor: string): boolean {
   return descendantIds(nodes, ancestor).has(maybeChild)

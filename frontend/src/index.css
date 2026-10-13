@@ -675,6 +675,56 @@ pre,
   display: flex;
   justify-content: center;
 }
+
+/* 内联 SVG 图表卡（SvgFigure）——与 mermaid 块同语言，正文换点阵画布底
+   （archify 式 dot-grid），点击放大（Drawer） */
+.md-svg {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 8px 0;
+  background: var(--color-bg-elevated);
+}
+.md-svg__bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 8px;
+  background: var(--color-bg-inset);
+  font-size: 11px;
+}
+.md-svg__bar span {
+  margin-right: auto;
+  font-family: var(--font-mono);
+  color: var(--color-text-tertiary);
+}
+.md-svg__body {
+  padding: 12px;
+  overflow: auto;
+  background-image: radial-gradient(circle at 1px 1px, var(--color-border-soft) 1px, transparent 1.4px);
+  background-size: 20px 20px;
+  cursor: zoom-in;
+}
+.md-svg__body:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+.md-svg__body--zoom {
+  cursor: default;
+  min-height: 200px;
+}
+/* 净化失败降级：源码展示（不吞内容，可复制排查） */
+.md-svg__fallback {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow: auto;
+  max-height: 240px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 .md-img {
   position: relative;
   display: inline-block;
@@ -1165,7 +1215,7 @@ pre,
     var(--shadow-sm);
   font-size: 12px;
   position: relative;
-  transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease, opacity 0.18s ease;
 }
 .agent-node:hover {
   border-color: var(--node-color);
@@ -1181,6 +1231,10 @@ pre,
     0 0 0 2px var(--node-color),
     0 0 18px 2px color-mix(in srgb, var(--node-color) 50%, transparent),
     var(--shadow-md);
+}
+/* 悬停链路高亮（intent-trace）：非链路节点压暗（链路上的节点保持 hover/常态发光） */
+.agent-node--dim {
+  opacity: 0.25;
 }
 
 /* 动态光环: dynamic_dispatch 节点及其子树.
@@ -1439,6 +1493,374 @@ pre,
 }
 .react-flow__edge.animated .react-flow__edge-path {
   stroke: var(--color-role-agent-sub);
+}
+
+/* 编辑器画布·悬停链路高亮（intent-trace）：链路边加粗保持行进动画，
+   非链路边压暗（透明度挂在边组上，箭头同随） */
+.react-flow__edge.editor-edge--dim {
+  opacity: 0.15;
+}
+.react-flow__edge.editor-edge--chain .react-flow__edge-path {
+  stroke-width: 2;
+}
+
+/* ===== 拓扑档案卡（列表页悬浮预览；archify「证据控制台」语言 × goduck 玻璃）=====
+   Popover 玻璃化（body 前缀稳压 antd 运行时注入，同 Drawer 玻璃策略）：
+   头带（名称/模型/编辑入口）+ 只读画布 + 图例 + 焦点详情条。
+   节点 = 低饱和 tint 填充 + 高饱和描边（--topo-tone 经 color-mix 派生，深浅主题零硬编码）；
+   边 = task 实线 / auto 虚线；交互 = intent-trace 压暗 + 命中流光；动效一次性可降级。 */
+body .topo-popover.ant-popover-inner {
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(26px) saturate(1.8);
+  -webkit-backdrop-filter: blur(26px) saturate(1.8);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+}
+body .topo-popover.ant-popover-inner .ant-popover-inner-content {
+  padding: 0;
+}
+body .topo-popover-root .ant-popover-arrow::before {
+  background: var(--glass-solid);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  body .topo-popover.ant-popover-inner {
+    background: var(--glass-solid);
+  }
+}
+/* —— 卡骨架 —— */
+.topo-card {
+  width: 520px;
+  max-width: 86vw;
+  display: flex;
+  flex-direction: column;
+}
+.topo-card__state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 128px;
+}
+.topo-card__state--error {
+  font-size: 12px;
+  color: var(--color-danger);
+}
+.topo-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  min-width: 0;
+}
+.topo-card__name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+.topo-card__model {
+  flex-shrink: 0;
+  max-width: 160px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  padding: 1px 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topo-card__edit {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  padding: 3px 11px;
+  cursor: pointer;
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+.topo-card__edit:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary-bg);
+}
+.topo-card__canvas {
+  border-top: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
+}
+.topo-canvas {
+  height: 100%;
+}
+.topo-canvas .react-flow__node {
+  cursor: pointer;
+}
+.topo-canvas .react-flow__pane {
+  cursor: default;
+}
+/* —— 图例条 —— */
+.topo-card__legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 14px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+.topo-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.topo-legend__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--tone) 60%, transparent);
+}
+.topo-legend__meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+}
+/* —— 焦点详情条（能力渐进披露）——
+   固定高度 + 单行不换行：内容随悬停切换时卡片高度恒定，
+   杜绝 Popover 重排引发的鼠标下节点位移 → hover 抖动反馈循环 */
+.topo-card__detail {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  height: 44px;
+  padding: 0 14px;
+  border-top: 1px solid var(--color-border-soft);
+  overflow: hidden;
+}
+.topo-detail__name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-right: 2px;
+  flex-shrink: 0;
+  max-width: 40%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topo-detail__hint {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topo-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  flex-shrink: 1;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-soft);
+  background: var(--glass-bg-faint);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topo-chip--on {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border-soft));
+  background: var(--color-primary-bg);
+}
+/* —— 节点卡：玻璃 + 角色 tint（archify「低饱和填充 + 高饱和描边」配方） ——
+   深度错峰入场（一次性，--topo-depth × 60ms）；静止帧信息完整 */
+.topo-node {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--topo-tone) 42%, var(--glass-border));
+  background: color-mix(in srgb, var(--topo-tone) 9%, var(--glass-bg));
+  backdrop-filter: blur(10px) saturate(1.6);
+  -webkit-backdrop-filter: blur(10px) saturate(1.6);
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim),
+    var(--shadow-sm);
+  cursor: pointer;
+  transition: opacity 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  animation: topo-node-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(var(--topo-depth, 0) * 60ms);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .topo-node {
+    background: color-mix(in srgb, var(--topo-tone) 9%, var(--glass-solid));
+  }
+}
+@keyframes topo-node-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+}
+.topo-node:hover,
+.topo-node--active {
+  border-color: var(--topo-tone);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--topo-tone) 35%, transparent),
+    0 0 14px color-mix(in srgb, var(--topo-tone) 30%, transparent),
+    var(--shadow-sm);
+}
+/* intent-trace / focus：非命中节点压暗（边同理由 --dim 类压暗） */
+.topo-node--dim {
+  opacity: 0.2;
+}
+.topo-node--ghost {
+  border-style: dashed;
+  background: var(--glass-bg-faint);
+}
+.topo-node__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px 0;
+  min-width: 0;
+}
+.topo-node__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--topo-tone);
+  box-shadow: 0 0 8px var(--topo-tone);
+}
+.topo-node__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--topo-tone);
+}
+.topo-node__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.topo-node__badge {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 9px;
+  line-height: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--topo-tone);
+}
+.topo-node__body {
+  padding: 3px 12px 10px;
+  min-width: 0;
+}
+.topo-node__summary {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topo-node__meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+}
+/* 手柄仅作边端点锚：隐藏且不可交互 */
+.topo-handle {
+  width: 4px;
+  height: 4px;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  opacity: 0;
+  pointer-events: none;
+}
+/* —— 边词汇表：task 实线 / auto 虚线；ambient 流光一次性按深度错峰 —— */
+.react-flow__edge.topo-edge .react-flow__edge-path {
+  stroke: var(--color-border);
+  stroke-width: 1.5;
+}
+.react-flow__edge.topo-edge--auto .react-flow__edge-path {
+  stroke: var(--color-text-tertiary);
+  stroke-dasharray: 4 3;
+}
+.react-flow__edge.topo-edge--task .react-flow__edge-path {
+  animation: topo-edge-flow 2.2s linear 1;
+  animation-delay: calc(var(--topo-depth, 0) * 160ms);
+}
+@keyframes topo-edge-flow {
+  0% {
+    stroke-dasharray: 10 8;
+    stroke-dashoffset: 54;
+    opacity: 0.35;
+  }
+  88% {
+    stroke-dasharray: 10 8;
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+/* 命中链路边：主色 + 行进虚线流光（悬停/聚焦期间持续） */
+.react-flow__edge.topo-edge--trace .react-flow__edge-path {
+  stroke: var(--color-primary);
+  stroke-width: 2;
+  stroke-dasharray: 6 6;
+  animation: topo-trace-march 0.9s linear infinite;
+}
+@keyframes topo-trace-march {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+.react-flow__edge.topo-edge--dim {
+  opacity: 0.15;
+}
+/* Motion Governor：reduced-motion 下全部退化为静态（静止帧信息完整） */
+@media (prefers-reduced-motion: reduce) {
+  .topo-node,
+  .react-flow__edge.topo-edge--task .react-flow__edge-path,
+  .react-flow__edge.topo-edge--trace .react-flow__edge-path {
+    animation: none;
+  }
 }
 
 /* 模块面板（工作区卡内左区）：透明嵌入，无独立卡壳 */
@@ -2348,16 +2770,42 @@ pre,
   .page-body { background: var(--glass-solid); }
 }
 
-/* 浮层模块外壳下的 Sider 折叠触发器：antd 默认 position:fixed 会脱离圆角卡片，
-   改回绝对定位（Sider 自身 relative）并补底部圆角 + 顶部分隔线，与卡片轮廓吻合；
-   白底改玻璃延续（卡片本体已玻璃化，触发器实白会露馅） */
-.app-shell .app-sider .ant-layout-sider-trigger {
-  position: absolute;
-  border-radius: 0 0 13px 13px;
-  box-shadow: 0 -1px 0 var(--color-border-soft);
-  background: var(--glass-bg-soft);
-  backdrop-filter: blur(12px) saturate(1.5);
-  -webkit-backdrop-filter: blur(12px) saturate(1.5);
+/* 侧栏折叠钮（品牌带内，替代 antd 底部默认触发器——触发器已随 collapsible 移除）：
+    玻璃圆钮与主题切换折叠态圆钮（.theme-toggle--icon）同语言：薄玻璃底 + rim 高光，
+    悬停趋主色。展开态绝对定位于品牌带右缘，折叠态缩为 28px 居中于 Logo 下方 */
+.sider-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px) saturate(1.7);
+  -webkit-backdrop-filter: blur(12px) saturate(1.7);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim),
+    inset 0 -1px 1px var(--glass-rim-soft);
+  transition: color 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+}
+.sider-toggle:hover {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--glass-tint));
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--glass-bg-soft));
+}
+/* 折叠态小号圆钮（80px 侧宽内与缩小 Logo 垂直堆叠） */
+.app-sider .ant-layout-sider-collapsed .sider-toggle {
+  width: 28px;
+  height: 28px;
+}
+
+/* 分组不再画分割线：以段间距维持"主导航 / 设置"两级分组的层级感 */
+.app-shell .app-sider .ant-menu .ant-menu-item-group-title {
+  margin-top: 12px;
 }
 
 /* ===== [试验] 流体玻璃外壳 + 环境光层 =====

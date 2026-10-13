@@ -29,9 +29,6 @@ const lightTheme: ThemeConfig = {
       headerBg: 'transparent',
       siderBg: 'transparent',
       bodyBg: '#eef1f6',
-      /* 折叠触发器：antd 默认深藏青在玻璃卡片中突兀，透明由 CSS 类接管玻璃化 */
-      triggerBg: 'transparent',
-      triggerColor: '#5f6368',
     },
     Menu: {
       itemHeight: 44,
@@ -61,8 +58,6 @@ const darkTheme: ThemeConfig = {
       headerBg: 'transparent',
       siderBg: 'transparent',
       bodyBg: '#0f141b',
-      triggerBg: 'transparent',
-      triggerColor: '#9aa4b2',
     },
     Menu: {
       itemHeight: 44,

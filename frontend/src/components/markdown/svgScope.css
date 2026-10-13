@@ -1,0 +1,95 @@
+/* goduck 聊天内联 SVG 作用域 —— archify「语义类 + CSS 变量」方法的最小子集。
+   本文件是三方的单一真相源：
+   ① 正常 import 注入页面（.svg-scope 容器内生效，深浅主题随 tokens.css 自动翻转）；
+   ② SvgFigure 以 `?raw` 导入，下载 SVG 时解析变量后内嵌 <style>（独立文件也带色）；
+   ③ skills/svg-diagram 技能契约中的类清单以此为准（修改需三方同步）。
+   配方与 archify viewer.css 同思想：低饱和填充 + 高饱和描边 + 同色文字。 */
+
+.svg-scope {
+  --text: var(--color-text);
+  --text-muted: var(--color-text-secondary);
+  --text-dim: var(--color-text-tertiary);
+  --panel: var(--color-bg-elevated);
+  --panel-border: var(--color-border);
+  --mask: var(--color-bg-elevated);
+  --arrow: var(--color-text-tertiary);
+  --arrow-emphasis: var(--color-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* 根 svg 自适应：viewBox 保比例缩放（SvgFigure 已去掉定死的 width/height） */
+.svg-scope svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+/* 默认文字色（未加类的 <text> 也有可读颜色） */
+.svg-scope text {
+  fill: var(--text);
+}
+
+/* —— 语义 tone：填充由描边色 color-mix 派生（两主题统一配方） —— */
+.svg-scope .c-frontend {
+  fill: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  stroke: var(--color-primary);
+}
+.svg-scope .c-backend {
+  fill: color-mix(in srgb, var(--color-success) 12%, transparent);
+  stroke: var(--color-success);
+}
+.svg-scope .c-database {
+  fill: color-mix(in srgb, var(--color-role-agent-main) 12%, transparent);
+  stroke: var(--color-role-agent-main);
+}
+.svg-scope .c-cloud {
+  fill: color-mix(in srgb, var(--color-warning) 14%, transparent);
+  stroke: var(--color-warning);
+}
+.svg-scope .c-security {
+  fill: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  stroke: var(--color-danger);
+}
+.svg-scope .c-external {
+  fill: color-mix(in srgb, var(--color-text-tertiary) 12%, transparent);
+  stroke: var(--color-text-tertiary);
+}
+/* 遮罩垫底：挡住从节点底下穿过的连线（archify c-mask 同款技巧） */
+.svg-scope .c-mask {
+  fill: var(--mask);
+  stroke: none;
+}
+
+/* —— 文字层级 —— */
+.svg-scope .t-primary {
+  fill: var(--text);
+}
+.svg-scope .t-muted {
+  fill: var(--text-muted);
+}
+.svg-scope .t-dim {
+  fill: var(--text-dim);
+}
+
+/* —— 边 + 箭头（标签与线同色由内容自行约定） —— */
+.svg-scope .a-default {
+  stroke: var(--arrow);
+  fill: none;
+}
+.svg-scope .a-emphasis {
+  stroke: var(--arrow-emphasis);
+  fill: none;
+}
+.svg-scope .a-dashed {
+  stroke: var(--arrow);
+  fill: none;
+  stroke-dasharray: 4 4;
+}
+.svg-scope .m-default {
+  fill: var(--arrow);
+}
+.svg-scope .m-emphasis {
+  fill: var(--arrow-emphasis);
+}

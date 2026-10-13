@@ -37,12 +37,12 @@ export function useAgentHistory(id: UUID | null | undefined) {
   })
 }
 
-/** 拓扑 mermaid 文本（PlainTextResponse）。enabled 控制按需拉取，避免列表 N+1。
+/** 结构化拓扑（topology.json）。enabled 控制按需拉取，避免列表 N+1。
  *  staleTime 复用全局 30s，悬浮预览跨行复用缓存。 */
 export function useAgentTopology(id: UUID | null | undefined, enabled = true) {
   return useQuery({
     queryKey: queryKeys.agentTopology(id ?? ''),
-    queryFn: () => agentsApi.topologyMmd(id!),
+    queryFn: () => agentsApi.topologyJson(id!),
     enabled: !!id && enabled,
   })
 }

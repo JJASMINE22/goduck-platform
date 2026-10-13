@@ -10,8 +10,8 @@ from typing import Optional
 
 from psycopg_pool import AsyncConnectionPool
 
-from app.core.schema_utils import AgentConfig, config_to_yaml, parse_config
-from app.core.topology_utils import build_delegation_mermaid
+from app.core.schema_utils import config_to_yaml, parse_config
+from app.core.topology_utils import build_delegation_mermaid, build_delegation_topology
 from app.models import db as dbmod
 
 
@@ -44,6 +44,18 @@ class AgentService:
         try:
             agent_config = parse_config(config)
             return build_delegation_mermaid(agent_config)
+        except Exception:
+            return None
+
+    def build_topology(self, config: dict, *, show_general_purpose: bool = False) -> Optional[dict]:
+        """Build render-ready delegation topology {"nodes", "edges"} from a config dict.
+
+        Best-effort（与 render_mermaid 同策略）：解析失败返回 None，
+        由路由层退化为"仅主代理节点"的最小图，UI 永远有可渲染面。
+        """
+        try:
+            agent_config = parse_config(config)
+            return build_delegation_topology(agent_config, show_general_purpose=show_general_purpose)
         except Exception:
             return None
 

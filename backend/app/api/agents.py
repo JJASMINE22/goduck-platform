@@ -14,6 +14,7 @@ from app.models.schemas import (
     AgentOut,
     AgentUpdate,
     RestoreRequest,
+    TopologyGraph,
     ValidateRequest,
     ValidateResponse,
 )
@@ -141,6 +142,47 @@ async def get_topology_mmd(agent_id: uuid.UUID, request: Request):
         raise HTTPException(status_code=404, detail="agent not found")
     mermaid = svc.render_mermaid(agent["config_json"]) or ""
     return PlainTextResponse(mermaid, media_type="text/plain")
+
+
+@router.get("/{agent_id}/topology.json", response_model=TopologyGraph)
+async def get_topology_json(
+    agent_id: uuid.UUID,
+    request: Request,
+    ghosts: bool = Query(False, description="包含框架自动注入的 general-purpose ghost 节点"),
+):
+    """结构化委派拓扑（前端悬浮预览直接渲染）。
+
+    与 topology.mmd 同源（AgentConfig 树）但保留结构；mermaid 端点保留用于导出。
+    config 解析失败（旧数据/异常快照）时退化为仅主代理节点的最小图，而非 500。
+    """
+    svc = _service(request)
+    agent = await svc.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    topo = svc.build_topology(agent["config_json"], show_general_purpose=ghosts)
+    if topo is None:
+        topo = {
+            "nodes": [
+                {
+                    "id": "n0",
+                    "role": "main",
+                    "name": None,
+                    "summary": None,
+                    "depth": 0,
+                    "is_dicted": False,
+                    "dynamic_dispatch": False,
+                    "caps": {},
+                }
+            ],
+            "edges": [],
+        }
+    return TopologyGraph(
+        agent_id=agent["id"],
+        agent_name=agent["name"],
+        model_name=agent.get("model_name"),
+        usage=agent.get("kind") or "chat",
+        **topo,
+    )
 
 
 @router.get("/{agent_id}/history", response_model=list[AgentHistoryItem])

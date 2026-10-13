@@ -2,6 +2,7 @@
    任何 API 调用都应从这里导入类型，禁止散落的内联 any（DESIGN 准则 F1）。 */
 export * from './common'
 export * from './agent'
+export * from './topology'
 export * from './session'
 export * from './stream'
 export * from './voice'

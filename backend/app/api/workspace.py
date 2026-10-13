@@ -32,6 +32,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -99,6 +100,24 @@ def _stat_mtime(path: Path) -> Optional[str]:
         return datetime.fromtimestamp(path.stat().st_mtime).isoformat()
     except OSError:
         return None
+
+
+def _content_disposition(filename: str) -> str:
+    """构造 Content-Disposition 值（attachment）。
+
+    Starlette 对响应头值做 latin-1 编码：原生中文目录名（如
+    "EmbeddingGemma2-知识库应用计划.zip"）直接 UnicodeEncodeError → 500，
+    表现为"中文名目录不可下载、纯英文目录正常"。非 ASCII 名走 RFC5987
+    ``filename*``（percent-encode，浏览器解码还原中文名），并保留 ASCII
+    兜底 ``filename`` 供不支持 RFC5987 的旧客户端——与单文件路径
+    FileResponse 的 filename 处理语义同构。
+    """
+    quoted = quote(filename)
+    if quoted == filename:
+        return f'attachment; filename="{filename}"'
+    fallback = filename.encode("ascii", "ignore").decode("ascii").replace('"', "")
+    fallback = fallback or "download"
+    return f'attachment; filename="{fallback}"; filename*=utf-8\'\'{quoted}'
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +336,7 @@ async def workspace_download(
     return StreamingResponse(
         _zip_chunks(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+        headers={"Content-Disposition": _content_disposition(zip_name)},
     )
 
 

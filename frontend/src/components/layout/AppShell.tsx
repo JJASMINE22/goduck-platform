@@ -21,16 +21,16 @@ export function AppShell(): ReactNode {
     >
       {/* 环境光层：纯装饰光斑（pointer-events:none），玻璃面取景后获得常驻折射感 */}
       <div className="app-ambient" aria-hidden="true" />
-      {/* 模块卡提层（z-index:1）浮于光斑（z-index:0）之上 */}
+      {/* 模块卡提层（z-index:1）浮于光斑（z-index:0）之上。
+          折叠由 Logo 旁的侧栏内按钮驱动（不再用 antd 底部默认触发器），
+          collapsible 仅渲染触发器、不参与宽度受控，故可安全移除 */}
       <Sider
         className="app-sider app-glass"
-        collapsible
         collapsed={collapsed}
-        onCollapse={setCollapsed}
         width={220}
         style={{ overflow: 'hidden', position: 'relative', zIndex: 1 }}
       >
-        <Sidebar collapsed={collapsed} />
+        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
       </Sider>
       <Layout style={{ gap: 10, background: 'transparent', position: 'relative', zIndex: 1 }}>
         <Header

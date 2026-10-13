@@ -1,7 +1,9 @@
 /* 侧边导航 —— 对应 DESIGN §9 路由结构。AntD Menu + react-router 导航。
     能力驱动（F2）：知识库菜单仅在后端 kb_enabled=true 时出现（单一真相源 /health）。
+    品牌带右侧为侧栏折叠钮（<=|=> 样式，折叠后移至 Logo 正下方）；分组与
+    底部工具区不再用分割线，靠留白区隔（保持卡片一体感）。
     底部为用户区（账号芯片 + 切换 Popover）：身份常驻导航末端，顶栏不再承载。 */
-import { Bot, BookOpen, CalendarClock, Cpu, Database, MessagesSquare, Network } from 'lucide-react'
+import { Bot, BookOpen, CalendarClock, Cpu, Database, MessagesSquare, Network, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { Menu } from 'antd'
 import type { MenuProps } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -39,7 +41,7 @@ function selectedKey(pathname: string): string[] {
   return [top]
 }
 
-export function Sidebar({ collapsed = false }: { collapsed?: boolean }): ReactNode {
+export function Sidebar({ collapsed = false, onToggle }: { collapsed?: boolean; onToggle?: () => void }): ReactNode {
   const navigate = useNavigate()
   const location = useLocation()
   const { kb_enabled } = useCapabilities()
@@ -51,26 +53,45 @@ export function Sidebar({ collapsed = false }: { collapsed?: boolean }): ReactNo
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* 品牌带 76px：logo 底对齐（视觉中心比 56px 居中低 20px），高度计入布局
-          而非 margin 溢出——曾用 marginTop 补偿导致卡片滚动条 */}
+      {/* 品牌带 76px：展开态 logo 底对齐居中（原位不动），折叠钮绝对定位于右缘，
+          与 logo 同处一条视觉带；折叠态 logo 缩小、折叠钮移至其正下方居中。
+          高度计入布局而非 margin 溢出——曾用 marginTop 补偿导致卡片滚动条 */}
       <div
         style={{
           height: 76,
           display: 'flex',
-          alignItems: 'flex-end',
+          flexDirection: collapsed ? 'column' : 'row',
+          alignItems: collapsed ? 'center' : 'flex-end',
           justifyContent: 'center',
-          padding: collapsed ? '0 12px 0' : '0 20px',
+          gap: collapsed ? 4 : 0,
+          padding: collapsed ? '6px 0' : '0 20px',
           fontWeight: 700,
           fontSize: 18,
-          borderBottom: '1px solid var(--color-border-soft)',
           flexShrink: 0,
+          position: 'relative',
         }}
       >
         <img
           src="/logo-transparent.png"
           alt="goduck"
-          style={{ maxHeight: 56, maxWidth: '100%', objectFit: 'contain' }}
+          style={{
+            maxHeight: collapsed ? 32 : 56,
+            maxWidth: '100%',
+            objectFit: 'contain',
+            transition: 'max-height .2s ease',
+          }}
         />
+        <button
+          type="button"
+          className="sider-toggle"
+          onClick={onToggle}
+          title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+          aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+          aria-expanded={!collapsed}
+          style={collapsed ? undefined : { position: 'absolute', right: 12, bottom: 11 }}
+        >
+          {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={16} />}
+        </button>
       </div>
       {/* 菜单区自身滚动：菜单项再多也不撑出卡片级滚动条（卡片整体不滚动） */}
       <Menu
@@ -81,8 +102,8 @@ export function Sidebar({ collapsed = false }: { collapsed?: boolean }): ReactNo
         onClick={onClick}
         style={{ flex: 1, borderInlineEnd: 'none', overflowX: 'hidden', overflowY: 'auto', paddingBottom: 8 }}
       />
-      {/* 底部工具区（菜单下方、折叠钮上方）：主题切换（Light|Dark 分段胶囊）
-           + 用户芯片；折叠时两者都退化为居中圆钮 */}
+      {/* 底部工具区（菜单下方）：主题切换（Light|Dark 分段胶囊）+ 用户芯片；
+           折叠时两者都退化为居中圆钮。与菜单间以留白区隔（无分割线） */}
       <div
         style={{
           flexShrink: 0,
@@ -91,7 +112,6 @@ export function Sidebar({ collapsed = false }: { collapsed?: boolean }): ReactNo
           alignItems: 'center',
           gap: 8,
           padding: collapsed ? '10px 0 12px' : '10px 12px 12px',
-          borderTop: '1px solid var(--color-border-soft)',
         }}
       >
         <ThemeToggle collapsed={collapsed} />

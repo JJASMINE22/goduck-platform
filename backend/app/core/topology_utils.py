@@ -207,6 +207,92 @@ def build_delegation_mermaid(
     return mermaid
 
 
+def _summary_line(node: AgentConfig, is_main: bool) -> Optional[str]:
+    """单行摘要: main 取 system_prompt 首行（schema 上无 description），sub 取 description 首行。"""
+    if is_main:
+        lines = (node.system_prompt or "").strip().splitlines()
+        return lines[0] or None
+    text = (node.description or "").strip()
+    if not text:
+        return None
+    return text.splitlines()[0]
+
+
+def _caps(node: AgentConfig) -> dict:
+    """节点能力摘要（TopologyNodeCaps 字段对齐）。"""
+    rubric_on = bool(
+        node.rubric and ((node.rubric.content or "").strip() or node.rubric.criteria)
+    )
+    return {
+        "tools": list(node.tool_names or []),
+        "skills": [_skill_short(s) for s in (node.skills or [])],
+        "hitl": [k for k, v in (node.interrupt_on or {}).items() if v],
+        "memory": bool(node.memory),
+        "workspace": bool(node.workspace),
+        "shell": bool(node.allow_shell),
+        "rubric": rubric_on,
+        "task_planning": bool(node.task_planning),
+    }
+
+
+def build_delegation_topology(
+    agent_config: AgentConfig,
+    show_general_purpose: bool = False,
+) -> dict:
+    """纯内存: 由 AgentConfig 合成结构化委派拓扑 dict（{"nodes": [...], "edges": [...]}）。
+
+    与 build_delegation_mermaid 同源同遍历，但产出渲染就绪的结构（角色/能力/深度），
+    前端 React Flow 直接消费、无需解析 mermaid 文本。
+    """
+    nodes: List[dict] = []
+    edges: List[dict] = []
+    counter = {"i": 0}
+
+    def _nid() -> str:
+        counter["i"] += 1
+        return f"n{counter['i']}"
+
+    def _walk(node: AgentConfig, is_main: bool, depth: int) -> str:
+        nid = _nid()
+        nodes.append(
+            {
+                "id": nid,
+                "role": "main" if is_main else "sub",
+                "name": None if is_main else (node.name or "未命名"),
+                "summary": _summary_line(node, is_main),
+                "depth": depth,
+                "is_dicted": (not is_main) and bool(node.is_dicted),
+                "dynamic_dispatch": bool(node.dynamic_dispatch),
+                "caps": _caps(node),
+            }
+        )
+        children = node.subagents or []
+        for child in children:
+            cid = _walk(child, False, depth + 1)
+            edges.append({"id": f"{nid}-{cid}", "source": nid, "target": cid, "kind": "task"})
+
+        # general-purpose 是框架为每个含子代理的节点自动注入的同级委派目标
+        if show_general_purpose and children:
+            gid = _nid()
+            nodes.append(
+                {
+                    "id": gid,
+                    "role": "ghost",
+                    "name": "general-purpose",
+                    "summary": "框架自动注入的同级委派目标",
+                    "depth": depth + 1,
+                    "is_dicted": False,
+                    "dynamic_dispatch": False,
+                    "caps": {},
+                }
+            )
+            edges.append({"id": f"{nid}-{gid}", "source": nid, "target": gid, "kind": "auto"})
+        return nid
+
+    _walk(agent_config, True, 0)
+    return {"nodes": nodes, "edges": edges}
+
+
 def render_delegation_tree(
     agent_config: AgentConfig,
     output_dir: str = "topology",

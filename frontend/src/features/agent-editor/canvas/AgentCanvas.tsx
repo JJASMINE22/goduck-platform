@@ -4,6 +4,9 @@
    - 拖拽节点 → onNodesChange 写回 positions 触发重渲染
    - 连线（onConnect）= 换父级（target 的父改为 source）。拖拽进行中按 canReparent 同款
      规则高亮合法/非法落点并在起点浮出语义提示；isValidConnection 兜底拦截非法吸附
+   - 悬停节点 → 上下游链路高亮（intent-trace）：链路节点/边亮、其余压暗；
+     连线拖拽期间禁用（避免与落点合法性高亮叠加）。链路集经 Context 下发，
+     rfNodes 不随 hover 重建（防全量重渲抖动）
    - 模板从侧栏拖入（onDrop）= 建子节点并定位到落点
    - 删除走节点卡按钮（store.removeNode），禁用键盘删除以免与 store 不同步 */
 import '@xyflow/react/dist/style.css'
@@ -22,14 +25,20 @@ import {
   type NodeTypes,
   type OnConnectStartParams,
 } from '@xyflow/react'
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAgentEditorStore } from '@/store/agentEditorStore'
 import { findTemplate } from '../templates'
-import { canReparent, descendantIds, type AgentGraphNode } from '../graphModel'
+import { canReparent, chainSet, descendantIds, type AgentGraphNode } from '../graphModel'
 import { layoutTree, type XYPos } from './layout'
 import { AgentNodeCard, type ConnectRole } from './AgentNode'
+import { CanvasInteractionContext, type CanvasInteraction } from './canvasInteraction'
 
 const EDGE_TYPE = 'smoothstep'
+
+/** 悬停提交去抖：进入 40ms（近乎即时）、离开 110ms（平滑跨过节点间隙）。
+    与拓扑预览同款参数，避免快速移动时链路高亮频闪。 */
+const HOVER_COMMIT_MS = 40
+const HOVER_CLEAR_MS = 110
 
 /** 鼠标距节点手柄该半径内释放即吸附成线（配合手柄透明热区，降低瞄准精度要求） */
 const CONNECTION_RADIUS = 30
@@ -84,12 +93,31 @@ function CanvasInner(): ReactNode {
   const [positions, setPositions] = useState<Record<string, XYPos>>({})
   // 连线拖拽进行中的起点（null = 未连线）
   const [connectFrom, setConnectFrom] = useState<ConnectFrom | null>(null)
+  // 悬停链路高亮：与拓扑预览同款去抖提交
+  const [hoverId, setHoverId] = useState<string | null>(null)
+  const hoverTimer = useRef<number | null>(null)
+  const commitHover = useCallback((nid: string | null) => {
+    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current)
+    hoverTimer.current = window.setTimeout(() => setHoverId(nid), nid ? HOVER_COMMIT_MS : HOVER_CLEAR_MS)
+  }, [])
 
   const rootId = nodes?.find((n) => n.parentId === null)?.id ?? null
 
-  // 派生画布节点/边：dagre 布局打底，positions 覆盖手动定位
-  const { rfNodes, rfEdges } = useMemo(() => {
-    if (!nodes) return { rfNodes: [] as Node[], rfEdges: [] as Edge[] }
+  // 悬浮链路集：连线进行中禁用；节点已不在树中（删除/外部重置）按无悬停处理
+  const litIds = useMemo(() => {
+    if (connectFrom || !hoverId) return null
+    if (!nodes?.some((n) => n.id === hoverId)) return null
+    return chainSet(nodes, hoverId)
+  }, [connectFrom, hoverId, nodes])
+
+  const interaction: CanvasInteraction = useMemo(
+    () => ({ litIds, hoverId, onHover: commitHover }),
+    [litIds, hoverId, commitHover],
+  )
+
+  // 派生画布节点：dagre 布局打底，positions 覆盖手动定位（与 hover 无关，引用稳定）
+  const rfNodes = useMemo(() => {
+    if (!nodes) return [] as Node[]
     const laid = layoutTree(nodes)
     const resolved = { ...laid, ...positions }
     // 收集所有 dynamic_dispatch 子树(含自身)的节点 id: 这些节点显示动态光环
@@ -106,31 +134,43 @@ function CanvasInner(): ReactNode {
         : null
     const connectHint =
       connectFrom?.handleType === 'target' ? HINT_AS_CHILD : HINT_TAKE_CHILD
-    return {
-      rfNodes: nodes.map((n) => ({
-        id: n.id,
-        type: 'agent',
-        position: resolved[n.id] ?? { x: 0, y: 0 },
-        data: {
-          node: n,
-          selected: n.id === selectedNodeId,
-          dynamic: dynamicIds.has(n.id),
-          connecting: !!roles,
-          connectRole: roles?.get(n.id) ?? 'none',
-          connectHint: roles?.get(n.id) === 'self' ? connectHint : undefined,
-        },
-      })),
-      rfEdges: nodes
-        .filter((n) => n.parentId)
-        .map((n) => ({
+    return nodes.map((n) => ({
+      id: n.id,
+      type: 'agent',
+      position: resolved[n.id] ?? { x: 0, y: 0 },
+      data: {
+        node: n,
+        selected: n.id === selectedNodeId,
+        dynamic: dynamicIds.has(n.id),
+        connecting: !!roles,
+        connectRole: roles?.get(n.id) ?? 'none',
+        connectHint: roles?.get(n.id) === 'self' ? connectHint : undefined,
+      },
+    }))
+  }, [nodes, selectedNodeId, positions, connectFrom])
+
+  // 边随链路集重算（链路边亮、其余压暗；行进动画保持）；节点数组不因此重建
+  const rfEdges = useMemo(() => {
+    if (!nodes) return [] as Edge[]
+    return nodes
+      .filter((n) => n.parentId)
+      .map((n) => {
+        const inChain = !!litIds && litIds.has(n.parentId as string) && litIds.has(n.id)
+        const cls = inChain
+          ? 'editor-edge editor-edge--chain'
+          : litIds
+            ? 'editor-edge editor-edge--dim'
+            : 'editor-edge'
+        return {
           id: `e-${n.parentId}-${n.id}`,
           source: n.parentId as string,
           target: n.id,
           type: EDGE_TYPE,
           animated: true,
-        })),
-    }
-  }, [nodes, selectedNodeId, positions, connectFrom])
+          className: cls,
+        }
+      })
+  }, [nodes, litIds])
 
   // 拖拽：把最新坐标写回 positions
   const onNodesChange = useCallback((changes: NodeChange[]) => {
@@ -193,33 +233,35 @@ function CanvasInner(): ReactNode {
 
   return (
     <div className="agent-canvas" onDrop={onDrop} onDragOver={onDragOver}>
-      <ReactFlow
-        nodes={rfNodes}
-        edges={rfEdges}
-        nodeTypes={{ agent: AgentNodeCard } as NodeTypes}
-        onNodesChange={onNodesChange}
-        onNodeClick={(_, n) => selectNode(n.id)}
-        onConnect={onConnect}
-        onConnectStart={onConnectStart}
-        onConnectEnd={onConnectEnd}
-        isValidConnection={isValidConnection}
-        connectionRadius={CONNECTION_RADIUS}
-        deleteKeyCode={null}
-        fitView
-        fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background gap={18} size={1} color="var(--color-border-soft)" />
-        <Controls showInteractive={false} />
-        <MiniMap
-          pannable
-          zoomable
-          nodeStrokeWidth={2}
-          nodeColor="var(--color-role-agent-sub)"
-          maskColor="var(--color-bg)"
-          style={{ background: 'var(--color-bg-elevated)' }}
-        />
-      </ReactFlow>
+      <CanvasInteractionContext.Provider value={interaction}>
+        <ReactFlow
+          nodes={rfNodes}
+          edges={rfEdges}
+          nodeTypes={{ agent: AgentNodeCard } as NodeTypes}
+          onNodesChange={onNodesChange}
+          onNodeClick={(_, n) => selectNode(n.id)}
+          onConnect={onConnect}
+          onConnectStart={onConnectStart}
+          onConnectEnd={onConnectEnd}
+          isValidConnection={isValidConnection}
+          connectionRadius={CONNECTION_RADIUS}
+          deleteKeyCode={null}
+          fitView
+          fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background gap={18} size={1} color="var(--color-border-soft)" />
+          <Controls showInteractive={false} />
+          <MiniMap
+            pannable
+            zoomable
+            nodeStrokeWidth={2}
+            nodeColor="var(--color-role-agent-sub)"
+            maskColor="var(--color-bg)"
+            style={{ background: 'var(--color-bg-elevated)' }}
+          />
+        </ReactFlow>
+      </CanvasInteractionContext.Provider>
     </div>
   )
 }

@@ -1,7 +1,8 @@
 /* Markdown 渲染 —— agent 回复 / rubric / 附件清单展示。
    react-markdown + gfm + 代码高亮 + 数学公式（remark-math → KaTeX）。
-   代码块带「复制」；mermaid 块带「下载 SVG / 复制源码」；
-   图像带「下载」（未来 agent 出图即用）。mermaid 走单一渲染入口（准则 F7）。 */
+   代码块带「复制」；mermaid 块带「下载 SVG / 复制源码」；svg 围栏走 SvgFigure
+   （净化 + 作用域主题化，见 svgScope.css）；图像带「下载」。
+   mermaid/svg 均走单一渲染入口（准则 F7）。未启用 rehype-raw：内联 HTML 不渲染。 */
 import { type ReactElement, type ReactNode, memo, useEffect, useRef, useState } from 'react'
 import ReactMarkdown, { type Components, type Options } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -11,6 +12,7 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { renderMermaidInto } from '@/lib/mermaid'
+import { SvgFigure } from './SvgFigure'
 import { useThemeStore } from '@/store/themeStore'
 
 /** LLM 常把公式写作 \(..\)/\[..\]，remark-math 只认 $..$/$$..$$。
@@ -171,9 +173,15 @@ const MD_COMPONENTS: Components = {
     const className: string = codeEl?.props?.className || ''
     const match = /language-(\w+)/.exec(className)
     const source = extractText(codeEl?.props?.children)
-    if (match?.[1] === 'mermaid') return <MermaidBlock code={source} />
+    const lang = match?.[1] ?? ''
+    if (lang === 'mermaid') return <MermaidBlock code={source} />
+    // svg 围栏专用块；xml/html 语言且正文以 <svg 开头也视为 SVG（模型常见写法兜底）
+    const looksLikeSvg = source.trimStart().slice(0, 5).toLowerCase() === '<svg'
+    if (lang === 'svg' || ((lang === 'xml' || lang === 'html') && looksLikeSvg)) {
+      return <SvgFigure code={source} />
+    }
     return (
-      <CodeBlock lang={match?.[1] ?? ''} source={source}>
+      <CodeBlock lang={lang} source={source}>
         {children}
       </CodeBlock>
     )
