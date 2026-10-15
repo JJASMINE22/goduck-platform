@@ -193,8 +193,19 @@ pre,
   pointer-events: auto;
 }
 /* 悬停回合整体提到后续回合之上（flex item 直接支持 z-index）：
-   否则操作条向下溢出的 ~12px 会被 DOM 更靠后的兄弟回合盖住、点击被抢走 */
-.msg-in:hover { z-index: 10; }
+   否则操作条向下溢出的 ~12px 会被 DOM 更靠后的兄弟回合盖住、点击被抢走。
+   【病灶4】上方 @supports 块给 .msg-in 的 content-visibility:auto 隐式开启
+   paint containment——裁剪边界是本行边框盒，而操作条（top:100%）悬挂在
+   边框盒之外，会被整段裁掉：opacity/几何全正常但既不绘制也不进命中测试
+   （elementsFromPoint 无此元素），悬停提层救不了"被自己祖先裁剪"。
+   悬停/聚焦行时解除 cv（与 .msg-turn:hover/:focus-within 的操作条显形
+   同态）；行必在屏内、实际尺寸已被 contain-intrinsic-size:auto 记忆，
+   切换无布局跳动，非悬停行的渲染收敛不受影响。 */
+.msg-in:hover,
+.msg-in:focus-within {
+  z-index: 10;
+  content-visibility: visible;
+}
 /* 回撤按钮：流体玻璃胶囊——半透磨砂取景后景 + 顶部/底部镜面 rim 高光 + 全圆角；
    字号小于正文，弱化视觉；24px 高度保证可点性 */
 .msg-turn__action .ant-btn {
