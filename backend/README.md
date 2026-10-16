@@ -39,7 +39,7 @@ backend/
 │   │   ├── thinking_patch.py#   思考流事件补丁
 │   │   ├── storage.py       #   MinIO 附件字节持久层
 │   │   ├── content_composer.py / message_content.py / mime_utils.py
-│   │   │                    #   附件/KB 锚点 → HumanMessage.content 组装、多模态消息
+│   │   │                    #   附件 → HumanMessage.content 组装（多模态）；KB 锚点以用户提示注入前置
 │   │   ├── knowledge_service.py / embedding.py / vector_store.py / ingest_pool.py
 │   │   │                    #   知识库：入库/检索、TEI 向量化、ES 向量库、后台入库池
 │   │   ├── doc_convert.py   #   office 文档 → Markdown 预览（markitdown）
@@ -101,7 +101,8 @@ backend/
 ## 关键设计
 
 - **无版本化 + 会话-智能体解耦**：`agent.id` 全程稳定不变；更新 = in-place 覆写
-  `config_json` + 追加 `agent_config_history` 快照。同一会话可逐回合切换智能体：
+  `config_json` + 追加 `agent_config_history` 快照。同一会话可逐回合切换智能体
+  （上下文状态 / 回撤 / 中止 / HITL 均以 thread 为锚，不受切换影响）：
   `POST /messages` 等写者带 `agent_id`（缺省回落 `session.last_agent_id`），send
   时写入 last；withdraw / 能力端点 / `GET /interrupt` 走弱绑定解析（显式 >
   last）；`POST /resume` 恒经 last（HITL 悬空期门禁禁止切换/发新消息，构造性

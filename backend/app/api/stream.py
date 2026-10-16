@@ -5,7 +5,8 @@
 - POST /sessions/{id}/resume    : HITL 决策 → 续跑 run → SSE（同上）
 - GET  /sessions/{id}/stream    : 观察流（重挂：Last-Event-ID / ?after 增量回放
                                   后转 live；无 run → 204）
-- POST /sessions/{id}/cancel    : 显式取消当前 run（广播 canceled 终态）
+- POST /sessions/{id}/cancel    : 显式取消当前 run（广播 canceled 终态；join
+                                   task 终止后清孤儿 pending——中止后可直接再发）
 
 回合与连接解耦（RunManager）：订阅者断开（SPA 导航/刷新/断网）不再终止回合；
 流以 done / interrupt / error / canceled 显式收尾。resume 校验图确在中断态，
@@ -13,11 +14,13 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
+from langgraph.graph import END
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.schema_utils import AgentConfig
@@ -41,6 +44,7 @@ from app.services.run_manager import (
     RunLimitError,
 )
 from app.services.run_source import chat_event_source
+from app.services.stream_adapter import has_interrupt
 from app.streaming.events import SSEEvent
 
 logger = logging.getLogger(__name__)
@@ -135,19 +139,80 @@ async def capability_agent_row(
     return row
 
 
-async def _refuse_pending_interrupt(agent, config) -> None:
-    """HITL 门禁（plan §4.4）：悬空中断存在（state.next 非空）时拒绝新回合。
+async def _refuse_or_heal_pending(agent, config) -> None:
+    """新回合前置门禁（plan §4.4）+ 中止残留自愈。
 
-    行为变更：此前新消息会静默取消待审批（interrupt 被新输入丢弃）；解耦后
-    悬空期必须先经 resume（审批）或 withdraw（回撤该回合）收场，再发新消息。
-    判据通道级（任意图可读 checkpoint 的 state.next），与图身份无关。
+    - 干净线程（state.next 为空）：放行；
+    - 真 HITL 中断（任一 task.interrupts 非空）：409 拒绝——悬空期必须先经
+      resume（审批）或 withdraw（回撤该回合）收场，审批不可被新输入静默丢弃
+      （行为变更：静默取消 → 显式 409；判据通道级，与图身份无关）；
+    - 孤儿 pending（state.next 非空但无 interrupts：cancelled / 崩溃 run 的
+      残留）：以 ``values=None, as_node=END`` 清尾后放行（与 withdraw 清尾
+      同手法，见 session_service._apply_withdraw_update——不经 writer 链，
+      任何图状态安全）。「中止后直接发新消息」即走此路径，不再强制先撤回。
     """
     state = await agent.aget_state(config)
-    if state.next:
+    if not state.next:
+        return
+    if has_interrupt(state):
         raise HTTPException(
             status_code=409,
             detail="该会话存在待审批的中断（HITL），请先处理审批或回撤该回合后再发新消息",
         )
+    # 中止/崩溃残留：未竟执行就地作废，放行本回合
+    await agent.aupdate_state(config, None, as_node=END)
+
+
+# 取消收尾 join 上限：canceled 广播 + on_final + 生成器链 aclose 通常瞬时完成；
+# 超时（事件源卡在不可取消的 I/O 等病态情形）则放弃本次清理，残留交由
+# _refuse_or_heal_pending 自愈兜底
+_CANCEL_JOIN_TIMEOUT_S = 10.0
+
+
+async def join_cancelled_run(run, timeout_s: float = _CANCEL_JOIN_TIMEOUT_S) -> bool:
+    """等待已请求取消的 run task 真正终止，返回是否在时限内终止。
+
+    取消收尾（clear_orphan_pending）的前置：canceled 广播、on_final 回调、
+    事件源生成器链 aclose 全部完成后 checkpoint 写入才停，先行清理会与之竞争。
+
+    - gather(return_exceptions=True)：run task 以 CancelledError / 异常收尾
+      对等待方都是"已终止"，不外抛（调用方自身的取消不受影响，正常传播）；
+    - shield：超时时 wait_for 只取消外壳，不向已在取消收尾中的 run task
+      二次注入 cancel（可能打断其 finally 清理）。
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(asyncio.gather(run.task, return_exceptions=True)),
+            timeout=timeout_s,
+        )
+        return True
+    except asyncio.TimeoutError:
+        logger.warning(
+            "cancelled run %s did not terminate within %.1fs; skip state cleanup",
+            run.token,
+            timeout_s,
+        )
+        return False
+
+
+async def clear_orphan_pending(st, session: dict, agent_id: uuid.UUID | None = None) -> bool:
+    """清空 cancelled / 崩溃 run 残留的孤儿 pending（取消路径的源头收尾）。
+
+    判据与门禁（_refuse_or_heal_pending）一致：state.next 非空且无任何
+    task.interrupts 才清理——真 HITL 中断绝不触碰（审批不可静默丢弃）。
+    清尾手法与 withdraw 相同（values=None, as_node=END，不经 writer 链，
+    任何状态安全）；取图弱绑定（显式 agent_id > last_agent_id），与回撤同
+    规则。返回是否执行了清理；异常向上抛，由调用方决定吞或报（取消路径
+    best-effort 吞掉并告警，门禁自愈兜底）。
+    """
+    config = _config_for(session)
+    chosen = await resolve_agent_choice_or_409(st, session, agent_id)
+    agent = await _build_agent_or_409(st, chosen)
+    state = await agent.aget_state(config)
+    if not state.next or has_interrupt(state):
+        return False
+    await agent.aupdate_state(config, None, as_node=END)
+    return True
 
 
 async def _load_session_or_404(request: Request, session_id: uuid.UUID) -> dict:
@@ -249,8 +314,9 @@ async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request:
     chosen_id = await resolve_agent_choice_or_409(st, session, body.agent_id)
     agent = await _build_agent_or_409(st, chosen_id)
 
-    # HITL 门禁（§4.4）：悬空中断存在时拒绝新回合（行为变更：静默取消 → 显式 409）
-    await _refuse_pending_interrupt(agent, config)
+    # HITL 门禁 + 中止残留自愈（§4.4）：真中断 409 拒绝（审批不可静默丢弃）；
+    # cancelled/崩溃残留的孤儿 pending 就地清尾后放行（不再强制先撤回）
+    await _refuse_or_heal_pending(agent, config)
 
     # 附件/KB 校验（流外，plan §6.5）—— 与语音 WS 共享同一校验器：能力门控 422 /
     # 附件归属 403 / KB 不存在 404 / 503 以 HTTP 状态码尽早暴露。组装（含图像
@@ -444,12 +510,28 @@ async def observe_stream(
 @router.post("/{session_id}/cancel")
 async def cancel_run(session_id: uuid.UUID, request: Request):
     """显式取消当前 run：广播 canceled 终态（各订阅者据其落态），随后释放
-    单写者闸（withdraw 即刻放行）。无 active run → 409。"""
+    单写者闸（withdraw 即刻放行）。无 active run → 409。
+
+    取消收尾（孤儿 pending 清理）：join run task 终止后清空图状态残留的
+    pending task，使「中止后直接发新消息」即刻可行（此前该残留被门禁误判
+    为待审批中断，强制先撤回）。清理 best-effort：join 超时或清理失败仅
+    告警，残留由 send 门禁的自愈（_refuse_or_heal_pending）兜底。
+    """
     st = get_appstate(request)
     session, _svc = await _load_session_or_404(request, session_id)
     _refuse_cron_session(session, action="手动取消")
-    if not st.run_manager.cancel(session["thread_id"]):
+    run = st.run_manager.cancel(session["thread_id"])
+    if run is None:
         raise HTTPException(status_code=409, detail="当前没有进行中的回合")
+    if await join_cancelled_run(run):
+        try:
+            await clear_orphan_pending(st, session)
+        except Exception:
+            logger.warning(
+                "cancel cleanup failed for session %s (send gate will self-heal)",
+                session_id,
+                exc_info=True,
+            )
     return {"ok": True}
 
 

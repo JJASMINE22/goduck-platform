@@ -39,6 +39,9 @@ from websockets.exceptions import WebSocketException
 from app.api.stream import (
     _build_agent_or_409,
     _persist_usage,
+    _refuse_or_heal_pending,
+    clear_orphan_pending,
+    join_cancelled_run,
     resolve_agent_choice_or_409,
 )
 from app.deps import SimpleUser, get_ws_appstate
@@ -420,9 +423,15 @@ async def _run_agent_round(
         # cancel / 超越 start / 断连：终止 run。canceled 终态经隧道下发后自然
         # 收口（连接已死时无人消费，仅取消即可）；取消后的残余异常不再下发，
         # 仅断连向上传播走统一收尾
-        st.run_manager.cancel(thread_id)
+        run = st.run_manager.cancel(thread_id)
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await tunnel_task
+        # 图状态收尾（与 SSE cancel 同手法）：join run task 终止后清孤儿
+        # pending。best-effort——断连场景失败无妨，残留由下一回合的门禁
+        # 自愈（_refuse_or_heal_pending）兜底。须在 raise 之前执行。
+        if run is not None and await join_cancelled_run(run):
+            with contextlib.suppress(Exception):
+                await clear_orphan_pending(st, session)
         if watcher_exc is not None:
             raise watcher_exc
     else:
@@ -514,17 +523,16 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
                 await sess.send_error(str(e.detail))
                 continue
 
-            # HITL 门禁（§4.4）：悬空中断存在时拒绝新回合（与 POST /messages 同语义，
-            # 行为变更：静默取消 → 显式拒绝）。
+            # HITL 门禁 + 中止残留自愈（§4.4，与 POST /messages 同语义）：真
+            # 中断拒绝新回合；cancelled/崩溃残留的孤儿 pending 清尾后放行。
             try:
-                state = await agent.aget_state(config)
-                if state.next:
-                    await sess.send_error(
-                        "该会话存在待审批的中断（HITL），请先处理审批或回撤该回合后再发新消息"
-                    )
-                    continue
-            except Exception as e:  # noqa: BLE001 — aget_state 失败按回合错误处理
-                logger.warning("voice gate aget_state failed: %s", e)
+                await _refuse_or_heal_pending(agent, config)
+            except HTTPException as e:
+                await sess.send_error(str(e.detail))
+                continue
+            except Exception:
+                # 状态读取/自愈失败不阻断回合（沿用原语义；exc_info 告警自证）
+                logger.warning("voice gate state check failed", exc_info=True)
 
             # start 快照校验（录音前暴露配置错误；失败 → error 帧、回合作废）
             try:

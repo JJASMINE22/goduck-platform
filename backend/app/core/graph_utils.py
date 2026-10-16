@@ -153,6 +153,47 @@ def _main_delegation_guard(has_subagents: bool, workspace: bool) -> str | None:
     )
 
 
+def _shell_workspace_note(allow_shell: bool, workspace: bool) -> str | None:
+    """shell 虚实路径对齐提示（构建期追加 system_prompt，per-node）。
+
+    动机：文件工具走 CompositeBackend 虚拟路由（/workspace/ 等前缀映射到按
+    用户隔离的磁盘目录），execute 却在真实宿主 shell 中执行——shell 的 cwd
+    恰为同一目录，但虚拟前缀本身在宿主上并不存在。模型若在 shell 中使用字面
+    /workspace/...（如 ls /workspace、cat /workspace/x.md）会得到 not found，
+    误判"文件丢失"而重复落盘，甚至以绝对路径在工作区之外制造孤儿文件
+    （Windows 本地开发下 /workspace 解析到盘符根，可能真的建出目录）。
+
+    纯认知对齐：不改任何执行语义；未开 allow_shell 的节点不注入。
+    """
+    if not allow_shell:
+        return None
+    head = (
+        "\n\n---\n\n## Shell 与文件工具的路径对齐（平台自动注入）\n"
+        "你同时持有文件工具与 execute（shell），二者路径体系不同：\n"
+        "- 文件工具（ls/read/write/edit/glob/grep）使用虚拟路径，虚拟根即你的专属工作区；\n"
+        "- execute 在真实 shell 中执行，其当前工作目录（pwd）就是文件工具虚拟根的落点，"
+        "两者指向同一批文件。\n"
+    )
+    if workspace:
+        mapping = (
+            "- /workspace/ 是虚拟挂载：文件工具写 /workspace/report.md，在 shell 中对应"
+            "当前工作目录下的 report.md。**禁止**在 shell 中使用字面 /workspace/... 绝对"
+            "路径（宿主上不存在该目录，必然 not found）；一律改用相对路径"
+            "（ls、cat report.md、find . -name 'report.md'）。\n"
+        )
+    else:
+        mapping = (
+            "- shell 中访问文件工具写过的文件时，一律使用相对路径；不要把文件工具的"
+            "虚拟绝对路径（/xxx）直接交给 shell 执行。\n"
+        )
+    tail = (
+        "- 验证落盘是否成功优先用文件工具，而不是在 shell 中按绝对路径查找。\n"
+        "- 其余虚拟挂载（/skills/、/memories/ 等，如已启用）同样仅文件工具可见，"
+        "shell 中不可达。\n"
+    )
+    return head + mapping + tail
+
+
 def _kb_capability_prompt(tool_names: List[str]) -> str | None:
     """知识库检索纪律（构建期追加到 system_prompt，仅主代理生效）。
 
@@ -340,6 +381,13 @@ def create_agent_recursive(
                 agent_config.get("tool_names", []),
             )
 
+    # shell 虚实路径对齐提示（per-node）：置于 is_main_agent 块外，独立开启
+    # allow_shell 的 compiled 子代理同样获得提示（递归使其 per-node 生效）；
+    # dicted 叶子已提前返回，共享父 backend，由父节点的提示覆盖。
+    _shell_note = _shell_workspace_note(cfg_allow_shell, cfg_workspace)
+    if _shell_note:
+        agent_config["system_prompt"] += _shell_note
+
     create_kwargs = dict(
         model=ctx.model,
         tools=agent_tools,
@@ -477,6 +525,13 @@ def create_agent_dictionary(
     _maybe_append_kb_gate(
         main_middleware, ctx, cfg_allow_knowledge, agent_config.get("tool_names", [])
     )
+
+    # shell 虚实路径对齐提示：dictionary 路径 backend 为主代理统一构建（dicted
+    # 子代理随父生效），提示同样只注入主代理 system_prompt（与 recursive 路径
+    # 的 compiled per-node 语义对应）。
+    _shell_note = _shell_workspace_note(cfg_allow_shell, cfg_workspace)
+    if _shell_note:
+        agent_config["system_prompt"] += _shell_note
 
     create_kwargs = dict(
         model=ctx.model,

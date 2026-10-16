@@ -309,7 +309,10 @@ pre,
   display: inline-flex;
   gap: 4px;
   align-items: center;
-  padding: 2px 0;
+  /* 顶部必须留足 ≥4px 弹跳余量：上抛若越出本盒上缘，会被 .msg-in 的
+     content-visibility:auto 隐式 paint containment 沿行盒平直裁剪
+     （视觉即"动态三点被分割线截断"，同回撤操作条的病灶4机制） */
+  padding: 5px 0 3px;
   line-height: 1;
 }
 .typing-dot {
@@ -322,7 +325,7 @@ pre,
 .typing-dot:nth-child(2) { animation-delay: 0.15s; }
 .typing-dot:nth-child(3) { animation-delay: 0.3s; }
 @keyframes dot-bounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.55; }
   30% { transform: translateY(-4px); opacity: 1; }
 }
 

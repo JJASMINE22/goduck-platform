@@ -182,8 +182,13 @@ def _msg_to_events(msg, agent_path: str, streamed_ids: set[str]) -> list[SSEEven
     return events
 
 
-def _has_interrupt(state) -> bool:
-    """True if the graph paused on a HITL interrupt."""
+def has_interrupt(state) -> bool:
+    """True if the graph paused on a HITL interrupt.
+
+    与 state.next 非空区分：中止/崩溃 run 残留的孤儿 pending 同样使
+    state.next 非空，但 tasks 不带 interrupts——取消收尾（cancel_run）与
+    send 门禁（_refuse_or_heal_pending）据此区分"真中断"与"孤儿 pending"。
+    """
     for task in getattr(state, "tasks", []):
         if getattr(task, "interrupts", None):
             return True
@@ -385,7 +390,7 @@ class StreamAdapter:
                     state = await agent.aget_state(config)
 
                     if state.next:
-                        if _has_interrupt(state):
+                        if has_interrupt(state):
                             # 终 drain 兜底"节点完成后、interrupt 前"的最后一批写入
                             for ev in self._file_change_events(
                                 file_change_tracker.drain(collector), agent_path,

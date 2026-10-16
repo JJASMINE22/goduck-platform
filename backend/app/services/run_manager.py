@@ -169,13 +169,19 @@ class RunManager:
         self._runs[thread_id] = run
         return run
 
-    def cancel(self, thread_id: str) -> bool:
-        """显式取消 active run（广播 canceled 终态）；无 active run 返回 False。"""
+    def cancel(self, thread_id: str) -> RunState | None:
+        """显式取消 active run（广播 canceled 终态）；无 active run 返回 None。
+
+        返回被取消的 RunState：调用方若需收尾图状态（清孤儿 pending，见
+        api/stream.cancel_run），必须先等 run.task 真正终止（canceled 广播、
+        on_final、生成器链 aclose 全部完成）再清理，否则清理会与仍在写入的
+        checkpoint 竞争。仅查询真值语义的调用方按 None / 非 None 判断即可。
+        """
         run = self._runs.get(thread_id)
         if run is None or run.done:
-            return False
+            return None
         run.task.cancel()
-        return True
+        return run
 
     def is_active(self, thread_id: str) -> bool:
         """该 thread 是否有进行中的 run（withdraw / cron 占用闸的查询面）。"""
