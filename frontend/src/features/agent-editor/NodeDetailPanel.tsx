@@ -112,13 +112,25 @@ export function NodeDetailPanel(): ReactNode {
               <Input value={node.name ?? ''} onChange={(e) => patch({ name: e.target.value })} placeholder="如 researcher" />
             </Field>
             <Field label="子代理描述（必填）">
-              <Input value={node.description ?? ''} onChange={(e) => patch({ description: e.target.value })} placeholder="一句话职责" />
+              <Input.TextArea
+                rows={1}
+                className="drag-ta"
+                value={node.description ?? ''}
+                onChange={(e) => patch({ description: e.target.value })}
+                placeholder="一句话职责（较长可拖右下角抓手调大查看）"
+              />
             </Field>
           </>
         ) : null}
 
         <Field label="system_prompt（必填）">
-          <Input.TextArea rows={6} value={node.system_prompt} onChange={(e) => patch({ system_prompt: e.target.value })} placeholder="代理的系统提示词" />
+          <Input.TextArea
+            rows={6}
+            className="drag-ta"
+            value={node.system_prompt}
+            onChange={(e) => patch({ system_prompt: e.target.value })}
+            placeholder="代理的系统提示词（较长可拖右下角抓手调大通览）"
+          />
         </Field>
 
         <Field label="工具（tool_names，按 server 分组）">

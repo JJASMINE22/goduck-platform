@@ -48,6 +48,7 @@ export function RubricEditor({
         <>
           <Input.TextArea
             rows={4}
+            className="drag-ta"
             value={cur.content ?? ''}
             onChange={(e) => patch({ content: e.target.value })}
             placeholder={

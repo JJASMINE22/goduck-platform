@@ -1,7 +1,7 @@
 /* 已选工具的分组折叠展示 —— 替代 TreeSelect 框内扁平 tag 堆叠。
    按 {server}__{tool} 的 server 前缀分组，每组一个 Collapse 面板：
    标题 = server 名 + 已选数量徽章；展开 = 工具短名 + 描述（可移除）。
-   默认展开以便立即查看所选，嫌长可手动收起。 */
+   默认收起（多组全展开会撑长面板、影响观感），需要查看/移除时手动展开。 */
 import { Collapse, Flex, Tag } from 'antd'
 import { type ReactNode } from 'react'
 import { X } from 'lucide-react'
@@ -79,7 +79,6 @@ export function CheckedToolGroups({
     <Collapse
       size="small"
       className="checked-tool-groups"
-      defaultActiveKey={servers}
       items={items}
     />
   )
