@@ -83,5 +83,6 @@ demo/
 # 测试脚本目录
 /backend/app/scripts/
 /backend/scripts/
+/backend/tests/
 # 平台工作目录
 /backend/data/
