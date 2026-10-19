@@ -11,7 +11,7 @@ import { ArrowLeft, FolderOpen, MessageSquare, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
 import { useAgents } from '@/hooks/useAgents'
 import { useCronJobs } from '@/hooks/useCron'
-import { useStreamChat, detachLiveConsumers } from '@/hooks/useStreamChat'
+import { useStreamChat, detachLiveConsumers, ensureObserver } from '@/hooks/useStreamChat'
 import { useVoiceInput } from '@/hooks/useVoiceInput'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { useWorkspaceCapability } from '@/hooks/useWorkspace'
@@ -112,11 +112,9 @@ export function ChatPage(): ReactNode {
   // 观察流仅普通会话开启：任务会话（cron）保持 /history 轮询跟随（行为不变），
   // 归档会话不可能有 run。观察流与 /history 并行发起（重叠 RTT），事件分发
   // 等历史灌入完成后按序冲刷（水合门在 hook 内，settleHydration 由下方灌入
-  // effect 调用）
-  const stream = useStreamChat(
-    sessionId || null,
-    session?.kind === 'chat' && session?.status !== 'archived',
-  )
+  // effect 调用；观察循环自身也会等水合后再判定会话绑定——冷进入竞态修复）
+  const observerEligible = session?.kind === 'chat' && session?.status !== 'archived'
+  const stream = useStreamChat(sessionId || null, observerEligible)
   const settleHydration = stream.settleHydration
   const capabilities = useCapabilities()
   // —— 会话-智能体解耦（§4.4）：选中智能体 = chatStore 纯 UI 态 ——
@@ -450,7 +448,11 @@ export function ChatPage(): ReactNode {
     forcedLoadRef.current = false
     // 历史基底已灌入：解除水合门，观察流缓冲的事件按序冲刷转 live
     settleHydration()
-  }, [sessionId, historyQ.data, historyQ.dataUpdatedAt, historyQ.isFetching, loadHistory, settleHydration])
+    // 冷进入兜底重挂：观察流 effect 首轮可能在灌入绑定前已退出（绑定守卫
+    // 竞态的水合等待超时路径等边角），此刻 store 已绑定本会话，幂等补挂
+    // 一次——同会话已有观察流则内部跳过，不产生双路分发
+    if (observerEligible) ensureObserver(sessionId)
+  }, [sessionId, observerEligible, historyQ.data, historyQ.dataUpdatedAt, historyQ.isFetching, loadHistory, settleHydration])
 
   // —— 水合门兜底（配合 hook 内的超时）：历史查询失败时放行，降级为仅重放
   // 内容可见（可接受）——

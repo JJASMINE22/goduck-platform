@@ -66,6 +66,29 @@ const OBSERVER_MAX_RETRIES = 5
 /** 水合门兜底时限：正常路径（历史灌入/往返跳过）远早于此 settle */
 const HYDRATION_FALLBACK_MS = 10_000
 
+/** 观察循环等待历史水合的独立上限：水合门 promise 仅在组件挂载期可 settle
+ *  （卸载后无人调 settle、hook 兜底 timer 亦随 effect 清除）——若无独立上限，
+ *  孤儿等待会永久占住模块级 liveObserver 槽位，重进会话再也挂不上观察流。
+ *  取值略大于 HYDRATION_FALLBACK_MS：正常路径总是水合先到。 */
+const OBSERVER_HYDRATION_WAIT_MS = 12_000
+
+/** 可中止的 sleep：等待期内控制器中止即刻唤醒（清除定时器）。观察循环的水合
+ *  等待用它——重进会话触发 detachLiveConsumers 时能立即释放槽位，而非等满
+ *  超时才让位给新挂载的观察流。 */
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      { once: true },
+    )
+  })
+}
+
 /** 服务端真值重建（resync 后）：/history 重灌 store（保留待审批/中断态，
  *  清空 lastEventId → 后续重挂全量回放）。 */
 async function reloadFromServer(sessionId: string): Promise<void> {
@@ -105,7 +128,12 @@ function hydrationGate(
  * 观察循环：挂观察流直到 run 终态 / 确认无 run（204）。
  * - resync → /history 重建后全量重挂（loadHistory 已清 lastEventId）；
  * - 网络异常 → 有界重试（run 可能仍在服务端执行，观察是只读幂等的）；
- * - entryGuard：挂载路径下本地 POST/语音正在消费时不双路（恢复路径跳过）。
+ * - entryGuard：挂载路径下本地 POST/语音正在消费时不双路（恢复路径跳过）；
+ * - 绑定守卫先等历史水合（"重进会话内容不更新"的修复点）：冷进入（刷新 /
+ *   跨会话重进）时 store 尚未绑定目标会话——loadHistory 要等 /history 网络
+ *   返回，同步读 sessionId 必不匹配，循环即刻自尽且无人重启：后台 run 仍
+ *   在跑，UI 却停在 /history 快照、发送被单写者闸 409。改为先等水合
+ *   （gate settle 或独立兜底超时）再判绑定，未绑定窗口被等待自然覆盖。
  */
 async function runObserverLoop(
   sessionId: string,
@@ -114,6 +142,13 @@ async function runObserverLoop(
   onEvent: (e: SSEEvent) => void,
   hydration: Promise<void> | null,
 ): Promise<void> {
+  if (hydration) {
+    // 等水合再判绑定；事件分发侧的水合门（hydrationGate）照旧缓冲按序冲刷，
+    // 两处语义独立：门管事件时序，此处置换绑定时序。abortableSleep 保证
+    // detach（重进会话/切换）即刻唤醒释放 liveObserver 槽位。
+    await Promise.race([hydration, abortableSleep(OBSERVER_HYDRATION_WAIT_MS, signal)])
+    if (signal.aborted) return
+  }
   const dispatch = hydrationGate(onEvent, hydration)
   let retries = 0
   while (!signal.aborted) {
@@ -163,6 +198,14 @@ function startObserver(
   void runObserverLoop(sessionId, controller.signal, entryGuard, onEvent, hydration).finally(() => {
     if (liveObserver?.controller === controller) liveObserver = null
   })
+}
+
+/** 冷进入水合完成后的兜底重挂（ChatPage 灌入 effect 末尾调用）：观察流
+ *  effect 的首轮可能在历史灌入绑定前即退出（绑定守卫竞态的兜底），灌入
+ *  落定后由此幂等补挂——同会话已有等待中/进行中的观察流则跳过，本地
+ *  POST/语音消费中由 entryGuard 拦截，不会双路分发。 */
+export function ensureObserver(sessionId: string): void {
+  startObserver(sessionId, true, (e) => dispatchStreamEvent(e), null)
 }
 
 /** POST 断连/网络异常后的恢复：先经观察流接续（run 可能仍在执行），
