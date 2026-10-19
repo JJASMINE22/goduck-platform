@@ -6,7 +6,6 @@ services/mcp_lifecycle.py which wraps MCPClientManager.
 from __future__ import annotations
 
 import os
-import json
 
 from typing import List
 
@@ -40,26 +39,3 @@ class MCPClientManager:
             # distinguish a real failure from a legitimately empty tool set and
             # surface the cause via _per_server_status["error"].
             return e
-
-
-async def main():
-    client_manager = MCPClientManager(mcp_config={
-        "third-part-mcp": {
-            "transport": "http",
-            "url": "http://127.0.0.1:8088/mcp",
-        }
-    })
-    tools = await client_manager.get_all_mcp_tools()
-
-    rs = await tools[0].ainvoke({
-        "prompt": "略带批判性的分析图像",
-        "upload_image_id": "d9fec374-dfcb-4128-8d14-5f888e1d8a1c"
-    })
-
-    return json.loads(rs[0]["text"])["description"]
-
-if __name__ == "__main__":
-    import asyncio
-
-    desc = asyncio.run(main())
-    print(desc)

@@ -340,8 +340,7 @@ class SessionService:
         - 常规更新走无 as_node 推断路径（干净回合边界，生产验证）；中止态
           （cancelled 流残留 pending 任务）下该路径经 model 节点 writer 链
           会触发 langgraph 分支 ``KeyError: 'model'``（撤回 500 的根因），
-          回退 ``as_node='tools'``（同一增量经 tools writer 链可正常应用，
-          已在真实中止态复现验证）。
+          回退 ``as_node='tools'``（同一增量经 tools writer 链可正常应用）。
         - 更新成功后若 ``state.next`` 非空（中止残留 / HITL 待审批 / tools
           回退触发的路由），以 ``values=None, as_node=END`` 清空 pending 任务：
           被撤回回合的未竟执行应一并作废，且清尾路径不经过 writer 链，
@@ -523,11 +522,10 @@ class SessionService:
         #      线程尚无版本化 checkpoint 时全量都在 writes 里）；
         #    ``writes``：seed 之后的增量（含 RemoveMessage 软删）。
         #    【关键】必须以 seed.value 起步再叠加 writes——若从空表起步，只能得到
-        #    最后一个版本化 checkpoint 之后的增量，历史被截断为最后几轮
-        #    （实测 69 条消息只回出 14 条 = 恰好最后两轮）。
+        #    最后一个版本化 checkpoint 之后的增量，历史被截断为最后几轮。
         #    【关键】entry 一旦存在即以 seed(+writes) 为唯一真值，不得以
         #    ``if writes:`` 门控：流式推理刚结束的线程，walk 停在最新版本化
-        #    快照上，writes 恒为空而 seed 已是全量（实测 writes=0 + seed=55）。
+        #    快照上，writes 恒为空而 seed 已是全量。
         #    空 writes 若把合法 seed 丢弃并落回下方 blob 路径，langgraph>=1.2
         #    的 channel_values["messages"] 是 _DeltaSnapshot 占位对象，
         #    ``list(...)`` 迭代出垃圾条目（无 type/content），/history 只回一条

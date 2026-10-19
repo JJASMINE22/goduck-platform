@@ -287,8 +287,7 @@ class JevAuditSink:
     main lifespan 启动/停止，单任务串行写库。
 
     入队前剔除文本中的 NUL(0x00)：PostgreSQL text 字段拒收 NUL，MCP 工具
-    返回的转写常夹带 NUL——不清洗会导致整条审计记录 insert 失败被丢弃
-    （实测：电商抓取类会话全部丢行）。
+    返回的转写常夹带 NUL——不清洗会导致整条审计记录 insert 失败被丢弃。
     """
 
     def __init__(self, max_pending: int = 2000):

@@ -440,9 +440,8 @@ class KnowledgeService:
             batch = chunks[start:start + batch_size]
             # _id 必须取 chunk 自带 chunk_index，而非列表位置：docling 的
             # unit_index 在预算切分后重编号（图片/空单元被滤除致位置与序号
-            # 错位）。曾按位置生成 _id，anchor_cards 以 {doc_id}_{chunk_index}
-            # 确定性查询 miss → 锚定卡全量 null、命中降级纯文本行。legacy
-            # 两个值恒等不受影响；chunk_index 缺失回落位置序（防御未来引擎）。
+            # 错位），而 anchor_cards 按 {doc_id}_{chunk_index} 确定性查询。
+            # legacy 两个值恒等不受影响；chunk_index 缺失回落位置序（防御未来引擎）。
             batch_ids = [
                 f"{doc_id}_{c.metadata.get('chunk_index', i)}"
                 for i, c in enumerate(batch, start=start)

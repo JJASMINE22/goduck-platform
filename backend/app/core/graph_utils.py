@@ -398,7 +398,7 @@ def create_agent_recursive(
         memory=memory_sources,
         interrupt_on=interrupt_on,
         backend=backend,
-        checkpointer=_cp # if is_main_agent else True,
+        checkpointer=_cp,
     )
     if ctx.store is not None:
         create_kwargs["store"] = ctx.store

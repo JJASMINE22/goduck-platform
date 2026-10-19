@@ -165,7 +165,7 @@ export function WorkspaceView({
   // 预览浮层宽度：手柄在浮层左缘（edge='left'，向左拖遮得更宽）；双击重置；
   // 宽度持久化跨刷新保留。树卡恒为全宽，排版不随打开/拖拽变化。
   // 上限动态：可拖至近全宽（容器宽 - TREE_REVEAL，左侧留窄缝），由 ResizeObserver
-  // 实测 .ws-view 宽度得出；测量前用 PREVIEW_WIDTH.max 兜底。
+  // 测量 .ws-view 宽度得出；测量前用 PREVIEW_WIDTH.max 兜底。
   const viewRef = useRef<HTMLDivElement | null>(null)
   const [viewWidth, setViewWidth] = useState(0)
   useEffect(() => {

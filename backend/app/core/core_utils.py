@@ -158,7 +158,7 @@ class _TurnScopedGraderMixin:
     会话级常驻评审（FixedRubricMiddleware 每回合注入固定 rubric），累积
     历史会随窗口滑入评审现场：首问题被强制前置而其原始回答滚出窗口，
     grader 据此判定"问题从未被回答"，needs_revision 的修订回路转而补答
-    与本次提问无关的旧问题（实测「尼康相机学习上手」thread）。
+    与本次提问无关的旧问题。
 
     修复：覆写上游文档明示的 `_grader_input` 扩展点（rubric.py，同步/
     异步 grader 调用共用此入口），把传入 payload 构建器的 messages 视图

@@ -251,6 +251,10 @@ def _extract_interrupt(state) -> dict:
 # cron 侧写入 cron_run.error、按既有失败语义于下个槽位自动重跑。
 _TRUNCATED_FINAL_MSG = "模型响应流被截断（未收到结束帧），本轮未产出最终答复，请重试"
 
+# 截断类错误的机器可读标记（error payload.code）：cron 调度器据此识别并整轮
+# 自动重试（见 cron_scheduler._invoke）；聊天侧只按 message 呈横幅，忽略 code。
+STREAM_TRUNCATED_CODE = "stream_truncated"
+
 
 def _truncated_final_message(state) -> Optional[AIMessage]:
     """识别"静默截断"的终末回合（END 路由的最终答复缺 finish_reason）。
@@ -259,9 +263,8 @@ def _truncated_final_message(state) -> Optional[AIMessage]:
     终止 chunk 到达并合入聚合消息的 response_metadata（非流式同理）。终末
     AI 消息（无 tool_calls，即被路由到 END 的"最终答复"）缺它，唯一解释是
     provider 流在中途被掐断、终止 chunk 从未到达：openai SDK 对这种"连接
-    干净关闭"不抛异常，聚合出的消息 content 常为空、仅剩半截 reasoning
-    （实证：2026-10-18 每日要闻 cron 轮，末条 AI 消息 finish_reason 与
-    usage_metadata 双缺、reasoning 词中断尾）。若照常发 done，残缺轮次会被
+    干净关闭"不抛异常，聚合出的消息 content 常为空、仅剩半截 reasoning。
+    若照常发 done，残缺轮次会被
     记为成功——cron 记 ok、聊天侧无任何提示，历史只剩"思考过程"块。
 
     返回截断的终末消息（供调用方记日志），无截断迹象返回 None。不判定的
@@ -423,9 +426,8 @@ class StreamAdapter:
                         # 确定性关闭 astream 生成器：中止/断连路径若仅弃置（悬挂在
                         # yield 处），GC 终结器的 athrow 遇 langgraph 内部吞掉
                         # GeneratorExit 后再 yield 的行为 → "async generator ignored
-                        # GeneratorExit" 以未检索任务异常炸到事件循环日志（语音
-                        # 中止/页面静置 GC 触发时复现）。清理路径就地吞残余异常，
-                        # 不改写正在传播的主异常。
+                        # GeneratorExit" 以未检索任务异常炸到事件循环日志。清理路径
+                        # 就地吞残余异常，不改写正在传播的主异常。
                         with contextlib.suppress(Exception, asyncio.CancelledError):
                             await stream.aclose()
 
@@ -466,7 +468,11 @@ class StreamAdapter:
                                 getattr(truncated, "id", None),
                             )
                             yield SSEEvent(
-                                type="error", payload={"message": _TRUNCATED_FINAL_MSG}
+                                type="error",
+                                payload={
+                                    "message": _TRUNCATED_FINAL_MSG,
+                                    "code": STREAM_TRUNCATED_CODE,
+                                },
                             )
                             return
                         yield SSEEvent(type="done", payload={})

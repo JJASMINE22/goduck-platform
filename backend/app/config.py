@@ -117,7 +117,6 @@ class Settings(BaseSettings):
     # 超时关键：须对齐 TEI --max-batch-size（默认4）。客户端 batch > 它时，单请求内 TEI 做多轮前向推理
     #   （如 batch=24 / max-batch-size=4 → 6 轮），请求挂起时间随比值放大，并发下（ingestion_concurrency>1）
     #   CPU 串行再×N → 易超时。对齐后每请求恰好 1 轮推理，延迟最低。
-    #   800字中文实测：batch=4→6.5s / batch=24→53s（空闲）；并发×2。
     embedding_batch_size: int = 4
 
     # ---- 知识库 / RAG ----
@@ -133,8 +132,8 @@ class Settings(BaseSettings):
     # docling=结构单元直入 ES（splitter 退役，仅预算护栏）。默认 legacy：
     # 灰度切换，存量库与存量 chunk 不受影响（新字段对 legacy 单元可空）。
     kb_parser_engine: Literal["legacy", "docling"] = "legacy"
-    # 长文档分片硬约束（片 = 独立 docling convert + 独立 IR 边车；实测 3218 页
-    # 整册 convert 禁止）。默认 100，Phase A 单页耗时数据校准。
+    # 长文档分片硬约束（片 = 独立 docling convert + 独立 IR 边车；整册大文档
+    # convert 不可行）。默认 100，Phase A 单页耗时数据校准。
     kb_docling_shard_pages: int = Field(default=100, ge=10, le=1000)
     # CPU 并行度旋钮（AcceleratorOptions.num_threads；convert 本身进程内串行，
     # 不做多实例并行 convert——CPU 下互抢核）。GPU 设备下 torch 算子不吃该值，
@@ -329,6 +328,20 @@ class Settings(BaseSettings):
         default=1800.0,
         gt=0,
         description="单次任务运行超时秒数；超时中止并计一次失败（30 分钟适配深度研究类长跑）。",
+    )
+    cron_truncation_retry_attempts: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "模型响应流截断（终末答复缺结束帧，供应商中途静默掐断连接）时的整轮自动"
+            "重试次数，0=不重试。仅对截断类失败生效：重试前重置线程重新取数（cron "
+            "轮次本就相互独立、热榜类工具只读幂等）。重试耗时计入 cron_run_timeout_s 总预算。"
+        ),
+    )
+    cron_truncation_retry_backoff_s: float = Field(
+        default=45.0,
+        gt=0,
+        description="截断重试的线性退避基数（秒）：第 n 次重试前等待 n×基数，避开供应商瞬时限流窗口。",
     )
     cron_max_consecutive_failures: int = Field(
         default=5,

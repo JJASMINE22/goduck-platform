@@ -6,8 +6,7 @@
 
 - 实现唯一内置：openai_compatible（经 ModelStore 缓存客户端 ainvoke）。
   思考模式由模型行配置约定：注册视觉下挂模型时设 enable_thinking=false
-  （描述为 one-shot 短任务，思考徒增延迟与成本——glm-4.6v 实测开思考
-  558 tokens vs 关闭 482，且首 token 显著更慢）；编排页候选列表经
+  （描述为 one-shot 短任务，思考徒增延迟与成本）；编排页候选列表经
   GET /models?supports_vision=true&enable_thinking=false 过滤，注册表单
   有对应提示。zai-sdk / 其它原生 SDK 留作未来 provider_kind 分派位
   （引入信号：无 OpenAI 兼容端点 / 厂商特有能力 / 转换有损）。

@@ -281,8 +281,8 @@ class RunManager:
                         # 其它执行上下文（asyncgen 终结器 task）关闭时，contextlib
                         # CM 的 Token 复位跨 Context 报 ValueError（Py3.12 实测），
                         # 并在 GeneratorExit 处理中触发 "async generator ignored
-                        # GeneratorExit"——cron 路径实际复现过；自然耗尽则让
-                        # 事件源自身的 with/finally 全部在原上下文内正常进出。
+                        # GeneratorExit"；自然耗尽则让事件源自身的 with/finally
+                        # 全部在原上下文内正常进出。
             finally:
                 # 确定性关闭事件源生成器链（取消/异常路径；自然耗尽后为 no-op）
                 with contextlib.suppress(Exception, asyncio.CancelledError):

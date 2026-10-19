@@ -272,8 +272,18 @@ class CronScheduler:
         （_reset_thread_context），模型只见系统提示 + 平台记忆(/memories) +
         本轮 prompt——定时任务是相互独立的单次执行，累积历史只会线性抬高
         输入成本、并让旧轮产出（含其摘要）污染本轮。
+
+        截断自动重试：OpenAI 兼容网关偶发/频发在生成中途静默掐断流连接——
+        终末 AI 消息 finish_reason 与 usage 双缺、content 为空、reasoning 多
+        字节字符中断尾（判据见 stream_adapter._truncated_final_message）。
+        该类失败以 error +
+        code=stream_truncated 收尾，此处整轮重试（重置线程重新取数，工具只读
+        幂等，成本仅为重复 token）：线性退避 n×基数躲开瞬时机窗口；次数/退避
+        可配（cron_truncation_retry_*）。重试计入 cron_run_timeout_s 总预算
+        （wait_for 在 _execute 外层整体包住本方法）。
         """
         from app.services.run_manager import RunConflictError
+        from app.services.stream_adapter import STREAM_TRUNCATED_CODE
 
         agent = await self.st.agent_registry.get_or_build(job["agent_id"])
         session = await self._ensure_session(job)
@@ -285,19 +295,6 @@ class CronScheduler:
             }
         }
 
-        # 双检 RunManager 单写者闸：tick 检查后到此处之间的用户侧 resume 竞态
-        # 兜底。已认领（next_run_at 已推进），该轮计为 error 而非静默丢弃（run
-        # 可见）。
-        if self.st.run_manager.is_active(thread_id):
-            return "error", "会话正被用户侧流占用，本轮放弃（下个槽位自动恢复）"
-
-        # 持锁语义下、注入前重置：start_run 的单写者闸与用户侧 resume 互斥，
-        # 重置绝不落在活跃 run 上；awaiting_approval 门卫（tick 门②/run_now）
-        # 保证不会误删待审批现场。残余竞态（resume 已过 interrupt 校验、尚未
-        # start_run 的亚毫秒窗口）由下方 start_run 的 RunConflictError 兜底，
-        # 最坏表现为该次轮次计为 error run，接受。
-        await self._reset_thread_context(agent, config, thread_id, job["user_id"])
-
         async def on_usage(payload: dict) -> None:
             # token 用量即时入库（best-effort，失败不打断运行；同 stream.py）
             with contextlib.suppress(Exception):
@@ -307,40 +304,86 @@ class CronScheduler:
             with contextlib.suppress(Exception):
                 await dbmod.touch_session(self.st.pool, session["id"])
 
-        def factory():
-            return self.st.stream_adapter.stream_message(
-                agent, job["prompt"], config, raw_content=job["prompt"]
-            )
+        retries = max(0, self.settings.cron_truncation_retry_attempts)
+        attempt = 0
+        while True:
+            # 双检 RunManager 单写者闸：tick 检查后到此处之间的用户侧 resume 竞态
+            # 兜底。已认领（next_run_at 已推进），该轮计为 error 而非静默丢弃（run
+            # 可见）。
+            if self.st.run_manager.is_active(thread_id):
+                return "error", "会话正被用户侧流占用，本轮放弃（下个槽位自动恢复）"
 
-        try:
-            run = await self.st.run_manager.start_run(
-                thread_id, session["id"], "cron", factory,
-                on_usage=on_usage, on_final=on_final,
-            )
-        except RunConflictError as e:
-            return "error", f"会话运行冲突（用户侧流抢先启动）：{e}"
+            # 持锁语义下、注入前重置：start_run 的单写者闸与用户侧 resume 互斥，
+            # 重置绝不落在活跃 run 上；awaiting_approval 门卫（tick 门②/run_now）
+            # 保证不会误删待审批现场。残余竞态（resume 已过 interrupt 校验、尚未
+            # start_run 的亚毫秒窗口）由下方 start_run 的 RunConflictError 兜底，
+            # 最坏表现为该次轮次计为 error run，接受。重试路径同样经过这里：截断
+            # 的半截状态（含残缺终末 AI 消息）被硬删，重试轮仍是处女上下文。
+            await self._reset_thread_context(agent, config, thread_id, job["user_id"])
 
-        try:
-            final = await run.task
-        except asyncio.CancelledError:
-            return "error", "运行被取消（服务关闭或超时中止）"
+            def factory():
+                return self.st.stream_adapter.stream_message(
+                    agent, job["prompt"], config, raw_content=job["prompt"]
+                )
 
-        # 契约：流必以 done | interrupt | error | canceled 收尾；防御性兜底到 error。
-        ftype = final.type if final is not None else "error"
-        if ftype == "interrupt":
-            # cron 已禁 HITL（validator 拒绝 + 构建期剥离双保险），此处为旁路
-            # 兜底：中断在无人值守下无消费方，计为 error run（fail-visible），
-            # 绝不进入 awaiting_approval 挂起（会无限跳槽成僵尸任务）。
-            return (
-                "error",
-                (
-                    "运行触发了工具审批中断（cron 智能体已禁用 HITL），"
-                    "请检查智能体配置的 interrupt_on"
-                ),
-            )
-        status = _STATUS_BY_EVENT.get(ftype, "error")
-        err = final.payload.get("message") if (final is not None and ftype == "error") else None
-        return status, err
+            try:
+                run = await self.st.run_manager.start_run(
+                    thread_id, session["id"], "cron", factory,
+                    on_usage=on_usage, on_final=on_final,
+                )
+            except RunConflictError as e:
+                return "error", f"会话运行冲突（用户侧流抢先启动）：{e}"
+
+            try:
+                final = await run.task
+            except asyncio.CancelledError:
+                return "error", "运行被取消（服务关闭或超时中止）"
+
+            # 契约：流必以 done | interrupt | error | canceled 收尾；防御性兜底到 error。
+            ftype = final.type if final is not None else "error"
+
+            # 截断重试：仅截断类失败且还有名额时整轮重来（退避后回到循环顶重置
+            # 线程）。其余错误（配置违规/超时/运行冲突等）照常计败熔断。
+            if (
+                ftype == "error"
+                and final is not None
+                and final.payload.get("code") == STREAM_TRUNCATED_CODE
+                and attempt < retries
+            ):
+                attempt += 1
+                delay = attempt * self.settings.cron_truncation_retry_backoff_s
+                logger.warning(
+                    "cron job '%s': model stream truncated, retrying whole run "
+                    "(attempt %d/%d, backoff %.0fs)",
+                    job.get("name"), attempt, retries, delay,
+                )
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    return "error", "运行被取消（服务关闭或超时中止）"
+                continue
+
+            if ftype == "interrupt":
+                # cron 已禁 HITL（validator 拒绝 + 构建期剥离双保险），此处为旁路
+                # 兜底：中断在无人值守下无消费方，计为 error run（fail-visible），
+                # 绝不进入 awaiting_approval 挂起（会无限跳槽成僵尸任务）。
+                return (
+                    "error",
+                    (
+                        "运行触发了工具审批中断（cron 智能体已禁用 HITL），"
+                        "请检查智能体配置的 interrupt_on"
+                    ),
+                )
+            status = _STATUS_BY_EVENT.get(ftype, "error")
+            err = final.payload.get("message") if (final is not None and ftype == "error") else None
+            if (
+                attempt > 0
+                and final is not None
+                and final.payload.get("code") == STREAM_TRUNCATED_CODE
+                and isinstance(err, str)
+            ):
+                err = f"{err}（已自动重试 {attempt} 次仍截断）"
+            return status, err
 
     async def _reset_thread_context(
         self,
