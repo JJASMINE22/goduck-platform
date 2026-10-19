@@ -1,10 +1,8 @@
 <p align="center">
-  <img src="../logo.png" alt="goduck-platform logo" width="150">
+  <img src="../logo.png" alt="goduck-platform" width="260">
 </p>
 
-<h1 align="center">goduck-platform backend</h1>
-
-<p align="center">个人智能体搭建 / 迭代 / 会话工具的后端服务 —— 基于 <b>FastAPI + deepagents + LangGraph + MCP</b></p>
+<p align="center">backend —— 个人智能体搭建 / 迭代 / 会话工具的后端服务，基于 <b>FastAPI + deepagents + LangGraph + MCP</b></p>
 
 > 完整本地 / 容器启动指引见[根 README](../README.md#quickstart)，本文聚焦后端内部设计与 API。
 

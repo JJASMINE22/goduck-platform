@@ -1,10 +1,8 @@
 <p align="center">
-  <img src="../logo.png" alt="goduck-platform logo" width="150">
+  <img src="../logo.png" alt="goduck-platform" width="260">
 </p>
 
-<h1 align="center">goduck-platform Frontend</h1>
-
-<p align="center">goduck-platform 的 Web 前端 —— 智能体编排与会话的交互层</p>
+<p align="center">frontend —— 智能体编排与会话的交互层（Web 前端）</p>
 
 技术栈：**React 19 + TypeScript + Vite + Ant Design + Zustand + TanStack Query**，
 集成 Mermaid / @xyflow 拓扑渲染、react-hook-form 表单与 SSE 流式对话。

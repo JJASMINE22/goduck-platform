@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="logo.png" alt="goduck-platform logo" width="360">
+  <img src="logo.png" alt="goduck-platform" width="440">
 </p>
-
-<h1 align="center">goduck-platform</h1>
 
 <p align="center">
   <b>个人智能体搭建 / 编排 / 会话平台</b> —— 基于 deepagents + LangGraph + MCP 的全栈开源项目
