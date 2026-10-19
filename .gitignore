@@ -80,3 +80,9 @@ demo/
 /backend/app/mcps/mcp_third_part_server.py
 # 临时文件目录
 /backend/app/mcps/tmp/
+# 测试脚本目录
+/backend/app/scripts/
+/backend/scripts/
+/backend/tests/
+# 平台工作目录
+/backend/data/

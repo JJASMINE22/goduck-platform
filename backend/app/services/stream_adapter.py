@@ -24,6 +24,13 @@ HITL origins (declarative interrupt_on vs interrupt() primitive) are unified at
 the SSE layer: both surface as `event: interrupt`, front-end does not
 differentiate (plan §5.3).
 
+Truncation guard (fail-visible): an END-routed final AI message that carries no
+`finish_reason` means the provider stream was cut before the terminal chunk
+(the SDK ends the stream silently instead of raising). The run then closes with
+`error` instead of `done`, so a half-generated turn is never recorded as
+successful (chat: banner + manual resend; cron: existing failure accounting
+and next-slot rerun). See `_truncated_final_message`.
+
 File-change badges: `_run` activates the per-task collector for the whole
 stream and drains it after each updates chunk (plus final drains before
 done/interrupt/error), emitting `file_change` events whose payload carries
@@ -36,7 +43,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph.state import CompiledStateGraph
@@ -240,6 +247,41 @@ def _extract_interrupt(state) -> dict:
     }
 
 
+# 终末回合截断时下发的 error 文案（fail-visible）。聊天侧呈横幅、用户重发；
+# cron 侧写入 cron_run.error、按既有失败语义于下个槽位自动重跑。
+_TRUNCATED_FINAL_MSG = "模型响应流被截断（未收到结束帧），本轮未产出最终答复，请重试"
+
+
+def _truncated_final_message(state) -> Optional[AIMessage]:
+    """识别"静默截断"的终末回合（END 路由的最终答复缺 finish_reason）。
+
+    判据：OpenAI 兼容协议中 finish_reason 是完成响应的必备字段——流式下它随
+    终止 chunk 到达并合入聚合消息的 response_metadata（非流式同理）。终末
+    AI 消息（无 tool_calls，即被路由到 END 的"最终答复"）缺它，唯一解释是
+    provider 流在中途被掐断、终止 chunk 从未到达：openai SDK 对这种"连接
+    干净关闭"不抛异常，聚合出的消息 content 常为空、仅剩半截 reasoning
+    （实证：2026-10-18 每日要闻 cron 轮，末条 AI 消息 finish_reason 与
+    usage_metadata 双缺、reasoning 词中断尾）。若照常发 done，残缺轮次会被
+    记为成功——cron 记 ok、聊天侧无任何提示，历史只剩"思考过程"块。
+
+    返回截断的终末消息（供调用方记日志），无截断迹象返回 None。不判定的
+    形态一律放行（维持 done，宁漏勿误）：
+    - 尾消息带 tool_calls：工具调用轮由 tools 节点续跑，缺 finish_reason
+      无碍（下一次模型调用自然重建）；
+    - 尾消息非 AI / 消息为空：异常形态，判据不适用。
+    """
+    messages = (getattr(state, "values", None) or {}).get("messages") or []
+    if not messages:
+        return None
+    final = messages[-1]
+    if not isinstance(final, AIMessage) or final.tool_calls:
+        return None
+    finish = (getattr(final, "response_metadata", None) or {}).get("finish_reason")
+    if finish:
+        return None
+    return final
+
+
 class StreamAdapter:
     """Convert agent.astream(...) into an SSE event stream."""
 
@@ -412,6 +454,21 @@ class StreamAdapter:
                             file_change_tracker.drain(collector), agent_path,
                         ):
                             yield ev
+                        # 截断守卫（fail-visible）：终末答复缺 finish_reason =
+                        # 流在终止 chunk 到达前被掐断，残缺轮次不得记为
+                        # 成功——改发 error（见 _truncated_final_message）。
+                        truncated = _truncated_final_message(state)
+                        if truncated is not None:
+                            logger.warning(
+                                "final turn truncated (msg id=%s): END-routed AI "
+                                "message carries no finish_reason, emitting error "
+                                "instead of done",
+                                getattr(truncated, "id", None),
+                            )
+                            yield SSEEvent(
+                                type="error", payload={"message": _TRUNCATED_FINAL_MSG}
+                            )
+                            return
                         yield SSEEvent(type="done", payload={})
                         return
         except Exception as e:

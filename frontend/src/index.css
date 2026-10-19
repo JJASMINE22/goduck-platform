@@ -300,6 +300,7 @@ pre,
   display: grid;
   place-items: center;
   flex-shrink: 0;
+  line-height: 1;
   color: #fff;
   box-shadow: var(--shadow-sm);
 }
@@ -475,6 +476,8 @@ pre,
   justify-content: center;
   width: 32px;
   height: 32px;
+  padding: 0;
+  line-height: 1;
   border: none;
   border-radius: 50%;
   background: transparent;
@@ -808,6 +811,8 @@ pre,
   place-items: center;
   width: 20px;
   height: 20px;
+  padding: 0;
+  line-height: 1;
   border: none;
   border-radius: 50%;
   background: transparent;
@@ -894,6 +899,8 @@ pre,
   place-items: center;
   width: 18px;
   height: 18px;
+  padding: 0;
+  line-height: 1;
   border: none;
   border-radius: 50%;
   background: transparent;
@@ -1197,6 +1204,51 @@ pre,
   content: ' *';
   color: var(--color-danger);
   font-weight: 600;
+}
+/* 长文本栏可拖拉调整（系统提示 / 描述 / rubric 准则）：原生 resize 句柄在
+   filled 输入底色上近乎不可见，重绘右下角对角抓手（颜色走设计 token，随明暗
+   主题），悬停点亮主色；高度上限 65vh 防拖溢视口。Firefox 无抓手图形，
+   ::-moz-resizer 仅做着色回退（可辨识即可）。 */
+.drag-ta.ant-input {
+  resize: vertical;
+  min-height: 32px;
+  max-height: 65vh;
+}
+.drag-ta::-webkit-resizer {
+  background: linear-gradient(
+    135deg,
+    transparent 0 1.5px,
+    var(--color-text-tertiary) 1.5px 2.5px,
+    transparent 2.5px 5px,
+    var(--color-text-tertiary) 5px 6px,
+    transparent 6px 8.5px,
+    var(--color-text-tertiary) 8.5px 9.5px,
+    transparent 9.5px
+  ) no-repeat 100% 100%;
+  background-size: 10px 10px;
+}
+.drag-ta:hover::-webkit-resizer,
+.drag-ta:active::-webkit-resizer {
+  background-image: linear-gradient(
+    135deg,
+    transparent 0 1.5px,
+    var(--color-primary) 1.5px 2.5px,
+    transparent 2.5px 5px,
+    var(--color-primary) 5px 6px,
+    transparent 6px 8.5px,
+    var(--color-primary) 8.5px 9.5px,
+    transparent 9.5px
+  );
+}
+.drag-ta::-moz-resizer {
+  background: var(--color-text-tertiary);
+}
+/* 顶栏描述（字段条内）：双向拖拉（宽×高）；宽高上下限防撑破字段条/卡片 */
+.drag-ta--bar.ant-input {
+  resize: both;
+  min-width: 184px;
+  max-width: 420px;
+  max-height: 138px;
 }
 .editor-workspace__main {
   flex: 1;
@@ -2793,6 +2845,8 @@ body .topo-popover-root .ant-popover-arrow::before {
   justify-content: center;
   width: 34px;
   height: 34px;
+  padding: 0;
+  line-height: 1;
   border-radius: 50%;
   border: 1px solid var(--glass-border);
   background: var(--glass-bg);
@@ -3100,6 +3154,11 @@ body .ant-drawer .ant-drawer-mask {
   place-items: center;
   width: 18px;
   height: 18px;
+  /* UA 默认 button padding（1px 6px）在 border-box 下把 18px 圆钮内容区压成
+     6×16（横纵不对称），分数 DPI 下图标光栅化偏离圆心——归零并压 line-height
+     后图标与圆形轮廓严格同心（全部圆形图标按钮同此规约） */
+  padding: 0;
+  line-height: 1;
   border: none;
   border-radius: 50%;
   background: transparent;
@@ -3760,6 +3819,8 @@ body .ant-drawer .ant-drawer-mask {
   justify-content: center;
   width: 34px;
   height: 34px;
+  padding: 0;
+  line-height: 1;
   border-radius: 50%;
   border: 1px solid var(--glass-border);
   background: var(--glass-bg);
