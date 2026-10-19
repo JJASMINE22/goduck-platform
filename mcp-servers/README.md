@@ -1,6 +1,10 @@
-﻿# mcp-servers
+﻿<p align="center">
+  <img src="../logo.png" alt="goduck-platform logo" width="150">
+</p>
 
-本地 MCP 服务集群 —— 为 goduck-platform 后端提供**知识库检索**能力。
+<h1 align="center">mcp-servers</h1>
+
+<p align="center">本地 MCP 服务集群 —— 为 goduck-platform 后端提供 <b>知识库检索</b> 能力</p>
 
 > **附件解析已迁移**（2026-08）：图像描述与文档转 Markdown 不再经 MCP 工具，
 > 由 backend 在消息发送时确定性预消费并组装进 content（见 backend

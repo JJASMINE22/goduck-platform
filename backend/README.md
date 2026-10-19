@@ -1,8 +1,21 @@
-# goduck-platform backend
+<p align="center">
+  <img src="../logo.png" alt="goduck-platform logo" width="150">
+</p>
 
-个人智能体搭建 / 迭代 / 会话工具的后端服务 —— 基于 **FastAPI + deepagents + LangGraph + MCP**。
+<h1 align="center">goduck-platform backend</h1>
+
+<p align="center">个人智能体搭建 / 迭代 / 会话工具的后端服务 —— 基于 <b>FastAPI + deepagents + LangGraph + MCP</b></p>
 
 > 完整本地 / 容器启动指引见[根 README](../README.md#quickstart)，本文聚焦后端内部设计与 API。
+
+## 目录
+
+- [架构](#architecture) · [数据模型](#data-model) · [关键设计](#key-design)
+- [运行](#run) · [API 速览](#api)
+- [技能目录约定](#skills) · [运行时依赖补齐](#jit-install)
+- [工作区文件变更徽标](#file-change) · [代码风格](#quality) · [目录来源](#origin)
+
+<a id="architecture"></a>
 
 ## 架构
 
@@ -26,7 +39,8 @@ backend/
 │   │   ├── models.py        #   /models           模型注册 CRUD + 连通性测试
 │   │   ├── mcp.py           #   /mcp              MCP server 注册 + 工具列表 + 健康检查
 │   │   ├── skills.py        #   /skills           技能上传/列/删
-│   │   └── knowledge.py     #   /knowledge-bases  知识库 CRUD + 文档入库 + 检索（kb_enabled 时挂载）
+│   │   ├── knowledge.py     #   /knowledge-bases  知识库 CRUD + 文档入库 + 检索（kb_enabled 时挂载）
+│   │   └── cron.py          #   /cron             定时任务 CRUD + 立即触发 + 运行历史
 │   │
 │   ├── services/            # 【Service 层】业务逻辑（不做边界类型重复校验）
 │   │   ├── agent_service.py #   校验/CRUD/mermaid 渲染
@@ -42,6 +56,12 @@ backend/
 │   │   │                    #   附件 → HumanMessage.content 组装（多模态）；KB 锚点以用户提示注入前置
 │   │   ├── knowledge_service.py / embedding.py / vector_store.py / ingest_pool.py
 │   │   │                    #   知识库：入库/检索、TEI 向量化、ES 向量库、后台入库池
+│   │   ├── docling_parser.py#   docling 结构化解析 + OCR（KB_PARSER_ENGINE=docling）
+│   │   ├── cron_service.py / cron_scheduler.py  # 定时任务 CRUD + 周期调度 + 失败熔断
+│   │   ├── run_manager.py / run_source.py       # 会话/定时统一回合运行管理
+│   │   ├── jev_client.py    #   TypeSafe Jev REST 客户端（概率判决）
+│   │   ├── attachment_policy.py / vision_describer.py / tool_content.py
+│   │   │                    #   附件能力判定 / 视觉模型识图 / 工具消息内容组装
 │   │   ├── doc_convert.py   #   office 文档 → Markdown 预览（markitdown）
 │   │   └── stt/assemblyai_stt.py                # AssemblyAI Streaming STT 客户端
 │   │
@@ -53,6 +73,7 @@ backend/
 │   │   ├── hitl_utils.py    #   CLI HITL 决策收集（dev 用）
 │   │   ├── user_scoped_backend.py / user_scoped_shell_backend.py
 │   │   │                    #   按用户隔离的虚拟文件系统 / shell 后端（u_<hash>/ 隔离）
+│   │   ├── jev_gate.py / jev_kb_gate.py         # JEV shell 命令门控 / KB 检索降噪门控
 │   │   └── file_change_tracker.py               # 工作区文件变更行级统计（difflib + contextvar）
 │   │
 │   ├── streaming/events.py  # SSE 事件契约（后端与前端共同的事件模型）
@@ -60,12 +81,10 @@ backend/
 │   │   ├── db.py            #   psycopg3 直连：8 张业务表 DDL + CRUD
 │   │   └── schemas.py       #   pydantic 请求/响应模型（边界校验）
 │   ├── tools/rubric_tools.py#   rubric grader 内部取证工具（仅挂 RubricMiddleware）
-│   └── mcps/                #   内置 UnifiedGateway MCP 网关 + mcp_services/（system_info/music）
+│   └── mcps/                #   内置 UnifiedGateway 网关 + mcp_services/ + stdio_guard 守卫
 │
 ├── agent_confs/default.yaml # 种子智能体（网关 + researcher/analyzer/artist 子智能体）
-├── data/skills/             # 技能池种子（6 个内置技能，镜像构建时烘焙进 /data/skills）
-├── scripts/                 # import_kb_json.py（KB 批量导入）/ rag_smoke_test.py（RAG 冒烟）
-├── tests/                   # 纯单测（无需 DB/MCP）
+├── data/skills/             # 技能池种子（本地目录，见“技能目录约定”；镜像构建时烘焙进 /data/skills）
 ├── Dockerfile               # uv/uvx/node + MCP 包缓存预热 + 非 root + tini
 └── requirements.txt / pyproject.toml
 ```
@@ -75,6 +94,8 @@ backend/
 
 迁移原则：**不改 deepagents 调用方式**（`create_deep_agent` 签名稳定），只在外围
 加服务层 / 协议层 / 持久化层。所有依赖走 `deps.py` 注入，无全局单例。
+
+<a id="data-model"></a>
 
 ## 数据模型
 
@@ -97,6 +118,8 @@ backend/
 > LangGraph 原生表（`checkpoints` / `checkpoint_writes` / `checkpoint_blobs` / store）
 > 由 `AsyncPostgresSaver.setup()` / `AsyncPostgresStore.setup()` 创建，仅随 session
 > purge 清理（不再随智能体更新/删除清理）。
+
+<a id="key-design"></a>
 
 ## 关键设计
 
@@ -123,6 +146,8 @@ backend/
 - **HITL 统一**：`interrupt_on` 在 SSE/HTTP 层统一为 `event: interrupt`；SSE 异常兜底转 `event: error`。
   语音 WS 下行隧道与 SSE 事件同名同构（前端复用 dispatch）。
 
+<a id="run"></a>
+
 ## 运行
 
 详见[根 README](../README.md#quickstart)。要点：
@@ -141,6 +166,8 @@ python -m app.main          # 或 uvicorn app.main:app --reload
 - LLM 与 MCP server 均不在 `.env` 里 —— 模型通过 `/models`、MCP 通过 `/mcp/servers` 运行时注册。
 - 内置 UnifiedGateway 网关（可选）：`python -m app.mcps.mcp_server`（127.0.0.1:8088/mcp）。
 - 种子智能体（可选）：`python -m app.seed agent_confs/default.yaml --name "Default Gateway" --creator admin`。
+
+<a id="api"></a>
 
 ## API 速览
 
@@ -240,18 +267,31 @@ python -m app.main          # 或 uvicorn app.main:app --reload
 | POST | `/knowledge-bases/{id}/documents/{doc_id}/reindex` | 重建索引（需 MinIO 留底） |
 | GET | `/knowledge-bases/{id}/search?q=&k=` | 检索（管理面调试） |
 
+### 定时任务 `/cron`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET/POST | `/cron/jobs` | 列出 / 创建定时任务（绑定智能体 + prompt，落库即生效） |
+| GET/PUT/DELETE | `/cron/jobs/{job_id}` | 详情 / 更新（含启停）/ 删除 |
+| POST | `/cron/jobs/{job_id}/run` | 立即触发一次（测试补跑） |
+| GET | `/cron/jobs/{job_id}/runs` | 运行历史（最近 50 条） |
+
 ### 其他
 
 | Method | Path | 说明 |
 |--------|------|------|
 | GET | `/health` | 健康检查 + `capabilities`（kb_enabled / voice_enabled） |
 
+<a id="skills"></a>
+
 ## 技能目录约定
 
 全局 skills 池：`{LOCAL_ROOT}/skills/`（个人用，跨智能体共享）。一个 skill = 一个子目录
 `{LOCAL_ROOT}/skills/<name>/`。`AgentConfig.skills` 引用为 `/skills/<name>/`。
-种子技能在 `backend/data/skills/`（weather / amap-lbs / prd / langgraph-docs /
-cn-patent-claims-review / word-doc-style），镜像构建时烘焙进数据卷。
+示例种子在 `backend/data/skills/`（weather / prd / langgraph-docs / svg-diagram 等；
+本地目录、未入库，可按需 `git add -f` 纳入），镜像构建时烘焙进数据卷。
+
+<a id="jit-install"></a>
 
 ## 运行时依赖补齐（allow_shell + JIT 安装）
 
@@ -295,6 +335,8 @@ agent：已确认工具列表出现 arxiv__*，业务 agent 的 tool_names 引�
 ```
 > 生产建议：稳定依赖优先写进 `Dockerfile` 预热（`UVX_MCP_PACKAGES`），JIT 安装仅用于临时 / 补漏 / 一次性场景。
 
+<a id="file-change"></a>
+
 ## 工作区文件变更徽标（file_change）
 
 agent 落盘/编辑/删除工作区文件时，后端在写入瞬间（`TrackedUserScopedFilesystemBackend`，
@@ -308,18 +350,18 @@ SSE 流（`file_change` 事件，线序恒为 tool_call → tool_result → file
 - 刷新页面后历史回合不回放徽标（MVP 不落库；Phase 2 可按回合存 records 回放）。
 - 二进制/超大（>512KB）文件不做行级计数，仅记动作（added/removed=null）。
 
-## 测试
+<a id="quality"></a>
+
+## 代码风格
 
 ```powershell
 cd backend
-python -m pytest tests/ -q
+ruff check app/     # line-length 110，见 pyproject.toml
 ```
 
-- `tests/test_assemblyai_stt.py`：STT 客户端协议/终稿判定单测（无需网络，供应商连接 mock）。
-- `tests/test_file_change_tracker.py`：difflib 行级计数边界、tracked backend 的前读→super→后读埋点、
-  contextvar 收集器生命周期与并发隔离。
+> 单测与辅助脚本（`tests/`、`scripts/`）为本地开发资产，未纳入仓库（见根 `.gitignore`）。
 
-代码风格：`ruff check app/`（line-length 110，见 pyproject.toml）。
+<a id="origin"></a>
 
 ## 目录来源
 

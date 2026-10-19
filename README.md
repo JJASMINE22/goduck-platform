@@ -1,17 +1,27 @@
-# goduck-platform
+<p align="center">
+  <img src="logo.png" alt="goduck-platform logo" width="360">
+</p>
 
-![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
-![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![LangGraph](https://img.shields.io/badge/LangGraph-agent-1C3C3C)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+<h1 align="center">goduck-platform</h1>
 
-**个人智能体搭建 / 编排 / 会话平台** —— 基于 deepagents + LangGraph + MCP 的全栈开源项目。
+<p align="center">
+  <b>个人智能体搭建 / 编排 / 会话平台</b> —— 基于 deepagents + LangGraph + MCP 的全栈开源项目
+</p>
 
-> - 智能体支持新增与替换式更新，工具 / 技能随时增删，重启自动加载
-> - 同一会话可逐回合切换智能体，上下文 / 回撤 / 中止 / HITL 不受影响（悬空中断期锁定）；更新智能体不影响既有会话
-> - 删除智能体后其会话与 checkpoint 保留；配置历史 append-only，可一键还原
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React 19">
+  <img src="https://img.shields.io/badge/LangGraph-agent-1C3C3C" alt="LangGraph">
+  <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
+  <img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
+</p>
+
+## 核心亮点
+
+- **智能体热更新**：新增与替换式更新，工具 / 技能随时增删，重启自动加载
+- **会话与智能体解耦**：同一会话逐回合切换智能体，上下文 / 回撤 / 中止 / HITL 不受影响（悬空中断期锁定）；更新智能体不影响既有会话
+- **数据可回溯**：删除智能体后其会话与 checkpoint 保留；配置历史 append-only，可一键还原
 
 ## 目录
 
@@ -28,7 +38,7 @@
   - [语音输入](#cap-voice)
   - [JEV 智能审批](#cap-jev)
 - [目录结构](#structure)
-- [测试](#testing)
+- [代码质量](#quality)
 - [常见问题 FAQ](#faq)
 - [详细文档](#docs)
 
@@ -36,19 +46,31 @@
 
 ## 功能总览
 
+### 智能体与会话
+
 | 能力 | 说明 | 入口 |
 |---|---|---|
 | 智能体编排 | AgentConfig 树形编辑、实时校验、Mermaid 委派拓扑、配置历史与一键还原、YAML 导出 | `/agents` |
 | 流式会话 | SSE 逐 token 输出、HITL（审批 / 编辑 / 拒绝 / 追加回复）、TODO 计划面板、回合时间线 | `/sessions` |
 | 智能体切换 | 同一会话逐回合选用不同智能体，上下文 / 回撤 / 中止 / HITL 机制不受影响 | 会话输入框选择器 |
-| 附件多模态 | 图片 / 文档上传（MinIO 持久化），视觉模型识图、文档解析 | 输入框 📎 |
-| 知识库 RAG | pdf/docx 入库向量化（ES），会话锚定知识库，以用户提示注入触发 agent 检索作答 | `/settings/knowledge` |
-| 语音输入 | 长按说话实时转写，松开自动触发会话回合（AssemblyAI Streaming STT） | 输入框 🎤 |
 | 定时任务 | 绑定智能体周期触发、立即补跑、运行历史、失败熔断 | `/cron` |
 | 工作区 | 用户隔离文件树、预览 / 下载 / 删除、文件变更徽标（`+3 −2`） | 会话右侧面板 |
+
+### 输入与知识
+
+| 能力 | 说明 | 入口 |
+|---|---|---|
+| 附件多模态 | 图片 / 文档上传（MinIO 持久化），视觉模型识图、文档解析 | 会话输入框 |
+| 知识库 RAG | pdf/docx 入库向量化（ES），会话锚定知识库，以用户提示注入触发 agent 检索作答 | `/settings/knowledge` |
+| 语音输入 | 长按说话实时转写，松开自动触发会话回合（AssemblyAI Streaming STT） | 会话输入框 |
+
+### 扩展与管理
+
+| 能力 | 说明 | 入口 |
+|---|---|---|
 | 模型管理 | OpenAI 兼容多供应商注册（OpenAI / DeepSeek / Qwen / 本地），连通性测试、密钥轮换 | `/settings/models` |
 | MCP 工具 | stdio / http MCP server 运行时注册，工具按 `{server}__{tool}` 命名空间化，健康检查 | `/settings/mcp` |
-| 技能池 | 跨智能体共享的 `/skills/` 目录，multipart 上传，内置 6 个技能种子 | `/settings/skills` |
+| 技能池 | 跨智能体共享的 `/skills/` 目录，multipart 上传，即传即用 | `/settings/skills` |
 | JEV 智能审批 | `allow_shell` 命令概率门控（shadow / enforce 灰度）、rubric 评分快道、KB 检索降噪 | 环境变量开关，见[能力开关](#capabilities) |
 | 运行时依赖补齐 | 开启 `allow_shell` 的智能体可在会话中用 `uv / pip / npm` 装包补齐 MCP 前置依赖（逐条人工审批）⚠️ 详见 [backend/README.md](./backend/README.md) | 会话内 |
 
@@ -211,8 +233,8 @@ python -m app.seed agent_confs/default.yaml --name "Default Gateway" --creator a
 4. **会话测试**：`/sessions` → 基于智能体创建会话：
    - SSE 流式输出 + TODO 计划面板 + 回合时间线；
    - 挂附件（图片走视觉模型，文档自动解析）；
-   - 锚定知识库（输入框左侧 📚 选择库，agent 先检索后作答）；
-   - 长按 🎤 说话（启用语音时）；
+   - 锚定知识库（输入框左侧选择知识库，agent 先检索后作答）；
+   - 长按麦克风说话（启用语音时）；
    - 右侧工作区面板浏览 / 下载 / 删除 agent 产物；
    - 子智能体工具配置 `interrupt_on` 时出现 HITL 审批卡片。
 
@@ -274,7 +296,7 @@ curl http://localhost:8000/health
 
 ### 知识库 RAG（默认开启）
 
-**能力**：pdf/docx 上传入库向量化（ES 存储 + MinIO 原文留底，支持 reindex），会话中锚定知识库后 agent 先检索后作答。使用：`/settings/knowledge` 建库 → 上传文件 → 会话输入框左侧 📚 锚定。
+**能力**：pdf/docx 上传入库向量化（ES 存储 + MinIO 原文留底，支持 reindex），会话中锚定知识库后 agent 先检索后作答。使用：`/settings/knowledge` 建库 → 上传文件 → 会话输入框左侧选择知识库锚定。
 
 **触发机制（用户提示注入）**：检索不植入图内核——锚定库列表（kb_id）与检索指令前置注入本轮用户消息，由 agent 原生 function-calling 主动调用其持有的检索工具（如 `kb_search`）；未持有检索工具则如实降级作答。
 
@@ -307,7 +329,7 @@ docker run -d --gpus all -p 8082:80 \
 
 ### 语音输入（默认关闭）
 
-**能力**：长按 🎤 说话 → 实时转写直显输入框 → 松开自动触发会话回合。单 WebSocket 全管线（浏览器 ⇄ 后端 ⇄ AssemblyAI Streaming STT），nginx / Vite 代理已配置 WS 透传。
+**能力**：长按麦克风说话 → 实时转写直显输入框 → 松开自动触发会话回合。单 WebSocket 全管线（浏览器 ⇄ 后端 ⇄ AssemblyAI Streaming STT），nginx / Vite 代理已配置 WS 透传。
 
 **开启步骤**：
 
@@ -382,9 +404,6 @@ goduck-platform/
 │   │   ├── streaming/        # SSE 事件契约
 │   │   └── mcps/             # 内置 UnifiedGateway MCP 网关
 │   ├── agent_confs/          # 种子智能体 YAML
-│   ├── data/skills/          # 技能池种子（6 个内置技能，随镜像烘焙进数据卷）
-│   ├── scripts/              # KB 批量导入 / RAG 冒烟测试
-│   ├── tests/                # 纯单测（无需 DB / MCP）
 │   └── Dockerfile            # 含 uv/uvx/node + MCP 包缓存预热
 ├── frontend/                 # React 19 前端（详见 frontend/README.md）
 │   ├── src/api/              # API 域客户端
@@ -394,19 +413,18 @@ goduck-platform/
 ├── mcp-servers/              # 本地 MCP 网关集群：附件解析(image/docx) + kb_search 检索
 ├── nginx/                    # 边缘反代配置（SSE 关缓冲 + WebSocket 透传）
 ├── docker-compose.yml        # 一键全栈编排（6 服务）
-├── demo.py                   # 早期原型存档（不参与部署，仅供参考）
+├── logo.png                  # 项目图标（README 引用）
 └── README.md
 ```
 
-<a id="testing"></a>
+<a id="quality"></a>
 
-## 测试
+## 代码质量
 
 ```powershell
-# 后端（纯单测：STT 协议解析 / 文件变更追踪，无需 DB / MCP）
+# 后端
 cd backend
-python -m pytest tests/ -q
-ruff check app/               # 代码风格
+ruff check app/               # 代码风格（line-length 110）
 
 # 前端
 cd frontend
@@ -417,12 +435,6 @@ npm run lint                  # eslint
 <a id="faq"></a>
 
 ## 常见问题 FAQ
-
-<details>
-<summary><b>80 端口被占用 / 想换端口？</b></summary>
-
-根目录 `.env` 设置 `EDGE_PORT=8080` 后 `docker compose up -d`，访问 `http://<IP>:8080`。
-</details>
 
 <details>
 <summary><b>知识库页 404 / 503？</b></summary>
