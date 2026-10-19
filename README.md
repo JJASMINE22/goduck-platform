@@ -13,6 +13,7 @@
   <img src="https://img.shields.io/badge/LangGraph-agent-1C3C3C" alt="LangGraph">
   <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
   <img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
 ## 核心亮点
@@ -39,6 +40,7 @@
 - [代码质量](#quality)
 - [常见问题 FAQ](#faq)
 - [详细文档](#docs)
+- [许可](#license) / [鸣谢](#ack)
 
 <a id="overview"></a>
 
@@ -411,6 +413,7 @@ goduck-platform/
 ├── mcp-servers/              # 本地 MCP 网关集群：附件解析(image/docx) + kb_search 检索
 ├── nginx/                    # 边缘反代配置（SSE 关缓冲 + WebSocket 透传）
 ├── docker-compose.yml        # 一键全栈编排（6 服务）
+├── LICENSE                   # MIT 许可证
 ├── logo.png                  # 项目图标（README 引用）
 └── README.md
 ```
@@ -487,6 +490,21 @@ npm run lint                  # eslint
 | [mcp-servers/README.md](./mcp-servers/README.md) | MCP 网关集群：附件解析 wrapper、kb_search、配置对齐要求 |
 | [frontend/DESIGN.md](./frontend/DESIGN.md) | 前端设计准则与页面结构设计 |
 
-## 贡献与许可
+<a id="license"></a>
 
-开源开放项目，欢迎 Issue / PR 共建。参与开发前建议先阅读对应模块 README。
+## 许可
+
+本项目代码以 [MIT License](./LICENSE) 开源；docker-compose 编排的第三方组件
+（MinIO · AGPL-3.0，Elasticsearch · Elastic License v2 等）保留各自原许可。
+
+<a id="ack"></a>
+
+## 鸣谢
+
+- [deepagents](https://github.com/langchain-ai/deepagents)（MIT）— 智能体内核，`backend/app/core/` 迁移自其用法原型
+- [LangGraph](https://github.com/langchain-ai/langgraph)（MIT）— 图运行时与 checkpoint
+- [FastAPI](https://github.com/fastapi/fastapi) / [React](https://github.com/facebook/react) / [Ant Design](https://github.com/ant-design/ant-design) 等开源项目
+
+## 贡献
+
+欢迎 Issue / PR 共建；参与开发前建议先阅读对应模块 README。
