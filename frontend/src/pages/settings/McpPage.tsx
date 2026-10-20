@@ -55,21 +55,20 @@ const templates: Record<McpKind, string> = {
   stdio: JSON.stringify({ command: 'python', args: ['-m', 'some_mcp'], env: {} }, null, 2),
 }
 
+/** kind 元数据（表格 Tag 与表单 Select 共用；列宽按最长 label 定尺寸） */
+const kindMeta: Record<McpKind, { label: string; color: string }> = {
+  http: { label: 'HTTP', color: 'blue' },
+  streamable_http: { label: 'Streamable HTTP', color: 'cyan' },
+  stdio: { label: 'STDIO', color: 'purple' },
+}
+
 const emptyForm: FormValues = { name: '', kind: 'http', configText: templates.http, enabled: true }
 
-/** 命名空间面板内的工具列：去掉 "{server}__" 前缀，只显示短名 + 描述 */
-const shortToolCols: ColumnsType<ToolInfo> = [
-  {
-    title: '工具',
-    dataIndex: 'name',
-    key: 'name',
-    render: (v: string) => {
-      const idx = v.indexOf('__')
-      return <code>{idx >= 0 ? v.slice(idx + 2) : v}</code>
-    },
-  },
-  { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
-]
+/** 去掉 "{server}__" 前缀的工具短名 */
+function shortToolName(fullName: string): string {
+  const idx = fullName.indexOf('__')
+  return idx >= 0 ? fullName.slice(idx + 2) : fullName
+}
 
 export function McpPage(): ReactNode {
   const servers = useMcpServers()
@@ -171,13 +170,16 @@ export function McpPage(): ReactNode {
   }
 
   const serverCols: ColumnsType<McpServerOut> = [
-    { title: '名称', dataIndex: 'name', key: 'name', render: (v: string) => <code>{v}</code> },
+    { title: '名称', dataIndex: 'name', key: 'name', ellipsis: true, render: (v: string) => <code>{v}</code> },
     {
       title: '类型',
       dataIndex: 'kind',
       key: 'kind',
-      width: 90,
-      render: (v: string) => <Tag color={v === 'http' ? 'blue' : v === 'streamable_http' ? 'cyan' : 'purple'}>{v}</Tag>,
+      width: 160,
+      render: (v: string) => {
+        const meta = kindMeta[v as McpKind]
+        return <Tag color={meta?.color}>{meta?.label ?? v}</Tag>
+      },
     },
     {
       title: '启用',
@@ -206,7 +208,8 @@ export function McpPage(): ReactNode {
       title: '注册时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 170,
+      width: 200,
+      ellipsis: true,
       render: formatDateTime,
     },
     {
@@ -317,21 +320,37 @@ export function McpPage(): ReactNode {
             dataSource={servers.data}
             pagination={false}
             size="middle"
+            tableLayout="fixed"
+            scroll={{ x: 920 }}
             expandable={{
               expandedRowKeys,
               onExpandedRowsChange: (keys) => setExpandedKeys(keys as string[]),
               rowExpandable: () => true,
               expandedRowRender: (r) => {
-                const list = toolsForServer(r.name)
+                const matched = toolsForServer(r.name)
+                const total = toolsByServer.get(r.name)?.length ?? 0
                 return (
-                  <Table<ToolInfo>
-                    rowKey="name"
-                    columns={shortToolCols}
-                    dataSource={list}
-                    pagination={list.length > 8 ? { pageSize: 8, size: 'small' } : false}
-                    size="small"
-                    locale={{ emptyText: tools.isLoading ? '工具加载中…' : '该服务暂无工具' }}
-                  />
+                  <div className="mcp-tools">
+                    {searching && matched.length !== total && (
+                      <div className="mcp-tools__meta">
+                        命中 {matched.length} / {total} 个工具
+                      </div>
+                    )}
+                    {matched.length ? (
+                      <div className="mcp-tools__list">
+                        {matched.map((t) => (
+                          <div key={t.name} className="mcp-tool" title={t.description || undefined}>
+                            <code className="mcp-tool__name">{shortToolName(t.name)}</code>
+                            <span className="mcp-tool__desc">{t.description || '—'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <Typography.Text type="secondary">
+                        {tools.isLoading ? '工具加载中…' : '该服务暂无工具'}
+                      </Typography.Text>
+                    )}
+                  </div>
                 )
               },
             }}
@@ -358,11 +377,7 @@ export function McpPage(): ReactNode {
           </Form.Item>
           <Form.Item name="kind" label="类型">
             <Select
-              options={[
-                { value: 'http', label: 'HTTP' },
-                { value: 'streamable_http', label: 'Streamable HTTP' },
-                { value: 'stdio', label: 'STDIO' },
-              ]}
+              options={Object.entries(kindMeta).map(([value, m]) => ({ value, label: m.label }))}
               onChange={(k: McpKind) => form.setFieldValue('configText', templates[k])}
             />
           </Form.Item>

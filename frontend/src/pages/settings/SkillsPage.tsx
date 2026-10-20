@@ -130,7 +130,14 @@ export function SkillsPage(): ReactNode {
       title: '技能名',
       dataIndex: 'name',
       key: 'name',
+      width: 260,
+      ellipsis: true,
       render: (v: string) => <code>{v}</code>,
+    },
+    {
+      title: '描述',
+      key: 'description',
+      render: (_, r) => <SkillDescriptionText name={r.name} />,
     },
     {
       title: '文件数',
@@ -176,11 +183,12 @@ export function SkillsPage(): ReactNode {
           dataSource={data}
           pagination={false}
           size="middle"
+          tableLayout="fixed"
           expandable={{
             rowExpandable: () => true,
-            // 行展开（+ 号，镜像 MCP 页 server 行展开工具的风格）→ 查看技能描述
+            // 行展开查看描述全文（列内为单行省略）；镜像 MCP 页展开区样式
             expandedRowRender: (r) => (
-              <div style={{ padding: '4px 0 2px' }}>
+              <div className="skill-desc-panel">
                 <SkillDescriptionText name={r.name} full />
               </div>
             ),

@@ -38,6 +38,11 @@ const lightTheme: ThemeConfig = {
       borderRadiusLG: 14,
       colorBorderSecondary: '#e4e8f0',
     },
+    Table: {
+      /* 行分隔线对齐 tokens.css --color-border-soft（antd 默认 colorSplit 过浅，行界不分） */
+      borderColor: '#e4e8f0',
+      rowHoverBg: '#f2f6fc',
+    },
   },
 }
 
@@ -66,6 +71,10 @@ const darkTheme: ThemeConfig = {
     Card: {
       borderRadiusLG: 14,
       colorBorderSecondary: '#2a323d',
+    },
+    Table: {
+      borderColor: '#2a323d',
+      rowHoverBg: 'rgba(138, 180, 248, 0.07)',
     },
   },
 }
