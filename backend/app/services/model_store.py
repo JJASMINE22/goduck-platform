@@ -73,6 +73,7 @@ def build_chat_model(
             api_key=api_key,
             base_url=base_url or None,
             stream_usage=True,
+            stream_chunk_timeout=600.0,
             **kwargs,
         )
     raise ValueError(f"不支持的 provider_kind: {provider_kind}")

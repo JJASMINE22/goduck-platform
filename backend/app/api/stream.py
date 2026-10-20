@@ -492,15 +492,18 @@ async def observe_stream(
 
     - 增量对齐：``?after={lastEventId}``（首挂）或 Last-Event-ID 头（EventSource
       原生重连自动携带）→ 回放缺失事件后转 live；
-    - 全量回放：不带 after（刷新后 store 已重建）或 after 属于上一 run（token
-      不匹配）→ 从缓冲头回放整个当前回合；
-    - 无 run（也无 TTL 窗口内终态）→ 204，前端维持 /history 快照；
+    - active run 全量补帧：不带 after 且 run 进行中 → 从缓冲头回放整个当前
+      回合后转 live；
+    - 终态 run 仅对携带本 run 水位的晚归观察者开放回放（补领终态事件）；
+      冷进入（无 after）或跨 run 旧水位 → 204，前端维持 /history 快照——
+      已完结回合的结果 /history 即真值，回放只会整回合重推一遍（内容重复
+      渲染、usage 重复累计，并催化"回放 done → 失效重拉 → 重挂"自激环）；
     - 落后超出缓冲窗口 → 单发 resync 事件收流，前端回落 /history 重建后重挂。
     """
     st = get_appstate(request)
     session, _svc = await _load_session_or_404(request, session_id)
     effective_after = after or last_event_id
-    if not st.run_manager.peek(session["thread_id"]):
+    if not st.run_manager.is_replayable(session["thread_id"], effective_after):
         return Response(status_code=204)
     return EventSourceResponse(
         _subscriber_gen(st, session["thread_id"], effective_after)

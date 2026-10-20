@@ -1,12 +1,15 @@
 /* Rubric 编辑器（复用于主代理 / 子代理）—— 对应后端 RubricConfig。
+   嵌入式去壳呈现（原 antd Card 卡中卡改为 rubric-block）：直接平铺在
+   详情面板的"行为与评审"分区内，标题 + 启用开关同行。
    value 为 null 表示该节点不启用 rubric；开关切换启用/关闭。
    grader=jev（JEV 门控分诊）：准则清单（statement + 行级阈值）+ 节点阈值 +
    真值表预览；能力位（jev_rubric_enabled）驱动模式可见性。 */
-import { Card, Empty, Flex, Input, InputNumber, Select, Switch, Tag, Tooltip, Typography, Button } from 'antd'
+import { Empty, Flex, Input, InputNumber, Select, Switch, Tag, Tooltip, Typography, Button } from 'antd'
 import { type ReactNode } from 'react'
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { useMcpTools } from '@/hooks/useMcp'
+import { DragTextarea } from './DragTextarea'
 import type { RubricConfig } from '@/types'
 
 const { Text } = Typography
@@ -37,18 +40,18 @@ export function RubricEditor({
   const criteriaValid = criteria.length > 0 && criteria.every((c) => (c.statement || '').trim())
 
   return (
-    <Card size="small" title={title}>
-      <Flex align="center" gap={8} style={{ marginBottom: enabled ? 12 : 0 }}>
+    <div className="rubric-block">
+      <Flex align="center" gap={8} wrap style={{ marginBottom: enabled ? 12 : 0 }}>
+        <span className="rubric-block__title">{title}</span>
         <Switch checked={enabled} onChange={(on) => onChange(on ? { ...cur } : null)} />
-        <span style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}>
+        <span style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>
           {enabled ? '已启用' : '未启用'}
         </span>
       </Flex>
       {enabled ? (
         <>
-          <Input.TextArea
+          <DragTextarea
             rows={4}
-            className="drag-ta"
             value={cur.content ?? ''}
             onChange={(e) => patch({ content: e.target.value })}
             placeholder={
@@ -56,7 +59,7 @@ export function RubricEditor({
                 ? '评分准则文本（可留空：未填时以下方准则清单序列化生成，LLM 与 JEV 评同一份）'
                 : '评分准则文本（grader 据此评审节点输出）'
             }
-            style={{ marginBottom: 8 }}
+            wrapStyle={{ marginBottom: 8 }}
           />
           <Flex gap={24} wrap style={{ marginBottom: 8 }}>
             <Flex align="center" gap={6}>
@@ -175,7 +178,7 @@ export function RubricEditor({
                   </Text>
                 </div>
               )}
-              <Card size="small" style={{ marginTop: 8 }}>
+              <div className="rubric-block__rules">
                 <Flex vertical gap={2}>
                   <Text style={{ fontSize: 12 }}>门控规则（首评冻结准则后生效）</Text>
                   <Text type="secondary" style={{ fontSize: 12 }}>
@@ -189,7 +192,7 @@ export function RubricEditor({
                     · 其余一律走 LLM 评审兜底（含 JEV 不可用）
                   </Text>
                 </Flex>
-              </Card>
+              </div>
             </div>
           )}
           <div style={{ marginTop: 8 }}>
@@ -205,6 +208,6 @@ export function RubricEditor({
           </div>
         </>
       ) : null}
-    </Card>
+    </div>
   )
 }

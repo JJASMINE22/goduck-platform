@@ -44,10 +44,14 @@ export interface SSEEvent<P = Record<string, unknown>> {
 export interface AgentMessagePayload {
   content: string
   name?: string | null
+  /** 产生该消息的 AI 消息 id（后端 _msg_to_events 注入；回放场景按 id 去重的依据） */
+  id?: string | null
 }
 
 export interface ThinkingPayload {
   content: string
+  /** 同 AgentMessagePayload.id */
+  id?: string | null
 }
 
 /** token 事件 payload：逐 token 增量（后端 stream_adapter._token_events） */

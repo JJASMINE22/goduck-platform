@@ -6,7 +6,9 @@
     图片或文件）；上传未返回时渲染 pending chip（图片本地 objectURL 即时缩略 + spinner，
     失败留驻可点重试），全部落定前发送门关闭（快照发生在点击瞬间，防止漏挂在途文件）。
     录音中输入框只读展示"草稿 + 流式转写"合并预览（与后端 stt_output 合并稿同构），
-    松开后草稿与终稿合并为一条消息发送，与手打输入互斥。 */
+    松开后草稿与终稿合并为一条消息发送，与手打输入互斥。
+    单次 rubric 覆盖：composer 内嵌玻璃井（头部行 + 多行 TextArea），底部工具条
+    ListChecks 图标开关，发送后随回合折叠清空。 */
 import { Button, Checkbox, Flex, Input, Popover, Select, Tooltip, Typography, Upload } from 'antd'
 import { type ReactNode, useRef, useState } from 'react'
 import {
@@ -14,9 +16,9 @@ import {
   AudioLines,
   BookOpen,
   Bot,
-  ChevronDown,
   ChevronUp,
   FileText,
+  ListChecks,
   Loader2,
   Paperclip,
   Send,
@@ -301,20 +303,33 @@ export function ChatInput({
         </Flex>
       ) : null}
 
-      {/* 单次 rubric 覆盖（折叠） */}
+      {/* 单次 rubric 覆盖（折叠）：composer 内嵌玻璃井——头部行（图标 + 标题 +
+          生效提示 + 收起钮）+ 多行 TextArea，容量与风格对齐主输入区 */}
       {showRubric ? (
-        <Flex align="center" gap={6} className="chat-composer__rubric">
-          <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-            本次 rubric：
-          </Typography.Text>
-          <Input
-            size="small"
+        <div className="chat-composer__rubric">
+          <div className="chat-composer__rubric-head">
+            <ListChecks size={13} className="chat-composer__rubric-icon" />
+            <span className="chat-composer__rubric-title">本次 rubric 覆盖</span>
+            <span className="chat-composer__rubric-hint">仅本轮调用生效 · FixedRubric 优先</span>
+            <Tooltip title="收起 rubric" placement="top">
+              <button
+                type="button"
+                className="chat-composer__rubric-collapse"
+                onClick={() => setShowRubric(false)}
+              >
+                <ChevronUp size={14} />
+              </button>
+            </Tooltip>
+          </div>
+          <Input.TextArea
+            className="chat-composer__rubric-input"
+            variant="borderless"
+            autoSize={{ minRows: 2, maxRows: 8 }}
             value={rubric}
             onChange={(e) => setRubric(e.target.value)}
-            placeholder="覆盖该次调用的评分准则（FixedRubric 优先）"
+            placeholder="补充本轮评分准则，如：回答需附代码示例、给出引用来源…"
           />
-          <Button size="small" type="text" icon={<ChevronUp size={14} />} onClick={() => setShowRubric(false)} />
-        </Flex>
+        </div>
       ) : null}
 
       {/* 输入区（无边框，融入容器）；录音/转写期间只读展示"草稿+流式转写"合并预览 */}
@@ -322,7 +337,7 @@ export function ChatInput({
         ref={taRef}
         className="chat-composer__input"
         variant="borderless"
-        autoSize={{ minRows: 1, maxRows: 6 }}
+        autoSize={{ minRows: 3, maxRows: 10 }}
         value={recording || transcribing ? voicePreview : draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
@@ -444,13 +459,14 @@ export function ChatInput({
           ) : null}
         </Flex>
         <Flex gap={8} align="center">
-          <Tooltip title={showRubric ? '收起 rubric' : '单次 rubric 覆盖'}>
+          <Tooltip title={showRubric ? '收起 rubric 覆盖' : '展开单次 rubric 覆盖'} placement="top">
             <Button
               type="text"
               shape="circle"
-              icon={showRubric ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+              icon={<ListChecks size={16} />}
               onClick={() => setShowRubric((v) => !v)}
               disabled={!idle}
+              style={showRubric ? { color: 'var(--color-primary)' } : undefined}
             />
           </Tooltip>
           {streaming ? (

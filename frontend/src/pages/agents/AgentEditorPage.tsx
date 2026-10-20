@@ -346,7 +346,8 @@ export function AgentEditorPage(): ReactNode {
           </div>
           <div className="editor-field">
             <span className="editor-field__label">描述</span>
-            {/* 单行起步、可拖拉（宽×高）——较长描述无需在窄框内滚动查看 */}
+            {/* 单行起步、原生双向拖拉（右下角，宽×高）——较长描述无需在窄框内滚动查看。
+                此处维持原设计（不加抓手条）：字段条空间紧凑，抓手条会呈"下拉"误语义 */}
             <Input.TextArea
               variant="filled"
               rows={1}

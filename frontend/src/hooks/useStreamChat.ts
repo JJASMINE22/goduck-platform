@@ -89,13 +89,17 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-/** 服务端真值重建（resync 后）：/history 重灌 store（保留待审批/中断态，
- *  清空 lastEventId → 后续重挂全量回放）。 */
+/** 服务端真值重建（resync 后）：/history 重灌 store（保留待审批/中断态），
+ *  并重置观察流水位（旧水位必然落后于已淘汰的缓冲，保留会导致重挂再次
+ *  ResyncNeeded 的死循环）→ 后续重挂全量回放。 */
 async function reloadFromServer(sessionId: string): Promise<void> {
   const history = await sessionsApi.history(sessionId)
   const { messages, toolCalls } = buildHistoryReplay(history)
   const store = useChatStore.getState()
-  if (store.sessionId === sessionId) store.loadHistory(sessionId, messages, toolCalls)
+  if (store.sessionId === sessionId) {
+    store.loadHistory(sessionId, messages, toolCalls)
+    store.resetWatermark()
+  }
 }
 
 /**

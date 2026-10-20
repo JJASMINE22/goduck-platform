@@ -207,8 +207,9 @@ export function ChatPage(): ReactNode {
     e.preventDefault()
     const el = e.currentTarget as HTMLElement
     const startY = e.clientY
-    const startH = inputHeight ?? 96
-    const onMove = (ev: MouseEvent) => setInputHeight(clamp(52, 360, startH + (startY - ev.clientY)))
+    // 基线对齐加高后的 composer 默认高度（minRows 3 ≈ 140px），首次拖拽不起跳
+    const startH = inputHeight ?? 140
+    const onMove = (ev: MouseEvent) => setInputHeight(clamp(88, 380, startH + (startY - ev.clientY)))
     const onUp = () => {
       el.removeAttribute('data-resizing')
       document.body.style.userSelect = ''

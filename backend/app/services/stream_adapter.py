@@ -147,7 +147,8 @@ def _msg_to_events(msg, agent_path: str, streamed_ids: set[str]) -> list[SSEEven
             events.append(SSEEvent(
                 type="thinking",
                 agent_path=agent_path,
-                payload={"content": reasoning},
+                # id：产生该段的 AI 消息 id，供前端按消息去重（契约纯增量）
+                payload={"content": reasoning, "id": msg.id},
             ))
 
         if msg.tool_calls:
@@ -167,7 +168,8 @@ def _msg_to_events(msg, agent_path: str, streamed_ids: set[str]) -> list[SSEEven
             events.append(SSEEvent(
                 type="agent_message",
                 agent_path=agent_path,
-                payload={"content": _content_str(msg.content), "name": msg.name},
+                # id 同 thinking：非流式消息的唯一标识，回放场景去重依据
+                payload={"content": _content_str(msg.content), "name": msg.name, "id": msg.id},
             ))
     elif isinstance(msg, ToolMessage):
         payload = {

@@ -105,6 +105,10 @@ export interface ChatState {
   /** 会话级 token 用量累计（usage 事件逐条累加；基线由 ChatPage 从 session 查询灌入，
       流结束后终态失效重拉以服务端真值校正）。会话作用域：reset 清零，不随回合清空 */
   usageTotals: UsageTotals
+  /** usage 去重：已计入累计的 AI 消息 id（一次 LLM 调用一个 id）。观察流回放 /
+      断连重挂会把同一 run 的 usage 事件再推一遍，凭此去重不重复累计；跨会话
+      进入时随 loadHistory 重建，同会话历史重灌保留 */
+  usageCountedIds: Set<string>
   // 发送框草稿：上提到 store，使回撤可回填原文（受控于 store，非组件局部 state）
   draft: string
   /** 当前选中的智能体（会话-智能体解耦 §4.4）：纯 UI 态，永不落库——send 时
@@ -112,9 +116,10 @@ export interface ChatState {
    *  reset 清空、由 ChatPage 从 session.last_agent_id 初始化；同会话刷新后同样
    *  回落 last_agent_id（HITL 悬空期由 ChatPage 门禁锁定）。 */
   selectedAgentId: string | null
-  /** 观察流重挂水位：最近收到的 SSE id（"{run_token}.{seq}"）。跨会话进入 /
-   *  历史重灌时清空（重挂即全量回放）；仅会话内存活（刷新即失，配合 /history
-   *  重建后全量补帧，天然正确）。 */
+  /** 观察流重挂水位：最近收到的 SSE id（"{run_token}.{seq}"）。跨会话进入时清空
+   *  （重挂即全量回放）；同会话历史重灌保留——水位指向的已完结 run 重挂时后端
+   *  增量判定直接收流，不整回合重推（后端 observe_stream 的终态回放门禁配合）。
+   *  resync 重建后由 resetWatermark 显式清空。 */
   lastEventId: string | null
   // —— 语音输入（麦克风小状态机，与 status 正交联动）——
   /** 'idle'=可按压；'recording'=长按采麦中；'transcribing'=松开等终稿 */
@@ -148,10 +153,13 @@ export interface ChatState {
   clearTodos: () => void
   /** file_change 事件落地：同批记录统一时间戳追加（合并展示在渲染层完成） */
   applyFileChange: (records: FileChangeRecord[]) => void
-  /** usage 事件落地：一次 LLM 调用的用量累加进会话累计（五键全加，负值不可能出现） */
+  /** usage 事件落地：一次 LLM 调用的用量累加进会话累计（五键全加，负值不可能出现）。
+      带 id 的事件按消息去重（回放/重挂不重复计入）；无 id 消息与后端同语义——不去重 */
   applyUsageIncrement: (p: UsagePayload) => void
   /** 灌入服务端累计基线（进入会话 / 终态失效重拉后；整表替换非合并） */
   setUsageTotals: (t: UsageTotals) => void
+  /** 重置观察流水位（resync 服务端真值重建后调用：旧水位必然落后，重挂走全量回放） */
+  resetWatermark: () => void
   addAttachment: (u: UploadOut) => void
   removeAttachment: (uploadId: string) => void
   clearAttachments: () => void
@@ -211,6 +219,7 @@ const initialState = {
     reasoning_tokens: 0,
     total_tokens: 0,
   } as UsageTotals,
+  usageCountedIds: new Set<string>() as Set<string>,
   draft: '',
   selectedAgentId: null as string | null,
   lastEventId: null as string | null,
@@ -386,15 +395,26 @@ export const useChatStore = create<ChatState>((set) => ({
     ),
 
   applyUsageIncrement: (p) =>
-    set((s) => ({
-      usageTotals: {
-        input_tokens: s.usageTotals.input_tokens + (p.input_tokens || 0),
-        cached_tokens: s.usageTotals.cached_tokens + (p.cached_tokens || 0),
-        output_tokens: s.usageTotals.output_tokens + (p.output_tokens || 0),
-        reasoning_tokens: s.usageTotals.reasoning_tokens + (p.reasoning_tokens || 0),
-        total_tokens: s.usageTotals.total_tokens + (p.total_tokens || 0),
-      },
-    })),
+    set((s) => {
+      // 回放/重挂的同一 usage 事件不重复累计（payload.id = AI 消息 id，
+      // 一次 LLM 调用一个；与后端 usage_counted 的 id 键同源）
+      let countedIds = s.usageCountedIds
+      if (p.id) {
+        if (countedIds.has(p.id)) return {}
+        countedIds = new Set(countedIds)
+        countedIds.add(p.id)
+      }
+      return {
+        usageCountedIds: countedIds,
+        usageTotals: {
+          input_tokens: s.usageTotals.input_tokens + (p.input_tokens || 0),
+          cached_tokens: s.usageTotals.cached_tokens + (p.cached_tokens || 0),
+          output_tokens: s.usageTotals.output_tokens + (p.output_tokens || 0),
+          reasoning_tokens: s.usageTotals.reasoning_tokens + (p.reasoning_tokens || 0),
+          total_tokens: s.usageTotals.total_tokens + (p.total_tokens || 0),
+        },
+      }
+    }),
 
   setUsageTotals: (t) =>
     set({
@@ -406,6 +426,8 @@ export const useChatStore = create<ChatState>((set) => ({
         total_tokens: t.total_tokens || 0,
       },
     }),
+
+  resetWatermark: () => set({ lastEventId: null }),
 
   addAttachment: (u) => set((s) => ({ attachments: [...s.attachments, u] })),
 
@@ -513,8 +535,11 @@ export const useChatStore = create<ChatState>((set) => ({
         parseStatus: null,
         fileChanges: [],
         pendingAttachments: [],
-        // 服务端快照重建后旧水位失效（跨 run / 已过期）：重挂走全量回放
-        lastEventId: null,
+        // 同会话重灌保留水位与 usage 去重集：水位让已完结 run 的重挂走后端
+        // 增量判定（直接收流，不整回合重推）；去重集防回放的 usage 二次计入。
+        // 跨会话进入则整体作废重建（旧水位/旧 id 属于上一会话）。
+        lastEventId: s.sessionId === sessionId ? s.lastEventId : null,
+        usageCountedIds: s.sessionId === sessionId ? s.usageCountedIds : new Set<string>(),
       }
     }),
 

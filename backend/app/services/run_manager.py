@@ -189,9 +189,30 @@ class RunManager:
         return run is not None and not run.done
 
     def peek(self, thread_id: str) -> bool:
-        """该 thread 是否存在 RunState（active 或 TTL 窗口内终态）——GET 观察流的
-        204 预检；订阅期间的消失由 subscribe 的 NoSuchRun 兜底。"""
+        """该 thread 是否存在 RunState（active 或 TTL 窗口内终态）——通用存在性
+        查询。观察流（observe_stream）的 204 预检请改用 is_replayable：终态 run
+        只对携带本 run 水位的晚归观察者开放回放。"""
         return thread_id in self._runs
+
+    def is_replayable(self, thread_id: str, last_event_id: str | None = None) -> bool:
+        """observe_stream 的 204 预检：本次订阅是否应当发生。
+
+        - active run：恒可订阅（冷进入全量补帧 / 携带水位增量对齐，行为不变）；
+        - 终态 run（TTL 窗口内）：仅当客户端携带**本 run** 的水位（token 匹配）
+          时可回放——晚归观察者补领终态事件的原始设计意图；无水位（冷进入）
+          或跨 run 旧水位一律不可回放：已完结回合的结果 /history 即真值，
+          回放会把整回合内容与 usage 再推一遍（前端重复渲染、重复累计，并
+          催化"回放 done → 失效重拉 → 重挂 → 再回放"的自激环）。
+        """
+        run = self._runs.get(thread_id)
+        if run is None:
+            return False
+        if not run.done:
+            return True
+        if not last_event_id:
+            return False
+        token, _, seq_s = last_event_id.rpartition(".")
+        return token == run.token and seq_s.isdigit()
 
     # ------------------------------------------------------------- 订阅
 

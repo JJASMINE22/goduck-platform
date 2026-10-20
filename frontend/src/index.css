@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&family=ZCOOL+KuaiLe&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&family=ZCOOL+KuaiLe&family=Dancing+Script:wght@500;600;700&display=swap');
 @import './styles/tokens.css';
 
 *,
@@ -343,18 +343,83 @@ pre,
   overflow: hidden;
 }
 .chat-composer__chips {
-  padding: 8px 10px 0;
+  padding: 10px 14px 0;
 }
+/* 单次 rubric 覆盖：composer 内嵌玻璃井（inset well）——半透凹面 + 主色细描边 +
+   内阴影下沉，融入流体玻璃语言；头部行 = 图标 + 标题 + 生效提示 + 收起钮，
+   主体为多行 TextArea（容量远大于旧单行小输入） */
 .chat-composer__rubric {
-  padding: 6px 10px 0;
+  display: flex;
+  flex-direction: column;
+  margin: 10px 12px 0;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 16%, var(--glass-border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-primary) 4%, var(--glass-bg-faint));
+  box-shadow:
+    inset 0 1px 3px color-mix(in srgb, var(--color-primary) 8%, transparent),
+    0 1px 0 var(--glass-rim-soft);
+  overflow: hidden;
+}
+.chat-composer__rubric-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 0 10px;
+}
+.chat-composer__rubric-icon {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+.chat-composer__rubric-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+.chat-composer__rubric-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-composer__rubric-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.chat-composer__rubric-collapse:hover {
+  background: var(--color-border-soft);
+  color: var(--color-text);
+}
+.chat-composer__rubric-input.ant-input {
+  padding: 4px 10px 8px;
+  resize: none;
+  font-size: 13px;
+  background: transparent;
+}
+.chat-composer__rubric-input.ant-input::placeholder {
+  color: var(--color-text-tertiary);
+  opacity: 0.85;
 }
 .chat-composer__input.ant-input {
-  padding: 4px 12px;
+  padding: 12px 16px;
   resize: none;
 }
 .chat-composer__bar {
   margin-top: auto;
-  padding: 2px 8px;
+  padding: 4px 10px 8px;
 }
 /* 智能体选择器（会话-智能体解耦）：融入玻璃 composer 的无边框小号下拉 */
 .chat-composer__agent-select {
@@ -1205,16 +1270,57 @@ pre,
   color: var(--color-danger);
   font-weight: 600;
 }
-/* 长文本栏可拖拉调整（系统提示 / 描述 / rubric 准则）：原生 resize 句柄在
-   filled 输入底色上近乎不可见，重绘右下角对角抓手（颜色走设计 token，随明暗
-   主题），悬停点亮主色；高度上限 65vh 防拖溢视口。Firefox 无抓手图形，
-   ::-moz-resizer 仅做着色回退（可辨识即可）。 */
+/* 长文本栏可拖拉调整（系统提示 / 描述 / rubric 准则）：弃用原生 textarea 右下角
+   斜线缩放手柄（OS 原生观感与项目设计不符、热区小难命中），改为底部通栏抓手条
+   ——居中胶囊视觉（DragTextarea 组件），默认低调半隐，悬停/拖拽点亮主色并展宽
+   （与会话 composer 的 row-resizer 同款交互语义）；宽高钳制由组件内联执行。 */
 .drag-ta.ant-input {
-  resize: vertical;
+  resize: none;
   min-height: 32px;
   max-height: 65vh;
 }
-.drag-ta::-webkit-resizer {
+.drag-ta-wrap {
+  display: block;
+}
+.drag-ta__grip {
+  display: grid;
+  place-items: center;
+  height: 10px;
+  margin-top: 2px;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+}
+.drag-ta__grip--xy {
+  cursor: nwse-resize;
+}
+.drag-ta__grip-bar {
+  width: 26px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-text-tertiary);
+  opacity: 0.45;
+  transition: width 0.15s ease, opacity 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.drag-ta__grip:hover .drag-ta__grip-bar,
+.drag-ta__grip[data-resizing] .drag-ta__grip-bar {
+  width: 44px;
+  opacity: 1;
+  background: var(--color-primary);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+/* 顶栏描述（字段条内）：维持原设计——原生右下角双向拖拉（宽×高），不加抓手条
+   （字段条空间紧凑，抓手条会呈"下拉"误语义）；宽高上下限防撑破字段条/卡片。
+   注意须置于 .drag-ta.ant-input（resize:none）之后，同特异度后者覆盖。 */
+.drag-ta--bar.ant-input {
+  resize: both;
+  min-width: 184px;
+  max-width: 420px;
+  max-height: 138px;
+}
+/* 原生角抓手重绘（仅 --bar 保留该表面）：颜色走设计 token 随明暗主题，悬停点亮
+   主色；Firefox 无抓手图形，::-moz-resizer 仅做着色回退 */
+.drag-ta--bar::-webkit-resizer {
   background: linear-gradient(
     135deg,
     transparent 0 1.5px,
@@ -1227,8 +1333,8 @@ pre,
   ) no-repeat 100% 100%;
   background-size: 10px 10px;
 }
-.drag-ta:hover::-webkit-resizer,
-.drag-ta:active::-webkit-resizer {
+.drag-ta--bar:hover::-webkit-resizer,
+.drag-ta--bar:active::-webkit-resizer {
   background-image: linear-gradient(
     135deg,
     transparent 0 1.5px,
@@ -1240,15 +1346,8 @@ pre,
     transparent 9.5px
   );
 }
-.drag-ta::-moz-resizer {
+.drag-ta--bar::-moz-resizer {
   background: var(--color-text-tertiary);
-}
-/* 顶栏描述（字段条内）：双向拖拉（宽×高）；宽高上下限防撑破字段条/卡片 */
-.drag-ta--bar.ant-input {
-  resize: both;
-  min-width: 184px;
-  max-width: 420px;
-  max-height: 138px;
 }
 .editor-workspace__main {
   flex: 1;
@@ -1521,43 +1620,54 @@ pre,
 }
 
 /* ===== xyflow 主题适配 =====
-   ReactFlow 的 Controls / MiniMap / Edge 用设计 token 统一覆盖，
-   随 tokens.css 自动适配浅/暗主题，保证可见性与一致性。 */
-.react-flow__controls {
-  box-shadow: var(--shadow-md);
-  border: 1px solid var(--color-border);
+   ReactFlow 的 Controls / Edge 用设计 token 统一覆盖，随 tokens.css 自动适配浅/暗。
+   优先级注意：xyflow 的 style.css 在模块图中晚于 index.css 导入（AgentCanvas），
+   同特异度规则会被其反杀——旧写法实际失效，暗色下回落 xyflow 浅色默认
+   （白底 #fefefe + inherit 图标继承浅色文字 → 白底白图标不可见）。
+   统一 body 前缀提权（与 antd 运行时样式同策略），并强化暗色可见性：
+   高密玻璃底 + 白玻璃描边 + 亮色图标，悬停染主色。 */
+body .react-flow__controls {
+  box-shadow: inset 0 1px 0 var(--glass-rim), var(--shadow-md);
+  border: 1px solid var(--glass-border-strong);
   border-radius: var(--radius-md);
   overflow: hidden;
+  backdrop-filter: blur(12px) saturate(1.5);
+  -webkit-backdrop-filter: blur(12px) saturate(1.5);
 }
-.react-flow__controls-button {
-  background: var(--glass-bg);
-  backdrop-filter: blur(10px) saturate(1.5);
-  -webkit-backdrop-filter: blur(10px) saturate(1.5);
+body .react-flow__controls-button {
+  background: var(--glass-bg-strong);
   border: none;
-  border-bottom: 1px solid var(--color-border);
-  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-border-soft);
+  color: var(--color-text);
   width: 26px;
   height: 26px;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.react-flow__controls-button:last-child {
+body .react-flow__controls-button:last-child {
   border-bottom: none;
 }
-.react-flow__controls-button:hover {
-  background: var(--glass-bg-strong);
-  color: var(--color-text);
+body .react-flow__controls-button:hover {
+  background: var(--color-primary-bg);
+  color: var(--color-primary);
 }
-.react-flow__controls-button svg {
+body .react-flow__controls-button svg {
   fill: currentColor;
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  body .react-flow__controls,
+  body .react-flow__controls-button {
+    background: var(--color-bg-elevated);
+  }
 }
 .react-flow__minimap {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
 }
-/* 连线默认浅蓝在暗底过亮：普通边收敛到边框灰，动画边用青色保持可见 */
-.react-flow__edge-path {
+/* 连线（body 提权后方真正生效）：普通边收敛到边框灰，动画边用青色保持可见 */
+body .react-flow__edge-path {
   stroke: var(--color-border);
 }
-.react-flow__edge.animated .react-flow__edge-path {
+body .react-flow__edge.animated .react-flow__edge-path {
   stroke: var(--color-role-agent-sub);
 }
 
@@ -2184,7 +2294,10 @@ body .topo-popover-root .ant-popover-arrow::before {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-gutter: stable;
+  /* both-edges：左右对称预留滚动槽——内容盒关于面板中轴对称，阅读列（及空会话
+     徽章）与真居中的 composer 共享同一中轴（单侧 stable 会把内容整体压左
+     半个滚动条宽，徽章与发送框产生肉眼可感的错位） */
+  scrollbar-gutter: stable both-edges;
 }
 /* 玻璃 dock：composer 的悬浮定位壳（绝对钉在滚动区底部），消息从玻璃下滚过。
    容器本身不拦截指针——宽屏 1560 阅读列两侧的空白仍是下方消息的命中区；
@@ -2480,17 +2593,20 @@ body .topo-popover-root .ant-popover-arrow::before {
   max-width: 1560px;
   margin: 0 auto;
   /* 底部让位于悬浮玻璃 dock：--composer-h 由 ChatPage 的 ResizeObserver 实时
-     写入 body（chips/textarea 自动增高/拖拽均跟随），消息末条停在玻璃上缘之上 */
-  padding: 8px 16px calc(var(--composer-h, 120px) + 14px);
+     写入 body（chips/textarea 自动增高/拖拽均跟随），消息末条停在玻璃上缘之上。
+     --rail-w：右侧导航轨让位量（容器查询分级覆写），空会话徽章借它回正中轴 */
+  padding: 8px 16px calc(var(--composer-h, 148px) + 14px);
+  --rail-w: 0px;
 }
 .chat-panel__composer {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  /* 与阅读列（chat-panel__column）同宽限宽 + 居中 + 同水平内边距：
-     发送框左右边缘与消息显示框严格对齐（容器查询档位随列同步为导航轨让位） */
+  /* 窄胖列：composer 限宽为居中窄列，严格居中于面板中轴（dock left:0/right:0 +
+      margin auto，不受滚动槽影响）——与空会话徽章（chat-welcome 回正后）同轴；
+      玻璃 dock 仍横向铺满，宽屏两侧空白处指针穿透照旧 */
   width: 100%;
-  max-width: 1560px;
+  max-width: 880px;
   margin: 0 auto;
   padding: 8px 16px 14px;
 }
@@ -2722,18 +2838,20 @@ body .topo-popover-root .ant-popover-arrow::before {
     display: none;
   }
 }
-/* ≥900px：圆点档 —— 阅读列与 composer 右侧同步让出轨道宽度（两缘对齐）；
-   轨道底部抬升到玻璃 dock 上缘之上，末位圆点不被磨砂面板盖住 */
+/* ≥900px：圆点档 —— 轨道底部抬升到玻璃 dock 上缘之上，末位圆点不被磨砂面板盖住。
+    阅读列让出轨道宽度防气泡重叠；--rail-w 同步记录让位量（徽章回正用）。
+    composer 保持面板真居中（轨道悬于 dock 之上，无纵向交叠，无需让位） */
 @container (min-width: 900px) {
   .turn-rail {
-    bottom: calc(var(--composer-h, 120px) + 18px);
+    bottom: calc(var(--composer-h, 148px) + 18px);
   }
-  .chat-panel__column,
-  .chat-panel__composer {
+  .chat-panel__column {
     padding-right: 34px;
+    --rail-w: 18px;
   }
 }
-/* ≥1400px：label 档 —— 轨道放宽、label 显形，阅读列与 composer 同步让出完整轨道 */
+/* ≥1400px：label 档 —— 轨道放宽、label 显形（阅读列同步让位；居中窄 composer
+    与右侧轨道在任何面板宽度下均无水平交叠） */
 @container (min-width: 1400px) {
   .turn-rail {
     right: 10px;
@@ -2742,9 +2860,9 @@ body .topo-popover-root .ant-popover-arrow::before {
   .turn-rail__label {
     display: block;
   }
-  .chat-panel__column,
-  .chat-panel__composer {
+  .chat-panel__column {
     padding-right: 178px;
+    --rail-w: 162px;
   }
 }
 
@@ -3122,6 +3240,187 @@ body .ant-drawer .ant-drawer-mask {
   font-size: 12px;
 }
 
+/* —— 节点详情：分区玻璃卡（方案 A）+ 短字段双列网格（方案 C）——
+   分区色 --sec-tone 由 DetailSection 内联下发，驱动区头圆徽与开启态开关格。
+   注意：分区卡不可 overflow:hidden（会困死 sticky 区头），圆角由区头自带
+   顶部圆角 + 折叠态整卡圆角补足。 */
+.node-detail__sections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.detail-section {
+  --sec-tone: var(--color-primary);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-bg-soft);
+  backdrop-filter: blur(16px) saturate(1.6);
+  -webkit-backdrop-filter: blur(16px) saturate(1.6);
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim),
+    var(--shadow-sm);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .detail-section,
+  .detail-section__head {
+    background: var(--glass-solid);
+  }
+}
+/* 区头：sticky 悬浮于面板滚动（.node-detail overflow:auto 为滚动容器），
+    高密玻璃底保证内容从下方滚过时可读 */
+.detail-section__head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 10px;
+  border-radius: 11px 11px 0 0;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(14px) saturate(1.6);
+  -webkit-backdrop-filter: blur(14px) saturate(1.6);
+}
+.detail-section--collapsed .detail-section__head {
+  border-radius: 11px;
+}
+.detail-section__icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  color: #fff;
+  background: var(--sec-tone);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--sec-tone) 40%, transparent);
+  flex-shrink: 0;
+}
+.detail-section__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+.detail-section__summary {
+  margin-left: auto;
+  max-width: 55%;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-soft);
+  background: var(--glass-bg-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.detail-section__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.detail-section__toggle:hover {
+  background: var(--color-border-soft);
+  color: var(--color-text);
+}
+.detail-section__toggle svg {
+  transition: transform 0.18s ease;
+}
+.detail-section__toggle[data-collapsed='true'] svg {
+  transform: rotate(-90deg);
+}
+/* 体：auto-fit 网格——窄面板单列、宽面板双列；长字段 --wide 整行 */
+.detail-section__body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(228px, 1fr));
+  gap: 10px 12px;
+  padding: 10px 12px 12px;
+}
+.detail-field {
+  min-width: 0;
+}
+.detail-field--wide {
+  grid-column: 1 / -1;
+}
+.detail-field__label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: 4px;
+}
+/* 开关格：cell 单元；开启点亮分区色（左缘色带 + 淡染底 + 描边） */
+.detail-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px 8px 13px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.detail-cell__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.detail-cell__label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.detail-cell__desc {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--color-text-tertiary);
+}
+.detail-cell--on {
+  border-color: color-mix(in srgb, var(--sec-tone) 38%, var(--color-border-soft));
+  background: color-mix(in srgb, var(--sec-tone) 7%, transparent);
+}
+.detail-cell--on::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--sec-tone);
+}
+/* Shell 开启后的警示 + Jev 守卫子块（整行，虚线警示框） */
+.detail-subnote {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px dashed color-mix(in srgb, var(--color-danger) 40%, var(--color-border-soft));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-danger) 4%, transparent);
+}
+/* Rubric 嵌入块（去壳）：标题 + 启用开关同行，门控规则为凹面井 */
+.rubric-block__title {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.rubric-block__rules {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-bg-inset) 55%, transparent);
+}
+
 /* 已选工具分组折叠展示（替代 TreeSelect 框内 tag 堆叠） */
 .checked-tool-groups {
   margin-top: 8px;
@@ -3226,24 +3525,84 @@ body .ant-drawer .ant-drawer-mask {
   line-height: 1.6;
 }
 
-/* 空会话欢迎占位 */
+/* 空会话欢迎占位：品牌鸭子徽章（玻璃圆盘）+ 一句诙谐标语（Duck go, you xxx）。
+    不放使用提示——能力自解释，标语给品牌语气。
+    中轴回正：阅读列为导航轨让位（右侧 --rail-w 额外 padding）会把本块中心
+    推左让位量之半；translateX 补偿后与真居中的 composer 严格同中轴 */
 .chat-welcome {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 14px;
   color: var(--color-text-tertiary);
   text-align: center;
+  transform: translateX(calc(var(--rail-w, 0px) / 2));
 }
+/* 徽章：logo 立于玻璃圆盘，顶部镜面亮斑 + 轻浮沉（水面鸭，入场欢迎感） */
+.chat-welcome__emblem {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg-soft);
+  backdrop-filter: blur(16px) saturate(1.6);
+  -webkit-backdrop-filter: blur(16px) saturate(1.6);
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim),
+    inset 0 -1px 1px var(--glass-rim-soft),
+    0 6px 24px rgba(60, 64, 67, 0.1);
+  animation: duck-bob 3.2s ease-in-out infinite;
+}
+.chat-welcome__emblem::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(120% 60% at 30% -20%, var(--glass-specular), transparent 60%);
+  pointer-events: none;
+}
+.chat-welcome__emblem img {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 10px rgba(60, 64, 67, 0.18));
+}
+@keyframes duck-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-welcome__emblem {
+    animation: none;
+  }
+}
+/* 标语：连笔手写体（--font-script：Dancing Script，仅品牌语气场景）+ 主色渐隐字
+    （与玻璃主色语言同源），不支持 clip-text 的环境回退纯色 */
 .chat-welcome__title {
-  margin: 6px 0 0;
-  font-size: 18px;
+  margin: 0;
+  font-family: var(--font-script);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
   color: var(--color-text-secondary);
 }
-.chat-welcome__hint {
-  font-size: 12px;
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .chat-welcome__title {
+    background: linear-gradient(120deg, var(--color-text) 20%, var(--color-primary) 90%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 }
 
 /* ============ 会话页「工作区」视图（与会话同级的页内页面） ============ */

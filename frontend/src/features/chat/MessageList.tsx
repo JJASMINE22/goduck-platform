@@ -31,6 +31,23 @@ function agentMeta(path: string): { label: string; color: string } {
   return { label: `子代理 · ${seg}`, color: 'var(--color-role-agent-sub)' }
 }
 
+/** 空会话标语池（"Duck go, you xxx" 句式，诙谐动词收尾）：
+    按会话 id 稳定取模轮换——同会话刷新不变，不同新会话各有惊喜 */
+const WELCOME_SLOGANS = [
+  'you command, duck go.',
+  'you order, duck go.',
+  'you demand, duck go.',
+  'you insist, duck go.',
+  'you instruct, duck go.',
+]
+
+/** 会话 id → 稳定标语下标（djb2 风格散列，同 id 恒同值） */
+function pickSlogan(sessionId: string): string {
+  let h = 5381
+  for (let i = 0; i < sessionId.length; i++) h = ((h * 33) ^ sessionId.charCodeAt(i)) | 0
+  return WELCOME_SLOGANS[Math.abs(h) % WELCOME_SLOGANS.length]
+}
+
 function Avatar({ role, color }: { role: 'user' | 'agent'; color: string }): ReactNode {
   return (
     <div className="chat-avatar" style={{ background: role === 'user' ? 'var(--color-primary)' : color }}>
@@ -62,6 +79,8 @@ export const MessageList = memo(function MessageList({
   const status = useChatStore((s) => s.status)
   const parseStatus = useChatStore((s) => s.parseStatus)
   const streaming = status === 'streaming'
+  // 空会话标语（按会话稳定）：品牌徽章 + 一句 quip，不提示使用方式
+  const slogan = useMemo(() => pickSlogan(sessionId), [sessionId])
 
   // 最近一条用户消息 id：流式生成中仅它可"停止并回撤"，其余历史回合禁用
   const lastUserMsgId = useMemo(() => {
@@ -90,9 +109,10 @@ export const MessageList = memo(function MessageList({
     <Flex vertical gap={14} style={{ padding: '0 0 10px', height: '100%' }}>
       {!timeline.length ? (
         <div className="chat-welcome">
-          <Bot size={40} />
-          <p className="chat-welcome__title">开始对话</p>
-          <small className="chat-welcome__hint">在下方输入消息，Enter 发送 / Shift+Enter 换行</small>
+          <div className="chat-welcome__emblem">
+            <img src="/logo-transparent.png" alt="goduck" />
+          </div>
+          <p className="chat-welcome__title">{slogan}</p>
         </div>
       ) : null}
       {timeline.map((item) => {
