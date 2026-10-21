@@ -7,7 +7,7 @@ import { Alert, App as AntApp, Button, Flex, Segmented, Space, Tag, Typography }
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, FolderOpen, MessageSquare, Trash2 } from 'lucide-react'
+import { ArrowLeft, ChevronDown, FolderOpen, MessageSquare, Trash2 } from 'lucide-react'
 import { useSession, useSessionHistory, useArchiveSession } from '@/hooks/useSessions'
 import { useAgents } from '@/hooks/useAgents'
 import { useCronJobs } from '@/hooks/useCron'
@@ -194,6 +194,15 @@ export function ChatPage(): ReactNode {
   const scrollRef = useRef<HTMLDivElement>(null)
   // 是否"贴底"：用户没主动上滑翻历史。发消息/新条目出现时强制置 true。
   const pinnedRef = useRef(true)
+  // 跳底悬浮钮可见态（DeepSeek 式）：离底超过贴底阈值即显现。与 pinnedRef
+  // 分离——ref 不触发渲染，按钮显隐需要状态。sessionId 作用域（同 wsState
+  // 模式）：跨会话派生回隐没，无需 effect 复位；函数式更新同值复用旧引用，
+  // 逐 scroll 事件调用无额外渲染开销
+  const [jumpState, setJumpState] = useState<{ sessionId: string; visible: boolean }>({
+    sessionId,
+    visible: false,
+  })
+  const jumpVisible = jumpState.sessionId === sessionId && jumpState.visible
   // 指针是否悬停在消息流内：流式期间悬停时暂停"追底"滚动——否则持续增长的
   // 内容会把"停止并回撤"等悬浮操作按钮推离光标，hover 断链、根本点不中。
   const hoverRef = useRef(false)
@@ -256,7 +265,21 @@ export function ChatPage(): ReactNode {
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96
+    const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 96
+    pinnedRef.current = pinned
+    setJumpState((cur) =>
+      cur.sessionId === sessionId && cur.visible === !pinned ? cur : { sessionId, visible: !pinned },
+    )
+  }, [sessionId])
+
+  /** 跳底钮点击：平滑滚回最新一条。pinnedRef 立即置真——流式追底（store 订阅 /
+      ResizeObserver）在动画期间即重新接管，长动画不必等落底才恢复跟随；
+      按钮可见性由随后到达底部的 scroll 事件自然收敛隐藏 */
+  const jumpToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    pinnedRef.current = true
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [])
 
   /** 时间线"文件变更卡片"点击行 → 一步切到工作区 + 选中该文件 + 树失效刷新。 */
@@ -748,6 +771,20 @@ export function ChatPage(): ReactNode {
                   key=sessionId：同路由切换会话时重挂复位折叠态（TurnRail 内部
                   useState 不随 store reset 清空） */}
               <TurnRail key={sessionId} scrollRef={scrollRef} />
+
+              {/* 跳底悬浮钮（DeepSeek 式）：上滑翻历史 / TurnRail 跳转旧轮次后
+                  浮现于发送框右上角（右缘对齐 composer），点击平滑回最新；
+                  贴底时隐没（data-show 驱动，隐藏态保留 DOM 以获得双向过渡） */}
+              <button
+                type="button"
+                className="jump-bottom-btn"
+                data-show={jumpVisible ? '' : undefined}
+                onClick={jumpToBottom}
+                aria-label="跳转至最新消息"
+                title="跳转至最新消息"
+              >
+                <ChevronDown size={17} />
+              </button>
 
               {/* 玻璃 dock：composer 悬浮于滚动区底部（流体玻璃取景消息流，
                   发送后消息从玻璃下滚过、模糊可见）；dock 本身不拦截指针，

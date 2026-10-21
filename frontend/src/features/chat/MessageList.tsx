@@ -116,12 +116,13 @@ export const MessageList = memo(function MessageList({
         </div>
       ) : null}
       {timeline.map((item) => {
-        // kb_search 专属卡：结构化摘要 + 证据锚定入口（替代平铺 JSON 观测）
+        // kb_search 专属卡：结构化摘要 + 证据锚定入口（替代平铺 JSON 观测）；
+        // 通用工具卡透传 onOpenFile：diff 结果的文件总览行可跳工作区
         if (item.kind === 'tool')
           return isKbSearchTool(item.data.name) ? (
             <KbSearchToolCard key={`t-${item.data.id}`} entry={item.data} />
           ) : (
-            <ToolCallCard key={`t-${item.data.id}`} entry={item.data} />
+            <ToolCallCard key={`t-${item.data.id}`} entry={item.data} onOpenFile={onOpenFile} />
           )
         if (item.kind === 'files')
           return <FileChangesCard key="file-changes-card" records={item.data} onOpenFile={onOpenFile} />
@@ -248,7 +249,9 @@ const ThinkingBlock = memo(function ThinkingBlock({ msg }: { msg: ChatMessage })
   return (
     <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
       <Avatar role="agent" color={color} />
-      <div style={{ flex: 1, minWidth: 0 }}>
+      {/* 家族色 = 所属代理角色色（归属语义）：思考过程与该代理气泡同色系，
+          但以透明底 + 左条 + 次级正文与气泡区分 */}
+      <div className="msg-card" style={{ '--card-family': color } as CSSProperties}>
         <Collapse
           size="small"
           ghost

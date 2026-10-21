@@ -2,11 +2,25 @@
     结果常为「JSON 字符串再包一层」（含字面 \n 转义）：先解包再美化缩进；
     JSON 轻量语法高亮（键/字符串/数字/布尔分色，零依赖正则词法）；
     超长内容默认折叠（渐隐遮罩 + 展开全部），参数/结果各带一键复制。
+    结果为 unified diff（MCP 文件编辑工具直写宿主路径、无 file_change 事件）：
+    总览层 = 文件行（动作 + +N/−M + 可点跳工作区）+ Diff 图标展开红绿明细
+    （diffResult.ts，与 file_change 聚合卡的观测语义同源互补）。
     执行中：工具名亮银色流光（与思考标签同一「进行中」语言，准则 F7）。 */
-import { Collapse, Flex, Tag, Typography } from 'antd'
+import { Collapse, Flex, Tag, Tooltip, Typography } from 'antd'
 import { type ReactNode, memo, useMemo, useState } from 'react'
-import { Check, Wrench } from 'lucide-react'
+import { Check, Diff, FileMinus, FilePen, FilePlus, Wrench } from 'lucide-react'
+import { isUnifiedDiff, isAbsoluteHostPath, parseDiff, type ParsedDiff } from './diffResult'
 import type { ToolCallEntry } from '@/store/chatStore'
+
+/** diff 动作 → 行图标/标签（与 FileChangesCard.ACTION_META 同语义；
+ *  本地重定义而非导出复用——组件文件只导出组件的纪律） */
+const DIFF_ACTION_META = {
+  create: { label: '新建', Icon: FilePlus },
+  edit: { label: '编辑', Icon: FilePen },
+  delete: { label: '删除', Icon: FileMinus },
+} as const
+
+const basename = (path: string): string => path.split('/').pop() ?? path
 
 /** 折叠阈值：超过该行数默认收起（结果可能数千行，裸撑爆时间线） */
 const CLAMP_LINES = 10
@@ -59,7 +73,7 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** 一段载荷（参数或结果）：标题栏（标签 + 行数 + 复制）+ 高亮正文 + 展开/收起。
+/** 一段载荷（参数或 JSON 结果）：标题栏（标签 + 行数 + 复制）+ 高亮正文 + 展开/收起。
     折叠态只渲染前几行（数千行的结果一次性 tokenize + 建 DOM 会卡时间线）。 */
 function PayloadSection({ title, text }: { title: string; text: string }): ReactNode {
   const lines = useMemo(() => text.split('\n').length, [text])
@@ -112,15 +126,124 @@ function PayloadSection({ title, text }: { title: string; text: string }): React
   )
 }
 
+/** diff 结果的总览层：文件行（动作 + 文件名 + +N/−M，可点跳工作区）+ 明细切换。
+    - 总览默认呈现（用户只需要"哪些文件变了"）；明细按钮展开逐行染色的 diff 视图，
+      折叠钳制与 JSON 载荷同规则（CLAMP_LINES + 渐隐 + 展开全部）；
+    - 跳转条件：onOpenFile 可用 ∧ 路径为工作区相对路径（宿主绝对路径不在平台
+      工作区存储内，物理不可达——降级为不可点行，Tooltip 说明原因）。 */
+function DiffSummarySection({
+  text,
+  diff,
+  onOpenFile,
+}: {
+  text: string
+  diff: ParsedDiff
+  onOpenFile?: (path: string) => void
+}): ReactNode {
+  const [showDetail, setShowDetail] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const totalLines = diff.lines.length
+  const foldable = totalLines > CLAMP_LINES
+  const clamped = foldable && !expanded
+  const shown = clamped ? diff.lines.slice(0, CLAMP_LINES + 2) : diff.lines
+  const onCopy = async () => {
+    if (await copyText(text)) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    }
+  }
+  return (
+    <div className="tc-payload">
+      <div className="tc-payload__bar">
+        <span className="tc-payload__title">文件变更</span>
+        <span className="tc-payload__count">
+          {diff.files.length} 个文件 · {totalLines} 行
+        </span>
+        <span className="tc-payload__stat tc-payload__stat--add">+{diff.added}</span>
+        <span className="tc-payload__stat tc-payload__stat--del">−{diff.removed}</span>
+        <button type="button" className="tc-payload__btn" onClick={() => setShowDetail((v) => !v)}>
+          <Diff size={11} style={{ verticalAlign: -1 }} />
+          {showDetail ? '收起明细' : '明细'}
+        </button>
+        <button type="button" className="tc-payload__btn" onClick={onCopy}>
+          {copied ? '已复制' : '复制'}
+        </button>
+      </div>
+      <div className="fc-list">
+        {diff.files.map((f) => {
+          const deleted = f.action === 'delete'
+          const clickable = !!onOpenFile && !deleted && !isAbsoluteHostPath(f.path)
+          const { label, Icon } = DIFF_ACTION_META[f.action]
+          const tip = isAbsoluteHostPath(f.path)
+            ? `${f.path}（外部工具直写宿主路径，不在平台工作区内，无法跳转）`
+            : f.path
+          return (
+            <Tooltip key={f.path} title={tip}>
+              <div
+                className={`fc-row ${deleted ? 'fc-row--deleted' : ''} ${clickable ? 'fc-row--clickable' : ''}`}
+                onClick={clickable ? () => onOpenFile!(f.path) : undefined}
+              >
+                <Icon size={13} className={`fc-row__icon fc-row__icon--${f.action}`} />
+                <span className="fc-row__action">{label}</span>
+                <span className={`fc-row__path ${deleted ? 'fc-row__path--struck' : ''}`}>
+                  {basename(f.path)}
+                </span>
+                <span className="fc-row__num fc-row__num--add">{f.added ? `+${f.added}` : ''}</span>
+                <span className="fc-row__num fc-row__num--del">{f.removed ? `−${f.removed}` : ''}</span>
+              </div>
+            </Tooltip>
+          )
+        })}
+      </div>
+      {showDetail ? (
+        <>
+          <pre
+            className={`tc-payload__pre tc-payload__pre--detail ${clamped ? 'tc-payload__pre--clamp' : ''}`}
+            style={clamped ? { maxHeight: CLAMP_MAX_HEIGHT } : undefined}
+          >
+            <code className="tc-diff">
+              {shown.map((l, i) => (
+                <span key={i} className={`tc-diff__line tc-diff__line--${l.type}`}>
+                  {l.text}
+                  {'\n'}
+                </span>
+              ))}
+            </code>
+          </pre>
+          {foldable ? (
+            <button type="button" className="tc-payload__toggle" onClick={() => setExpanded((v) => !v)}>
+              {expanded ? '收起' : `展开全部（共 ${totalLines} 行）`}
+            </button>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  )
+}
+
 /** 工具调用卡（memo：entry 引用仅在该卡自身更新（setToolResult 回填结果）时
-    变化，流式批渲染时其余工具卡跳过） */
-export const ToolCallCard = memo(function ToolCallCard({ entry }: { entry: ToolCallEntry }): ReactNode {
+    变化；onOpenFile 由 ChatPage useCallback 稳定供给——流式批渲染时其余工具卡跳过） */
+export const ToolCallCard = memo(function ToolCallCard({
+  entry,
+  onOpenFile,
+}: {
+  entry: ToolCallEntry
+  /** diff 总览行点击 → 打开工作区并选中该文件（未开启 workspace 能力时不传；
+   *  宿主绝对路径行仍不可点——文件不在平台工作区存储内） */
+  onOpenFile?: (path: string) => void
+}): ReactNode {
   // 参数本身是对象：直接美化（与结果走同一渲染管线）
   const argsText = useMemo(() => JSON.stringify(entry.args, null, 2) || '{}', [entry.args])
   const resultText = useMemo(() => (entry.hasResult ? formatPayload(entry.result ?? '') : ''), [entry.hasResult, entry.result])
+  // 结果是 unified diff → 总览层渲染（文件行 + 明细切换）；否则 JSON 载荷
+  const resultDiff = useMemo<ParsedDiff | null>(
+    () => (entry.hasResult && resultText && isUnifiedDiff(resultText) ? parseDiff(resultText) : null),
+    [entry.hasResult, resultText],
+  )
   return (
     <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
-      <div className="chat-avatar" style={{ background: 'var(--color-role-tool)', width: 28, height: 28 }}>
+      <div className="chat-avatar" style={{ background: 'var(--color-role-tool)' }}>
         {entry.hasResult ? (
           <Check size={14} />
         ) : (
@@ -128,7 +251,7 @@ export const ToolCallCard = memo(function ToolCallCard({ entry }: { entry: ToolC
           <Wrench size={14} className={entry.abandoned ? undefined : 'executing'} />
         )}
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="msg-card msg-card--tool">
         <Collapse
           size="small"
           items={[
@@ -158,7 +281,11 @@ export const ToolCallCard = memo(function ToolCallCard({ entry }: { entry: ToolC
                 <Flex vertical gap={8}>
                   <PayloadSection title="参数" text={argsText} />
                   {entry.hasResult ? (
-                    <PayloadSection title="结果" text={resultText || '（空）'} />
+                    resultDiff ? (
+                      <DiffSummarySection text={resultText} diff={resultDiff} onOpenFile={onOpenFile} />
+                    ) : (
+                      <PayloadSection title="结果" text={resultText || '（空）'} />
+                    )
                   ) : null}
                 </Flex>
               ),

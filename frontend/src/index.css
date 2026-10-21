@@ -167,6 +167,51 @@ pre,
 }
 .msg-turn--user { align-items: flex-end; }
 .msg-turn--agent { align-items: flex-start; }
+/* 时间线非气泡卡容器（思考块/工具卡/文件变更卡）：限宽对齐 composer 窄列
+   （880px，.chat-panel__composer 同锚点）——宽屏阅读列（≤1560px）下平铺
+   JSON/摘要不再横向拉满，与气泡的 88% 上限形成"主宽辅窄"层次：
+   主体对话最宽，过程性元数据收窄成稳定列。窄面板（<880px）不生效，
+   卡片照常铺满；pre 自带横向滚动，长行折叠展开功能不受影响。
+
+   家族色 chrome（与气泡的 --bubble-color 同构）：每张非气泡卡复刻"左 3px
+   强调条"语言 + 家族染色描边 + 标题字吃家族色，一眼区分卡片家族——
+   工具调用=琥珀橙（--color-card-tool）、文件变更=绿（--color-card-files）、
+   思考过程=内联注入所属代理角色色（归属语义）；缺省灰（角色 tool 灰）。
+   字色分层：卡片标题（工具名/家族 label）有色，正文保持墨色/次级灰——
+   与会话正文的同色问题即在此处切开。显式着色的元素（Tag/by caller/
+   次级说明）不受 header 继承影响。 */
+.msg-card {
+  flex: 1;
+  min-width: 0;
+  max-width: 880px;
+  --card-family: var(--color-role-tool);
+  /* 统一纵向参考网格：头像列 32 + 间距 10 → 强调条恒落 x=42，与气泡的
+     左彩条同线（历史缺陷：工具/文件/KB 卡头像曾内联 28px，条左移 4px）；
+     padding-left 与气泡内边距（12px）同值——条到内容的步进也一致 */
+  border-left: 3px solid color-mix(in srgb, var(--card-family) 58%, transparent);
+  border-radius: 2px;
+  padding-left: 12px;
+  transition: border-color 0.2s ease;
+}
+.msg-card:hover {
+  border-left-color: color-mix(in srgb, var(--card-family) 85%, transparent);
+}
+.msg-card--tool {
+  --card-family: var(--color-card-tool);
+}
+.msg-card--files {
+  --card-family: var(--color-card-files);
+}
+/* 标题行吃家族色：工具名（mono code）与未显式着色的 label 文本继承；
+   antd 展开箭头走 currentColor 同步染色（家族信号的一部分） */
+.msg-card .ant-collapse-header {
+  color: var(--card-family);
+}
+/* 玻璃壳卡（工具/kb_search）：外描边混入家族色，轮廓即家族信号
+   （置于通用玻璃折叠卡规则之后，特异性更高覆盖之） */
+.chat-panel .msg-card > .ant-collapse:not(.ant-collapse-ghost) {
+  border-color: color-mix(in srgb, var(--card-family) 26%, var(--glass-border));
+}
 /* 操作条默认隐藏（pointer-events 防误点不可见按钮）。
    命中性约束（回撤"点不中"的三处病灶，改动前先读）：
    1) 操作条容器必须与气泡零间隙衔接（top:100%），与气泡的视觉间距内化为
@@ -1106,6 +1151,12 @@ pre,
   background: var(--color-bg-inset);
   font-size: 11px;
 }
+/* 栏内按钮（复制 / diff 明细切换）：图标 + 文字并排居中 */
+.tc-payload__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .tc-payload__title {
   color: var(--color-text-tertiary);
 }
@@ -1173,6 +1224,40 @@ pre,
 }
 .tc-json__bool {
   color: #56b6c2;
+}
+/* unified diff 结果渲染（MCP 文件编辑工具，无 file_change 聚合卡的补充观测路）：
+   逐行染色与聚合卡/文件树的 +/- 语义同源——add 绿底绿字、del 红底红字、
+   @@ hunk 主色、Index/===/---/+++ 头灰；inline span + 显式 \n 保 pre 语义，
+   背景仅覆盖文字范围（编辑器 diff 行观感）。 */
+.tc-diff {
+  font-family: var(--font-mono);
+}
+.tc-diff__line--add {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+.tc-diff__line--del {
+  background: color-mix(in srgb, var(--color-danger) 9%, transparent);
+  color: var(--color-danger);
+}
+.tc-diff__line--hunk {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.tc-diff__line--meta {
+  color: var(--color-text-tertiary);
+}
+/* 载荷栏 +N/−M 计数（同 fc-row__num 的红绿语义，tabular 对齐） */
+.tc-payload__stat {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tc-payload__stat--add {
+  color: var(--color-success);
+}
+.tc-payload__stat--del {
+  color: var(--color-danger);
 }
 
 /* 工具"执行中"脉动 */
@@ -1270,7 +1355,7 @@ pre,
   color: var(--color-danger);
   font-weight: 600;
 }
-/* 长文本栏可拖拉调整（系统提示 / 描述 / rubric 准则）：弃用原生 textarea 右下角
+/* 长文本栏可拖拉调整（系统提示 / 子代理描述 / rubric 准则）：弃用原生 textarea 右下角
    斜线缩放手柄（OS 原生观感与项目设计不符、热区小难命中），改为底部通栏抓手条
    ——居中胶囊视觉（DragTextarea 组件），默认低调半隐，悬停/拖拽点亮主色并展宽
    （与会话 composer 的 row-resizer 同款交互语义）；宽高钳制由组件内联执行。 */
@@ -1308,46 +1393,6 @@ pre,
   opacity: 1;
   background: var(--color-primary);
   box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary) 45%, transparent);
-}
-/* 顶栏描述（字段条内）：维持原设计——原生右下角双向拖拉（宽×高），不加抓手条
-   （字段条空间紧凑，抓手条会呈"下拉"误语义）；宽高上下限防撑破字段条/卡片。
-   注意须置于 .drag-ta.ant-input（resize:none）之后，同特异度后者覆盖。 */
-.drag-ta--bar.ant-input {
-  resize: both;
-  min-width: 184px;
-  max-width: 420px;
-  max-height: 138px;
-}
-/* 原生角抓手重绘（仅 --bar 保留该表面）：颜色走设计 token 随明暗主题，悬停点亮
-   主色；Firefox 无抓手图形，::-moz-resizer 仅做着色回退 */
-.drag-ta--bar::-webkit-resizer {
-  background: linear-gradient(
-    135deg,
-    transparent 0 1.5px,
-    var(--color-text-tertiary) 1.5px 2.5px,
-    transparent 2.5px 5px,
-    var(--color-text-tertiary) 5px 6px,
-    transparent 6px 8.5px,
-    var(--color-text-tertiary) 8.5px 9.5px,
-    transparent 9.5px
-  ) no-repeat 100% 100%;
-  background-size: 10px 10px;
-}
-.drag-ta--bar:hover::-webkit-resizer,
-.drag-ta--bar:active::-webkit-resizer {
-  background-image: linear-gradient(
-    135deg,
-    transparent 0 1.5px,
-    var(--color-primary) 1.5px 2.5px,
-    transparent 2.5px 5px,
-    var(--color-primary) 5px 6px,
-    transparent 6px 8.5px,
-    var(--color-primary) 8.5px 9.5px,
-    transparent 9.5px
-  );
-}
-.drag-ta--bar::-moz-resizer {
-  background: var(--color-text-tertiary);
 }
 .editor-workspace__main {
   flex: 1;
@@ -2321,6 +2366,84 @@ body .topo-popover-root .ant-popover-arrow::before {
    不再为不存在的悬浮 composer 预留 120px 兜底空档 */
 .chat-panel--archived {
   --composer-h: 0px;
+}
+
+/* ===== 跳底悬浮钮（DeepSeek 式回底）=====
+    上滑翻历史 / 回合导航轨跳转旧轮次后出现，点击平滑滚回最新消息。
+    - 位置：右缘对齐发送框（composer 右上角）——发送框是居中 880px 窄列
+      （dock 铺满 + margin auto），右缘偏移 = max((面板宽-880)/2, 58px)：
+      宽面板精确贴齐 composer 右缘；中窄面板（<996px）落 58px 地板，
+      让出右侧回合导航轨（圆点档占右缘 8–24px）不与其末尾回合点重叠。
+    - bottom 跟随 --composer-h（ChatPage 的 ResizeObserver 实时写 body）：
+      composer 自动增高/拖拽变高时钮同步上移，永不沉入玻璃下方。
+      归档/任务会话无 dock（--composer-h=0），钮贴滚动区底缘（只读 Alert 上方）。
+    - 可见性由 data-show 属性驱动（隐藏态保留 DOM）：双向 opacity/位移过渡，
+      隐藏时 pointer-events 关闭——玻璃 dock 两侧空白不被"隐形钮"挡点击。
+    - 成像同 .glass-btn 三要素（半透薄底 + 取景后景 + inset rim 高光），
+      悬停点亮主色呼应导航轨交互语义。 */
+.jump-bottom-btn {
+  position: absolute;
+  right: max(calc((100% - 880px) / 2), 58px);
+  bottom: calc(var(--composer-h, 148px) + 16px);
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--glass-border);
+  border-radius: 50%;
+  background: var(--glass-bg-faint);
+  backdrop-filter: blur(12px) saturate(1.7);
+  -webkit-backdrop-filter: blur(12px) saturate(1.7);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim),
+    inset 0 -1px 1px var(--glass-rim-soft),
+    0 1px 2px rgba(60, 64, 67, 0.1),
+    0 6px 16px rgba(60, 64, 67, 0.07);
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+.jump-bottom-btn[data-show] {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.jump-bottom-btn[data-show]:hover {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--glass-border));
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim),
+    inset 0 -1px 1px var(--glass-rim-soft),
+    0 2px 6px color-mix(in srgb, var(--color-primary) 18%, transparent),
+    0 8px 20px rgba(60, 64, 67, 0.1);
+}
+.jump-bottom-btn[data-show]:active {
+  transform: translateY(0) scale(0.94);
+}
+/* 顶部镜面亮斑（与 .glass-btn::before 同款受光面高光） */
+.jump-bottom-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(130% 70% at 28% -25%, var(--glass-specular), transparent 55%);
+  pointer-events: none;
+}
+/* 不支持 backdrop-filter 的环境：实底回退（同 .glass-btn 策略） */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .jump-bottom-btn {
+    background: var(--color-bg-elevated);
+  }
 }
 
 /* ===== 会话时间线非气泡卡：流体玻璃（Liquid Glass）=====

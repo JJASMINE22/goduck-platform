@@ -346,15 +346,12 @@ export function AgentEditorPage(): ReactNode {
           </div>
           <div className="editor-field">
             <span className="editor-field__label">描述</span>
-            {/* 单行起步、原生双向拖拉（右下角，宽×高）——较长描述无需在窄框内滚动查看。
-                此处维持原设计（不加抓手条）：字段条空间紧凑，抓手条会呈"下拉"误语义 */}
-            <Input.TextArea
+            {/* 单行 Input：字段条空间紧凑，拖拉把手与滚动条影响观感（反馈定稿） */}
+            <Input
               variant="filled"
-              rows={1}
-              className="drag-ta drag-ta--bar"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="一句话说明（可选，较长可拖右下角调大）"
+              placeholder="一句话说明（可选）"
               style={{ width: 184 }}
             />
           </div>

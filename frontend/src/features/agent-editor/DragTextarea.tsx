@@ -2,7 +2,7 @@
    与项目流体玻璃设计不符，且热区仅 10px 难命中）。
    方案：底部通栏抓手条（居中胶囊视觉，默认低调半隐，悬停/拖拽点亮主色并展宽，
    与会话 composer 的 row-resizer 同款交互语义），pointer 事件驱动改高；
-   axis="xy"（顶栏描述等窄框场景）额外支持横向拖拉调宽。
+   axis="xy"（窄框双向备用，暂无调用方）额外支持横向拖拉调宽。
    高/宽钳制：minH/maxH（默认上限 65vh 防拖溢视口）、minW/maxW。
    其余 props 原样透传 antd Input.TextArea（value/onChange/rows/variant 等）。 */
 import { Input } from 'antd'

@@ -149,17 +149,14 @@ export const KbSearchToolCard = memo(function KbSearchToolCard({
 
   return (
     <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
-      <div
-        className="chat-avatar"
-        style={{ background: 'var(--color-role-tool)', width: 28, height: 28 }}
-      >
+      <div className="chat-avatar" style={{ background: 'var(--color-role-tool)' }}>
         {entry.hasResult ? (
           <Check size={14} />
         ) : (
           <Wrench size={14} className={entry.abandoned ? undefined : 'executing'} />
         )}
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="msg-card msg-card--tool">
         <Collapse
           size="small"
           defaultActiveKey={[]}
@@ -168,7 +165,7 @@ export const KbSearchToolCard = memo(function KbSearchToolCard({
               key: entry.id,
               label: (
                 <Flex align="center" gap={6}>
-                  <BookOpen size={13} style={{ color: 'var(--color-text-tertiary)' }} />
+                  <BookOpen size={13} style={{ color: 'var(--color-card-tool)' }} />
                   <code
                     className={entry.hasResult ? undefined : 'shimmer'}
                     style={{ fontSize: 12 }}

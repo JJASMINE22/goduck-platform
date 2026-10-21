@@ -27,8 +27,8 @@ function Summary({ merged }: { merged: MergedFileChange[] }): ReactNode {
   }
   return (
     <Flex align="center" gap={6}>
-      <FileDiff size={13} style={{ color: 'var(--color-role-tool)' }} />
-      <span style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}>文件变更</span>
+      <FileDiff size={13} style={{ color: 'var(--color-card-files)' }} />
+      <span style={{ fontSize: 13 }}>文件变更</span>
       {(Object.keys(counts) as Array<keyof typeof counts>).map((k) =>
         counts[k] > 0 ? (
           <span key={k} className={`fc-summary fc-summary--${k}`}>
@@ -81,10 +81,10 @@ export const FileChangesCard = memo(function FileChangesCard({
   const merged = useMemo(() => mergeFileChanges(records), [records])
   return (
     <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
-      <div className="chat-avatar" style={{ background: 'var(--color-role-tool)', width: 28, height: 28 }}>
+      <div className="chat-avatar" style={{ background: 'var(--color-role-tool)' }}>
         <FileDiff size={14} />
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="msg-card msg-card--files">
         <Collapse
           size="small"
           ghost
