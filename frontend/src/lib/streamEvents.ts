@@ -126,12 +126,12 @@ export function dispatchStreamEvent(e: SSEEvent): void {
     }
     case 'agent_message': {
       const p = e.payload as unknown as AgentMessagePayload
-      store.pushAgent(e.agent_path ?? 'root', p.content)
+      store.pushAgent(e.agent_path ?? 'root', p.content, p.id)
       break
     }
     case 'thinking': {
       const p = e.payload as unknown as ThinkingPayload
-      store.pushReasoning(e.agent_path ?? 'root', p.content)
+      store.pushReasoning(e.agent_path ?? 'root', p.content, p.id)
       break
     }
     case 'tool_call': {

@@ -129,8 +129,15 @@ export interface ChatState {
 
   // —— 动作 ——
   pushUser: (content: string, attachments?: UploadOut[], kbs?: KbRef[]) => void
-  pushAgent: (agentPath: string, content: string) => void
-  pushReasoning: (agentPath: string, reasoning: string) => void
+  /** 追加原子 agent 消息（agent_message 事件）。携带 id 时按消息 id 去重：
+   *  HITL resume 后 after_model 节点会重返回已提交的同一条 AI 消息（后端
+   *  streamed_ids 按 run 生命周期隔离，跨 run 无法识别"已流式"），观察流
+   *  全量重放亦会重发——token 流式（`${id}#c`）与历史回放（`id`）形态任一
+   *  已存在即跳过，杜绝重复气泡（契约见 types/stream.ts AgentMessagePayload.id） */
+  pushAgent: (agentPath: string, content: string, id?: string | null) => void
+  /** 追加原子思考消息（thinking 事件）。同 pushAgent 的 id 去重（`${id}#r` 形态，
+   *  与 appendToken / historyReplay 的 id 约定一致，跨刷新稳定） */
+  pushReasoning: (agentPath: string, reasoning: string, id?: string | null) => void
   /** 追加一个 token 增量：按 (tokenId, reasoning) 聚合到既有流式消息或新建一条 */
   appendToken: (agentPath: string, tokenId: string, delta: string, reasoning: boolean) => void
   /** 结束流式：把所有 streaming 消息固化为可 Markdown 渲染 */
@@ -260,21 +267,43 @@ export const useChatStore = create<ChatState>((set) => ({
       parseStatus: null,
     })),
 
-  pushAgent: (agentPath, content) =>
-    set((s) => ({
-      messages: [
-        ...s.messages,
-        { id: genId(), role: 'agent', agentPath, content, createdAt: Date.now() },
-      ],
-    })),
+  pushAgent: (agentPath, content, id) =>
+    set((s) => {
+      // 同一 AI 消息已以 token 流式（`${id}#c`）或历史回放（`id`）形态存在：
+      // 原子重发（HITL resume 重返回 / 观察流重放）直接丢弃，不产生重复气泡。
+      // 落地 id 用消息真值（缺省回落本地生成），后续同 id 重发同样被此守卫拦截
+      if (id && s.messages.some((m) => m.id === id || m.id === `${id}#c`)) return {}
+      return {
+        messages: [
+          ...s.messages,
+          {
+            id: id ?? genId(),
+            role: 'agent' as const,
+            agentPath,
+            content,
+            createdAt: Date.now(),
+          },
+        ],
+      }
+    }),
 
-  pushReasoning: (agentPath, reasoning) =>
-    set((s) => ({
-      messages: [
-        ...s.messages,
-        { id: genId(), role: 'agent', agentPath, content: '', reasoning, createdAt: Date.now() },
-      ],
-    })),
+  pushReasoning: (agentPath, reasoning, id) =>
+    set((s) => {
+      if (id && s.messages.some((m) => m.id === `${id}#r`)) return {}
+      return {
+        messages: [
+          ...s.messages,
+          {
+            id: id ? `${id}#r` : genId(),
+            role: 'agent' as const,
+            agentPath,
+            content: '',
+            reasoning,
+            createdAt: Date.now(),
+          },
+        ],
+      }
+    }),
 
   appendToken: (agentPath, tokenId, delta, reasoning) =>
     set((s) => {
