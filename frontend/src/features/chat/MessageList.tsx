@@ -9,7 +9,7 @@
    长会话吐字/滚动卡顿的主因）。timeline 构建同样入 useMemo。 */
 import { Button, Collapse, Flex, Tag } from 'antd'
 import { type CSSProperties, type ReactNode, memo, useMemo } from 'react'
-import { BookOpen, Bot, Brain, OctagonX, Undo2, User } from 'lucide-react'
+import { BookOpen, Brain, OctagonX, Undo2 } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage, FileChangeEntry, ToolCallEntry } from '@/store/chatStore'
 import { Markdown } from '@/components/markdown/Markdown'
@@ -48,10 +48,10 @@ function pickSlogan(sessionId: string): string {
   return WELCOME_SLOGANS[Math.abs(h) % WELCOME_SLOGANS.length]
 }
 
-function Avatar({ role, color }: { role: 'user' | 'agent'; color: string }): ReactNode {
+function Avatar({ role }: { role: 'user' | 'agent' }): ReactNode {
   return (
-    <div className="chat-avatar" style={{ background: role === 'user' ? 'var(--color-primary)' : color }}>
-      {role === 'user' ? <User size={17} /> : <Bot size={17} />}
+    <div className="chat-avatar chat-avatar--logo">
+      <img src={role === 'user' ? '/user_logo.png' : '/assistant_logo.png'} alt={role === 'user' ? '用户' : '智能体'} />
     </div>
   )
 }
@@ -175,7 +175,7 @@ const MessageBubble = memo(function MessageBubble({
   const canWithdraw = !readOnly && isUser && (streaming ? isLastUser : true)
   return (
     <Flex justify={isUser ? 'flex-end' : 'flex-start'} align="flex-start" gap={10} className="msg-in">
-      {!isUser ? <Avatar role="agent" color={color} /> : null}
+      {!isUser ? <Avatar role="agent" /> : null}
       {/* msg-turn：气泡 + 悬浮才出现的下方操作条（回撤不放进气泡内）。
           用户回合挂 data-turn-anchor：TurnRail 点击跳转锚点（undefined 时 React 省略属性） */}
       <div
@@ -221,7 +221,7 @@ const MessageBubble = memo(function MessageBubble({
           </div>
         ) : null}
       </div>
-      {isUser ? <Avatar role="user" color={color} /> : null}
+      {isUser ? <Avatar role="user" /> : null}
     </Flex>
   )
 })
@@ -248,7 +248,7 @@ const ThinkingBlock = memo(function ThinkingBlock({ msg }: { msg: ChatMessage })
   const { label, color } = agentMeta(msg.agentPath)
   return (
     <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
-      <Avatar role="agent" color={color} />
+      <Avatar role="agent" />
       {/* 家族色 = 所属代理角色色（归属语义）：思考过程与该代理气泡同色系，
           但以透明底 + 左条 + 次级正文与气泡区分 */}
       <div className="msg-card" style={{ '--card-family': color } as CSSProperties}>

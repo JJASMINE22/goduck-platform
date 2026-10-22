@@ -11,6 +11,7 @@ import { useCurrentUser } from '@/store/userStore'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
 import { formatRelative } from '@/lib/format'
+import { listPager } from '@/lib/pagerConfig'
 import type { SessionOut } from '@/types'
 
 export function SessionsListPage(): ReactNode {
@@ -152,7 +153,7 @@ export function SessionsListPage(): ReactNode {
           rowKey="id"
           columns={columns}
           dataSource={rows}
-          pagination={{ pageSize: 15 }}
+          pagination={listPager}
           size="middle"
           onRow={(r) => ({
             onClick: () => navigate(`/sessions/${r.id}`),

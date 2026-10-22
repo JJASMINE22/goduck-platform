@@ -350,6 +350,18 @@ pre,
   box-shadow: var(--shadow-sm);
 }
 
+/* 用户/智能体头像：透明底 logo 整体呈现（仿侧边栏 logo 用法），无底色/圆盘填充 */
+.chat-avatar--logo {
+  box-shadow: none;
+}
+.chat-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 1px 2px rgba(60, 64, 67, 0.2));
+}
+
 /* 流式打字三点 */
 .typing-dots {
   display: inline-flex;
@@ -2356,6 +2368,18 @@ body .topo-popover-root .ant-popover-arrow::before {
   flex-direction: column;
   z-index: 3;
   pointer-events: none;
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* 收起态（向上滚读历史，ChatPage dockState 方向意图）：整 dock 沉降出面板，
+   只剩 36px sliver（拖拽条 + 玻璃上缘）——阅读列让位（--composer-h）同步
+   收回，历史阅读空间真实释放；向下滚任意距离 / 悬停 / 聚焦 / 贴底 /
+   单击拖拽条均展开（回看历史中可随时唤起提问）。 */
+.chat-panel__dock--collapsed {
+  transform: translateY(calc(100% - 36px));
+}
+.chat-panel__dock--collapsed:hover,
+.chat-panel__dock--collapsed:focus-within {
+  transform: translateY(0);
 }
 .chat-panel__dock .row-resizer,
 .chat-panel__dock .chat-composer {
@@ -2409,6 +2433,7 @@ body .topo-popover-root .ant-popover-arrow::before {
   transition:
     opacity 0.18s ease,
     transform 0.18s ease,
+    bottom 0.3s cubic-bezier(0.22, 1, 0.36, 1),
     color 0.18s ease,
     border-color 0.18s ease,
     box-shadow 0.18s ease;
@@ -2717,8 +2742,11 @@ body .topo-popover-root .ant-popover-arrow::before {
   margin: 0 auto;
   /* 底部让位于悬浮玻璃 dock：--composer-h 由 ChatPage 的 ResizeObserver 实时
      写入 body（chips/textarea 自动增高/拖拽均跟随），消息末条停在玻璃上缘之上。
-     --rail-w：右侧导航轨让位量（容器查询分级覆写），空会话徽章借它回正中轴 */
+     --rail-w：右侧导航轨让位量（容器查询分级覆写），空会话徽章借它回正中轴。
+     padding 过渡：dock 收起/展开时让位量渐变（与 dock transform 同曲线），
+     阅读列高度平滑重排而非跳变 */
   padding: 8px 16px calc(var(--composer-h, 148px) + 14px);
+  transition: padding-bottom 0.3s cubic-bezier(0.22, 1, 0.36, 1);
   --rail-w: 0px;
 }
 .chat-panel__composer {
@@ -3072,6 +3100,116 @@ body .topo-popover-root .ant-popover-arrow::before {
 }
 .page-body .ant-pagination {
   background: transparent;
+  align-items: center;
+}
+/* ===== 统一分页风格（所有列表页，配 lib/pagerConfig.tsx 的 lucide 箭头）=====
+   antd 默认：细灰双角括号箭头 + 无底选中圈，与项目圆润/软主色填充语言不符。
+   目标形态（Google AI Studio 风 + 项目液态玻璃）：
+   - 页码/箭头统一 30px 基格、8px 圆角；内容一律 flex 居中——不依赖
+     line-height，页码数字与箭头图标严格同一对齐基准（走查反馈的 1–2px 错位根因）；
+   - 箭头钮 = 液态玻璃小圆钮（与 .glass-btn / theme-toggle 同三要素：半透薄底 +
+     取景后景 + inset rim 高光），hover 主色点亮（禁用态静默）；
+   - 选中页 = 液态玻璃凸起（与主题切换钮/菜单选中同配方：渐变亮面 + rim 高光 +
+     下缘暗垫），页码数字一律灰色（选中 = 正文灰 + 加粗，未选中 = 次级灰）——
+     选中信号由玻璃凸起本体承载，不再用主色填充/描边。
+   颜色全走 tokens.css 变量，明暗主题自适应；特异性 .page-body 前缀 + li
+   元素位稳定压过 antd 运行时注入的 :where 哈希选择器。 */
+.page-body .ant-pagination li.ant-pagination-item {
+  min-width: 30px;
+  height: 30px;
+  margin-inline-end: 6px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.page-body .ant-pagination li.ant-pagination-item > a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
+  line-height: 1;
+  color: var(--color-text-secondary);
+}
+.page-body .ant-pagination li.ant-pagination-item:not(.ant-pagination-item-active):hover {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+.page-body .ant-pagination li.ant-pagination-item:not(.ant-pagination-item-active):hover > a {
+  color: var(--color-text);
+}
+.page-body .ant-pagination li.ant-pagination-item-active {
+  background: var(--glass-sel-grad), var(--glass-sel-base);
+  backdrop-filter: blur(18px) saturate(1.9) brightness(1.04);
+  -webkit-backdrop-filter: blur(18px) saturate(1.9) brightness(1.04);
+  border: 1px solid var(--glass-border-strong);
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim-bright),
+    inset 0 -1px 2px var(--glass-rim-underside),
+    0 1px 3px rgba(60, 64, 67, 0.1);
+}
+.page-body .ant-pagination li.ant-pagination-item-active > a {
+  color: var(--color-text);
+  font-weight: 600;
+}
+/* 前后翻页钮：玻璃圆钮（图标本体由 pagerConfig 注入 lucide） */
+.page-body .ant-pagination li.ant-pagination-prev,
+.page-body .ant-pagination li.ant-pagination-next {
+  min-width: 30px;
+  height: 30px;
+  margin-inline-end: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.page-body .ant-pagination li.ant-pagination-next {
+  margin-inline-end: 0;
+}
+.page-body .ant-pagination li.ant-pagination-prev .ant-pagination-item-link,
+.page-body .ant-pagination li.ant-pagination-next .ant-pagination-item-link {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--glass-bg-faint);
+  backdrop-filter: blur(10px) saturate(1.6);
+  -webkit-backdrop-filter: blur(10px) saturate(1.6);
+  border: 1px solid var(--glass-border);
+  color: var(--color-text-secondary);
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim),
+    inset 0 -1px 1px var(--glass-rim-soft),
+    0 1px 2px rgba(60, 64, 67, 0.08);
+  transition: color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.page-body .ant-pagination li.ant-pagination-prev:not(.ant-pagination-disabled):hover .ant-pagination-item-link,
+.page-body .ant-pagination li.ant-pagination-next:not(.ant-pagination-disabled):hover .ant-pagination-item-link {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--glass-border));
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim),
+    inset 0 -1px 1px var(--glass-rim-soft),
+    0 2px 6px color-mix(in srgb, var(--color-primary) 16%, transparent);
+}
+.page-body .ant-pagination li.ant-pagination-disabled .ant-pagination-item-link {
+  color: var(--color-text-tertiary);
+  box-shadow: none;
+}
+.page-body .ant-pagination .ant-pagination-total-text {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+/* 无 backdrop-filter 环境：玻璃面（箭头钮/选中页）近实底回退（同 .glass-btn 策略） */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .page-body .ant-pagination li.ant-pagination-prev .ant-pagination-item-link,
+  .page-body .ant-pagination li.ant-pagination-next .ant-pagination-item-link,
+  .page-body .ant-pagination li.ant-pagination-item-active {
+    background: var(--glass-solid);
+  }
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .page-body { background: var(--glass-solid); }
@@ -4382,11 +4520,13 @@ body .ant-drawer .ant-drawer-mask {
   }
 }
 
-/* ===== [标注优化] Segmented 分段器：玻璃化 + 选中滑块玻璃凸起 =====
-    页面卡（.page-body，如会话列表 活跃/已归档）与顶栏（.app-glass）两处作用面。
-    选中滑块（.ant-segmented-thumb）复用菜单选中态的"液态玻璃凸起"配方
-    （渐变亮面 + rim 高光 + 下缘暗垫），镜像侧栏选中态/主题切换钮的语言；
-    未选中项文字提亮到 secondary（暗色下可读性修复），悬停趋近正文色。 */
+/* ===== [标注优化] Segmented 分段器：玻璃化 + 选中态玻璃凸起 =====
+     页面卡（.page-body，如会话列表 活跃/已归档）与顶栏（.app-glass）两处作用面。
+     antd 5.22 的选中滑块（.ant-segmented-thumb）只是切换运动的残影（透明、
+     不承接静止态），静止选中实为 item-selected 上的平板底色（itemSelectedBg，
+     即走查反馈的"蓝色蒙版"观感）——把"液态玻璃凸起"配方（渐变亮面 + rim
+     高光 + 下缘暗垫，与菜单选中/主题切换钮同语言）画到 item-selected 本体，
+     静止与滑动全程同质感；未选中项文字提亮到 secondary，悬停趋近正文色。 */
 .page-body .ant-segmented .ant-segmented-item,
 .app-glass .ant-segmented .ant-segmented-item {
   color: var(--color-text-secondary);
@@ -4400,6 +4540,14 @@ body .ant-drawer .ant-drawer-mask {
 .app-glass .ant-segmented .ant-segmented-item-selected {
   color: var(--color-text);
   font-weight: 500;
+  background: var(--glass-sel-grad), var(--glass-sel-base);
+  backdrop-filter: blur(18px) saturate(1.9) brightness(1.04);
+  -webkit-backdrop-filter: blur(18px) saturate(1.9) brightness(1.04);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-border-strong),
+    inset 0 1px 0 var(--glass-rim-bright),
+    inset 0 -1px 2px var(--glass-rim-underside),
+    0 1px 3px rgba(60, 64, 67, 0.12);
 }
 .page-body .ant-segmented .ant-segmented-thumb,
 .app-glass .ant-segmented .ant-segmented-thumb {
@@ -4413,6 +4561,8 @@ body .ant-drawer .ant-drawer-mask {
     0 1px 3px rgba(60, 64, 67, 0.12);
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .page-body .ant-segmented .ant-segmented-item-selected,
+  .app-glass .ant-segmented .ant-segmented-item-selected,
   .page-body .ant-segmented .ant-segmented-thumb,
   .app-glass .ant-segmented .ant-segmented-thumb {
     background: var(--glass-solid);

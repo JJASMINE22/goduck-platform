@@ -14,6 +14,7 @@ import { useCurrentUser } from '@/store/userStore'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
 import { formatDateTime, formatRelative } from '@/lib/format'
+import { listPager } from '@/lib/pagerConfig'
 import type { CronJobOut, CronJobStatus, CronJobUpdate, CronRunOut } from '@/types'
 
 /** last_status → 徽标（运行/成功/失败/待审批；enabled=false 时由调用方覆盖为已停用） */
@@ -278,7 +279,7 @@ export function CronJobsPage(): ReactNode {
           rowKey="id"
           columns={columns}
           dataSource={rows}
-          pagination={{ pageSize: 15 }}
+          pagination={listPager}
           size="middle"
         />
       )}
