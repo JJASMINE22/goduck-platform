@@ -2,12 +2,14 @@
    安全底线：DOMPurify 白名单净化（禁 script/foreignObject/事件处理器/外链资源），
    不启用 rehype-raw 的全局内联 HTML——SVG 只经 ```svg 围栏这一受控入口进来。
    呈现：.svg-scope 注入语义变量（深浅主题随 tokens.css 自动跟随）+ 点阵画布底；
+   未走 svg-diagram 技能的硬编码色由 svgNormalize 色相保留归一化接管（明度随主题）。
    工具栏与 MermaidBlock 同语言（复制源码 / 下载 SVG / 放大）。
    下载：克隆 svg + 内嵌「变量已解析为具体色值」的作用域样式（svgScope.css ?raw），
    独立文件在任意浏览器打开同样带色。 */
 import { Drawer } from 'antd'
 import DOMPurify from 'dompurify'
 import { memo, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ensureCanvasBackground, normalizeSvgColors } from './svgNormalize'
 import './svgScope.css'
 import scopeCssRaw from './svgScope.css?raw'
 
@@ -24,7 +26,8 @@ function prepareSvg(code: string): string | null {
     return null
   }
   const doc = new DOMParser().parseFromString(clean, 'image/svg+xml')
-  const svg = doc.documentElement
+  // documentElement 类型库固定为 HTMLElement；下方 nodeName 校验后即为 svg 根，收窄类型
+  const svg = doc.documentElement as unknown as SVGSVGElement
   if (!svg || svg.nodeName.toLowerCase() !== 'svg' || doc.getElementsByTagName('parsererror').length) {
     return null
   }
@@ -35,6 +38,8 @@ function prepareSvg(code: string): string | null {
     svg.removeAttribute('height')
   }
   svg.classList.add('svg-scope')
+  // 硬编码色归一化（色相保留、明度交主题令牌）；合规 SVG 零改动穿过
+  normalizeSvgColors(svg)
   return new XMLSerializer().serializeToString(svg)
 }
 
@@ -50,9 +55,15 @@ function resolveCssVars(css: string): string {
   return once(once(css))
 }
 
-/** 组装独立可打开的 SVG 文件：克隆 + 顶部内嵌已解析变量的作用域样式。 */
+/** 组装独立可打开的 SVG 文件：克隆 + 顶部内嵌已解析变量的作用域样式；
+ *  归一化写入 style 属性的主题表达式同样解析为当前主题具体色值，并垫整幅画布底。 */
 function buildStandaloneSvg(svg: SVGSVGElement): string {
   const clone = svg.cloneNode(true) as SVGSVGElement
+  clone.querySelectorAll('[style]').forEach((el) => {
+    const s = el.getAttribute('style')
+    if (s) el.setAttribute('style', resolveCssVars(s))
+  })
+  ensureCanvasBackground(clone)
   const style = document.createElementNS('http://www.w3.org/2000/svg', 'style')
   style.textContent = resolveCssVars(scopeCssRaw)
   clone.insertBefore(style, clone.firstChild)

@@ -12,6 +12,7 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { renderMermaidInto } from '@/lib/mermaid'
+import { ensureCanvasBackground } from './svgNormalize'
 import { SvgFigure } from './SvgFigure'
 import { useThemeStore } from '@/store/themeStore'
 
@@ -105,7 +106,10 @@ function MermaidBlock({ code }: { code: string }): ReactNode {
   const onDownloadSvg = () => {
     const svg = ref.current?.querySelector('svg')
     if (!svg) return
-    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(svg)
+    // 克隆后垫整幅画布底再序列化：独立文件脱离页面容器，暗色主题下浅文字在白底查看器不可见
+    const clone = svg.cloneNode(true) as SVGSVGElement
+    ensureCanvasBackground(clone)
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone)
     triggerDownload(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }), 'mermaid.svg')
   }
   return (
