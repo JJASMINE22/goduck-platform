@@ -157,20 +157,25 @@ pre,
 
 /* 消息回合容器：气泡 + 悬浮才出现的下方操作条（回撤等），不污染气泡内部。
    操作条绝对定位悬浮于气泡下方（不占布局空间——否则每条可回撤消息
-   都被垫高 ~24px，气泡显得"高耸"），hover 整个回合才浮现。 */
+   都被垫高 ~24px，气泡显得"高耸"），hover 整个回合才浮现。
+   限宽 min(80%, 1080px)（走查调整）：宽屏下绝对上限兜住单行行长——过长单行
+   文本引发阅读障碍；上限较首版（860px）放宽，给 markdown 表格/图表/代码
+   留展示余地（宽内容另有横向滚动兜底，见 .md-table-wrap / .md-mermaid__body），
+   仍宽于 composer/非气泡卡（720px）保住"主宽辅窄"层次；窄面板退回百分比
+   上限随容器收窄。 */
 .msg-turn {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  max-width: 88%;
+  max-width: min(80%, 1080px);
   position: relative;
 }
 .msg-turn--user { align-items: flex-end; }
 .msg-turn--agent { align-items: flex-start; }
 /* 时间线非气泡卡容器（思考块/工具卡/文件变更卡）：限宽对齐 composer 窄列
-   （880px，.chat-panel__composer 同锚点）——宽屏阅读列（≤1560px）下平铺
-   JSON/摘要不再横向拉满，与气泡的 88% 上限形成"主宽辅窄"层次：
-   主体对话最宽，过程性元数据收窄成稳定列。窄面板（<880px）不生效，
+   （720px，.chat-panel__composer 同锚点）——宽屏阅读列（≤1560px）下平铺
+   JSON/摘要不再横向拉满，与气泡的 min(80%, 1080px) 上限形成"主宽辅窄"层次：
+   主体对话最宽，过程性元数据收窄成稳定列。窄面板（<720px）不生效，
    卡片照常铺满；pre 自带横向滚动，长行折叠展开功能不受影响。
 
    家族色 chrome（与气泡的 --bubble-color 同构）：每张非气泡卡复刻"左 3px
@@ -183,7 +188,7 @@ pre,
 .msg-card {
   flex: 1;
   min-width: 0;
-  max-width: 880px;
+  max-width: 720px;
   --card-family: var(--color-role-tool);
   /* 统一纵向参考网格：头像列 32 + 间距 10 → 强调条恒落 x=42，与气泡的
      左彩条同线（历史缺陷：工具/文件/KB 卡头像曾内联 28px，条左移 4px）；
@@ -812,7 +817,23 @@ pre,
   padding: 10px;
   overflow: auto;
   display: flex;
-  justify-content: center;
+  /* 居中交给子元素 margin:auto（走查调整）：flex justify-content:center 在
+     内容溢出时会把左半段切到不可达位置；margin:auto 放得下时居中、放不下
+     时归零左对齐，全程可滚（配合 dragPan 拖拽平移） */
+  align-items: flex-start;
+  touch-action: pan-y;
+}
+.md-mermaid__body > svg {
+  display: block;
+  margin: auto;
+}
+/* 图表渐进渲染占位：mermaid 半截语法静默等待（流式中）/ 终态解析失败 */
+.md-deferred {
+  padding: 18px 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-inset);
 }
 
 /* 内联 SVG 图表卡（SvgFigure）——与 mermaid 块同语言，正文换点阵画布底
@@ -843,6 +864,7 @@ pre,
   background-image: radial-gradient(circle at 1px 1px, var(--color-border-soft) 1px, transparent 1.4px);
   background-size: 20px 20px;
   cursor: zoom-in;
+  touch-action: pan-y;
 }
 .md-svg__body:focus-visible {
   outline: 2px solid var(--color-primary);
@@ -888,6 +910,40 @@ pre,
 }
 .md-img:hover .md-img__dl {
   opacity: 1;
+}
+
+/* ===== GFM 表格横向滚动壳 + 图表拖拽平移（走查调整）=====
+   气泡收窄后宽表/宽图不再挤压换行或缩微：表格按内容取自然宽度，溢出时
+   壳出横向滚动条（拖动条），内容零遗失；图表（mermaid/SVG）为自然宽度 +
+   滚动，另支持抓手拖拽平移（dragPan.ts，平移中挂 .is-panning）。 */
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 8px 0;
+  touch-action: pan-y;
+  /* 走查修复（右侧封闭网格不可见）：border-collapse 的外边框骑跨表格边缘，
+     max-content 宽度不含整条右外框时，溢出区裁掉右框（滚到底也不可见）；
+     末端 2px 缓冲垫入可滚区域，外框完整可见 */
+  padding-right: 2px;
+}
+.md-table-wrap > table {
+  margin: 0;
+  /* 走查修复（短文本列也换行、滚动条不出现）：width:auto 的表格被钳回
+     容器可用宽（shrink-to-fit），宽表永不溢出→列被压扁换行。max-content
+     让表格真正按内容取宽、可溢出滚动；min-width:100% 保窄表铺满 */
+  width: max-content;
+  min-width: 100%;
+}
+/* 长文本列封顶：max-content 布局下单列会无限变宽，超宽列在 380px 处换行；
+   短列不受影响（其内容自然宽度本就小于封顶，不再出现"几个字也换行"） */
+.md-table-wrap th,
+.md-table-wrap td {
+  max-width: 380px;
+}
+.md-mermaid__body.is-panning,
+.md-svg__body.is-panning,
+.md-table-wrap.is-panning {
+  cursor: grabbing;
+  user-select: none;
 }
 
 /* 已选附件 chip（缩略图/图标 + 文件名 + 移除） */
@@ -1136,6 +1192,17 @@ pre,
 }
 
 /* ===== 思考过程（可折叠，默认收起）===== */
+/* 思考卡：收起保持窄列（720px 基线）；展开态放宽幅宽——思考是长文阅读场景，
+   窄列行数虚高、可视信息量小，放宽至与气泡同层（min(90%, 960px)） */
+.msg-card--thinking-open {
+  max-width: min(90%, 960px);
+}
+/* 滚动壳：限高（视口比例封顶，展开即可视约半屏）；流式展开时由 ThinkingBlock 贴底跟随（用户上滑即停跟） */
+.chat-thinking__scroll {
+  max-height: min(52vh, 560px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .chat-thinking__body {
   white-space: pre-wrap;
   word-break: break-word;
@@ -1146,6 +1213,11 @@ pre,
   background: var(--color-bg-inset);
   padding: 10px 12px;
   border-radius: var(--radius-md);
+}
+/* 结束后转 Markdown 渲染（思考模型常带列表/行内代码/公式），字号/配色与流式态一致 */
+.chat-thinking__md {
+  font-size: 13px;
+  color: var(--color-text-secondary);
 }
 
 /* ===== 工具调用卡：参数/结果载荷（高亮 + 折叠 + 复制）===== */
@@ -1368,9 +1440,9 @@ pre,
   font-weight: 600;
 }
 /* 长文本栏可拖拉调整（系统提示 / 子代理描述 / rubric 准则）：弃用原生 textarea 右下角
-   斜线缩放手柄（OS 原生观感与项目设计不符、热区小难命中），改为底部通栏抓手条
-   ——居中胶囊视觉（DragTextarea 组件），默认低调半隐，悬停/拖拽点亮主色并展宽
-   （与会话 composer 的 row-resizer 同款交互语义）；宽高钳制由组件内联执行。 */
+    斜线缩放手柄（OS 原生观感与项目设计不符、热区小难命中），改为底部通栏抓手条
+    ——居中胶囊视觉（DragTextarea 组件），默认低调半隐，悬停/拖拽点亮主色并展宽
+    （与会话 composer 的 composer-resize 手柄同款交互语义）；宽高钳制由组件内联执行。 */
 .drag-ta.ant-input {
   resize: none;
   min-height: 32px;
@@ -2176,31 +2248,37 @@ body .topo-popover-root .ant-popover-arrow::before {
   z-index: 2;
 }
 
-/* 纵向分隔条：悬停 / 拖拽时浮现高亮细线 */
-.row-resizer {
-  height: 10px;
-  flex-shrink: 0;
-  cursor: row-resize;
-  position: relative;
-  align-self: stretch;
-  z-index: 1;
-}
-.row-resizer::before {
-  content: '';
+/* composer 高度拖拽手柄：全宽隐形热区骑跨玻璃上缘（绝对定位不占布局高，
+   不再呈现独立"横条"），视觉重心 = 居中 grip 胶囊——与 DragTextarea 抓手
+   同语言（默认低调半隐，悬停/拖拽点亮主色并展宽）；拖拽全程 data-resizing
+   高亮不依赖悬停；双击复位高度（ChatPage onDoubleClick） */
+.composer-resize {
   position: absolute;
-  top: 50%;
-  left: 24px;
-  right: 24px;
-  height: 3px;
-  transform: translateY(-50%);
-  border-radius: 2px;
-  background: var(--color-primary);
-  opacity: 0;
-  transition: opacity 0.15s ease;
+  top: -7px;
+  left: 0;
+  right: 0;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: row-resize;
+  touch-action: none;
+  z-index: 2;
 }
-.row-resizer:hover::before,
-.row-resizer[data-resizing]::before {
-  opacity: 0.75;
+.composer-resize__grip {
+  width: 26px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-text-tertiary);
+  opacity: 0.45;
+  transition: width 0.15s ease, opacity 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.composer-resize:hover .composer-resize__grip,
+.composer-resize[data-resizing] .composer-resize__grip {
+  width: 44px;
+  opacity: 1;
+  background: var(--color-primary);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary) 45%, transparent);
 }
 
 /* 右侧抽屉左缘拖拽调宽手柄（热区落在 body padding 区，不遮挡内容），同样默认隐形 */
@@ -2370,10 +2448,10 @@ body .topo-popover-root .ant-popover-arrow::before {
   pointer-events: none;
   transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
-/* 收起态（向上滚读历史，ChatPage dockState 方向意图）：整 dock 沉降出面板，
-   只剩 36px sliver（拖拽条 + 玻璃上缘）——阅读列让位（--composer-h）同步
-   收回，历史阅读空间真实释放；向下滚任意距离 / 悬停 / 聚焦 / 贴底 /
-   单击拖拽条均展开（回看历史中可随时唤起提问）。 */
+/* 收起态（用户任意方向滚动会话即收起，ChatPage dockState 滚动意图）：整 dock
+   沉降出面板，只剩 36px sliver（玻璃上缘 + 骑跨上缘的 grip 手柄）——阅读列
+   让位（--composer-h）同步收回，阅读空间真实释放；悬停 sliver / 聚焦 / 贴底 /
+   单击手柄展开。 */
 .chat-panel__dock--collapsed {
   transform: translateY(calc(100% - 36px));
 }
@@ -2381,7 +2459,7 @@ body .topo-popover-root .ant-popover-arrow::before {
 .chat-panel__dock--collapsed:focus-within {
   transform: translateY(0);
 }
-.chat-panel__dock .row-resizer,
+.chat-panel__dock .composer-resize,
 .chat-panel__dock .chat-composer {
   pointer-events: auto;
 }
@@ -2394,9 +2472,9 @@ body .topo-popover-root .ant-popover-arrow::before {
 
 /* ===== 跳底悬浮钮（DeepSeek 式回底）=====
     上滑翻历史 / 回合导航轨跳转旧轮次后出现，点击平滑滚回最新消息。
-    - 位置：右缘对齐发送框（composer 右上角）——发送框是居中 880px 窄列
-      （dock 铺满 + margin auto），右缘偏移 = max((面板宽-880)/2, 58px)：
-      宽面板精确贴齐 composer 右缘；中窄面板（<996px）落 58px 地板，
+    - 位置：右缘对齐发送框（composer 右上角）——发送框是居中 720px 窄列
+      （dock 铺满 + margin auto），右缘偏移 = max((面板宽-720)/2, 58px)：
+      宽面板精确贴齐 composer 右缘；中窄面板（<836px）落 58px 地板，
       让出右侧回合导航轨（圆点档占右缘 8–24px）不与其末尾回合点重叠。
     - bottom 跟随 --composer-h（ChatPage 的 ResizeObserver 实时写 body）：
       composer 自动增高/拖拽变高时钮同步上移，永不沉入玻璃下方。
@@ -2407,7 +2485,7 @@ body .topo-popover-root .ant-popover-arrow::before {
       悬停点亮主色呼应导航轨交互语义。 */
 .jump-bottom-btn {
   position: absolute;
-  right: max(calc((100% - 880px) / 2), 58px);
+  right: max(calc((100% - 720px) / 2), 58px);
   bottom: calc(var(--composer-h, 148px) + 16px);
   z-index: 4;
   display: grid;
@@ -2753,11 +2831,12 @@ body .topo-popover-root .ant-popover-arrow::before {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  /* 窄胖列：composer 限宽为居中窄列，严格居中于面板中轴（dock left:0/right:0 +
-      margin auto，不受滚动槽影响）——与空会话徽章（chat-welcome 回正后）同轴；
+  /* 窄胖列：composer 限宽为居中窄列（走查调整：640 → 720），严格居中于
+      面板中轴（dock left:0/right:0 + margin auto，不受滚动槽影响）——与
+      空会话徽章（chat-welcome 回正后）同轴；
       玻璃 dock 仍横向铺满，宽屏两侧空白处指针穿透照旧 */
   width: 100%;
-  max-width: 880px;
+  max-width: 720px;
   margin: 0 auto;
   padding: 8px 16px 14px;
 }

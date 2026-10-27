@@ -102,7 +102,8 @@ services:
       KB_DOCLING_SHARD_PAGES: ${KB_DOCLING_SHARD_PAGES:-100}
       KB_DOCLING_THREADS: ${KB_DOCLING_THREADS:-4}
       # 推理设备 auto/cpu/cuda/mps（auto=按 torch 探测，无 GPU 回落 cpu）。
-      # 容器内用 GPU 需 runtime: nvidia / device_requests 显式声明（默认未开）。
+      # GPU 主机：叠加 docker-compose.gpu.yml（nvidia 设备声明 + 锁 cuda；
+      # 前置 = 宿主机 570 系驱动 + NVIDIA Container Toolkit，见该文件头注释）。
       KB_DOCLING_DEVICE: ${KB_DOCLING_DEVICE:-auto}
       KB_UNIT_MAX_CHARS: ${KB_UNIT_MAX_CHARS:-2000}
       # 权重目录 = 命名卷内 artifacts/（<org--repo> 子目录布局，docling 缺件

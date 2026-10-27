@@ -20,7 +20,9 @@ function ensureInit(mode: MermaidMode) {
     startOnLoad: false,
     securityLevel: 'strict', // 禁止 mermaid 里的交互脚本/html
     theme: mode === 'dark' ? 'dark' : 'default', // 亮暗基底；流程图细节由抬头覆盖
-    flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
+    // useMaxWidth:false —— 图表按自然宽度渲染而非缩到容器宽：气泡收窄后宽图
+    // 不再被压成看不清的缩微图，溢出由 .md-mermaid__body 横向滚动 + 拖拽平移兜底
+    flowchart: { useMaxWidth: false, htmlLabels: true, curve: 'basis' },
   })
   initializedFor = mode
 }
@@ -48,6 +50,22 @@ export async function renderMermaid(code: string): Promise<string> {
   } catch {
     // 非法文本（理论不应发生，文本来自后端）→ 返回原文兜底
     return ''
+  }
+}
+
+/** 语法预检（流式渐进渲染的门禁，与 renderMermaid 同源构造 source）。
+    parse 失败 = 半截/非法语法，调用方静默等待后续 token，不渲染报错。 */
+export async function validateMermaid(code: string): Promise<boolean> {
+  const trimmed = code?.trim()
+  if (!trimmed) return false
+  const mode = currentMode()
+  ensureInit(mode)
+  const source = /^---\s*\n/.test(trimmed) ? trimmed : styleFrontmatter(mode) + trimmed
+  try {
+    await mermaid.parse(source)
+    return true
+  } catch {
+    return false
   }
 }
 

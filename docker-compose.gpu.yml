@@ -1,0 +1,35 @@
+# GPU 加速 override（NVIDIA）：叠加在 docker-compose.yml 之上，仅 GPU 主机使用。
+#
+# 用法（所有 compose 命令带双 -f；基础 compose 保持无 GPU，NAS/CPU 主机不受影响）：
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs -f backend
+#
+# 宿主机前置（一次性，详见 README「快速开始 · GPU 加速」）：
+#   ① NVIDIA 驱动 ≥550（推荐 570 系；镜像内 torch 2.6.0+cu124 配套，
+#      RTX 3080 / sm_86 完整支持，CUDA 12.x 次版本兼容下限实际为 525）
+#   ② NVIDIA Container Toolkit：
+#      sudo nvidia-ctk runtime configure --runtime=docker \
+#        && sudo systemctl restart docker
+#   ③ 验证：docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+#
+# 防呆：未装工具包/驱动时，本文件会让 backend 起不来（报
+#   "could not select device driver nvidia"）——属预期失败，去掉本文件
+#   -f 即回退 CPU 部署（镜像同一份，KB_DOCLING_DEVICE=auto 自动回落 cpu）。
+#
+# 生效范围：docling layout / TableFormer（torch，每篇 PDF 必跑，主要收益）；
+# RapidOCR 仍走 onnxruntime CPU（GPU 化需换 onnxruntime-gpu，二期可选）。
+services:
+  backend:
+    environment:
+      # GPU 主机显式锁 cuda（容器能起 = 设备声明已过，cuda 必然可用；不想
+      # 硬锁可 .env 覆盖回 auto——按 torch 探测，缺卡回落 cpu）
+      KB_DOCLING_DEVICE: ${KB_DOCLING_DEVICE:-cuda}
+      # 向容器注入的驱动能力：compute=CUDA 计算，utility=nvidia-smi（观测用）
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

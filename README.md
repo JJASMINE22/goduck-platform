@@ -157,6 +157,45 @@ docker compose down                     # 停止（保留数据卷）
 docker compose down -v                  # 停止并清空全部数据（谨慎）
 ```
 
+<details>
+<summary><b>可选：GPU 加速 docling 解析（NVIDIA，RTX 3080 实测配套）</b></summary>
+
+镜像已预装 CUDA 版 torch（`torch 2.6.0+cu124`，见 `backend/Dockerfile` "0)" 层），
+docling 的 layout / TableFormer 模型自动走 GPU（RapidOCR 仍为 CPU，仅扫描页触发）。
+宿主机三步前置（Ubuntu 示例，一次性）：
+
+```bash
+# 1) NVIDIA 驱动 570 系（≥550 即可跑 cu124；RTX 3080 / sm_86）
+sudo apt-get update && sudo apt-get install -y nvidia-driver-570
+sudo reboot
+nvidia-smi                              # 期望: Driver Version: 570.x
+
+# 2) NVIDIA Container Toolkit（容器内可见 GPU 的关键）
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+
+# 3) 叠加 GPU override 启动（此后所有 compose 命令带双 -f）
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+```
+
+验证（torch 直连 GPU 即 驱动→工具包→容器 全链路打通）：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec backend \
+  python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# 期望: 2.6.0+cu124 True NVIDIA GeForce RTX 3080
+```
+
+> - 未装工具包/驱动就叠加 override：backend 起不来（`could not select device driver nvidia`），去掉 `-f docker-compose.gpu.yml` 即回退 CPU 部署（`KB_DOCLING_DEVICE=auto` 自动回落 cpu）。
+> - GPU 镜像体积比 CPU 大 +4~6GB（CUDA 运行时随 torch wheel 打入）；宿主机**无需**装 CUDA Toolkit。
+
+</details>
+
 <a id="deploy-local"></a>
 
 ### 方式 B：本地开发运行
@@ -309,6 +348,7 @@ curl http://localhost:8000/health
 | `EMBEDDING_DIMS` | `512` | 全局向量维度，backend 与 mcp-servers **必须一致** |
 | `EMBEDDING_BATCH_SIZE` | `4`（compose 层 `24`） | 须对齐 TEI `--max-batch-size`，否则入库延迟成倍放大 |
 | `KB_PARSER_ENGINE` | `legacy` | `legacy` = pymupdf 文本层 + 滑窗切块；`docling` = 结构化解析 + 扫描件 OCR（需先安装 `docling>=2.130,<3`） |
+| `KB_DOCLING_DEVICE` | `auto` | docling 推理设备 `auto/cpu/cuda/mps`；GPU 主机叠加 `docker-compose.gpu.yml` 后锁 `cuda`（驱动 570 系 + Container Toolkit，见[快速开始](#deploy-docker)） |
 | `KB_TOP_K` | `5` | 会话检索条数 |
 
 <details>

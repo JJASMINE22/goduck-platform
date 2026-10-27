@@ -21,7 +21,7 @@ export interface ChatMessage {
   agentPath: string // "root" | "root/researcher"
   content: string
   reasoning?: string // 思考过程（仅 agent 思考消息，可折叠展示）
-  /** true=仍在 token 流式接收中（按纯文本渲染，避免逐 token 重解析 Markdown） */
+  /** true=仍在 token 流式接收中（remend 补全半截语法 + 节流 Markdown 渲染，见 Markdown 组件） */
   streaming?: boolean
   /** true=该条为「用户已手动中断」提示条目（content 恒空，渲染为气泡下方提示行，
       不走 Markdown；仅存在于 live 会话，历史回放不重建——刷新后自然消失） */
@@ -32,6 +32,8 @@ export interface ChatMessage {
   /** 用户消息启用的知识库（发送时快照 {id,name}；历史回放由 /history 的 kbs 回填） */
   kbs?: KbRef[]
   createdAt: number
+  /** 流式终批落态时间戳（仅 live 流式消息有值；思考块用于「思考 N 秒」时长） */
+  endedAt?: number
 }
 
 export interface ToolCallEntry {
@@ -318,18 +320,19 @@ export const useChatStore = create<ChatState>((set) => ({
           : { ...m, content: (m.content ?? '') + delta }
         return { messages: next }
       }
-      // 新流式条目：先把上一条仍在流式的固化（转 Markdown 渲染）
-      const finalized = s.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m))
+      // 新流式条目：先把上一条仍在流式的固化（落 endedAt，供思考块显示时长）
+      const finalized = s.messages.map((m) => (m.streaming ? { ...m, streaming: false, endedAt: Date.now() } : m))
       const created: ChatMessage = reasoning
         ? { id: msgId, role: 'agent', agentPath, content: '', reasoning: delta, streaming: true, createdAt: Date.now() }
         : { id: msgId, role: 'agent', agentPath, content: delta, streaming: true, createdAt: Date.now() }
       return { messages: [...finalized, created] }
     }),
 
+  /** 结束流式：把所有流式消息固化为终态（落 endedAt，思考块显示时长） */
   finalizeStreaming: () =>
     set((s) => ({
       messages: s.messages.some((m) => m.streaming)
-        ? s.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m))
+        ? s.messages.map((m) => (m.streaming ? { ...m, streaming: false, endedAt: Date.now() } : m))
         : s.messages,
     })),
 

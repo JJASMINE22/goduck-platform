@@ -36,6 +36,12 @@ stream and drains it after each updates chunk (plus final drains before
 done/interrupt/error), emitting `file_change` events whose payload carries
 per-file line-diff records written by the tracked workspace backend at the
 moment of disk mutation (see app/core/file_change_tracker.py).
+
+Agent path sanitization: raw subgraph namespaces carry "node:task_id"
+segments (incl. middleware hook node names). agent_path emitted to the
+front-end is sanitized — task-id suffixes stripped, rubric grader hooks
+normalized to "rubric-grader", task-subagent namespaces aliased to their
+configured names (lc_agent_name, learned from streaming chunk metadata).
 """
 from __future__ import annotations
 
@@ -59,6 +65,37 @@ logger = logging.getLogger(__name__)
 
 def _path(namespace: tuple) -> str:
     return "/".join(namespace) if namespace else "root"
+
+
+RUBRIC_GRADER_PATH = "rubric-grader"
+
+
+def _display_segment(seg: str) -> str:
+    """单段清洗：剥离任务 id 后缀；rubric 评审 hook 归一为固定记号。"""
+    name = seg.split(":", 1)[0]
+    if name.endswith(".after_agent") and "Rubric" in name:
+        return RUBRIC_GRADER_PATH
+    return name
+
+
+def _display_path(namespace: tuple) -> str:
+    return "/".join(_display_segment(s) for s in namespace) if namespace else "root"
+
+
+def _learn_path_alias(alias: dict[str, str], raw_path: str, data) -> None:
+    """登记 task 子代理 namespace -> 配置名（chunk metadata 的 lc_agent_name）。
+
+    token 流恒先于同消息的 updates 完成，登记必先于查询；root 不参与
+    （主代理判定契约 agent_path == "root"）。
+    """
+    if raw_path == "root" or raw_path in alias:
+        return
+    if not isinstance(data, tuple) or len(data) != 2:
+        return
+    meta = data[1]
+    name = meta.get("lc_agent_name") if isinstance(meta, dict) else None
+    if isinstance(name, str) and name:
+        alias[raw_path] = name
 
 
 def _content_str(content: Any) -> str:
@@ -368,6 +405,8 @@ class StreamAdapter:
         # ids of AI messages whose usage was already emitted as a `usage` event
         # (dedup: the dual stream modes may both surface the same message)
         usage_counted: set[str] = set()
+        # 原始 namespace 路径 -> task 子代理配置名（lc_agent_name）
+        path_alias: dict[str, str] = {}
         # 文件变更收集器引用：activate() yield 出实例，error 路径（with 已退出、
         # contextvar 已复位）仍可 drain(collector) 取走残留记录。
         collector = None
@@ -388,7 +427,11 @@ class StreamAdapter:
                         #   mode=="messages": data = (message_chunk, metadata)
                         #   mode=="updates" : data = {node_name: state_update}
                         async for namespace, mode, data in stream:
-                            agent_path = _path(namespace)
+                            raw_path = _path(namespace)
+                            if mode == "messages":
+                                _learn_path_alias(path_alias, raw_path, data)
+                            # 展示路径：子代理配置名优先，其余清洗（剥任务 id / rubric 归一）
+                            agent_path = path_alias.get(raw_path) or _display_path(namespace)
                             if mode == "messages":
                                 for ev in self._token_events(data, agent_path, streamed_ids):
                                     yield ev

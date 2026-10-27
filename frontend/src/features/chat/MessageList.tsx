@@ -8,7 +8,7 @@
    历史消息在 token 流期间完全跳过重渲染（否则每批成本 = O(会话总内容)，
    长会话吐字/滚动卡顿的主因）。timeline 构建同样入 useMemo。 */
 import { Button, Collapse, Flex, Tag } from 'antd'
-import { type CSSProperties, type ReactNode, memo, useMemo } from 'react'
+import { type CSSProperties, type ReactNode, memo, useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, Brain, OctagonX, Undo2 } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage, FileChangeEntry, ToolCallEntry } from '@/store/chatStore'
@@ -25,9 +25,13 @@ type TimelineItem =
   | { kind: 'tool'; ts: number; data: ToolCallEntry }
   | { kind: 'files'; ts: number; data: FileChangeEntry[] }
 
+/** namespace 段尾部任务 id（后端已清洗，此处兜底剥离） */
+const NS_TASK_ID_RE = /:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
+
 function agentMeta(path: string): { label: string; color: string } {
   if (path === 'root' || path === 'user') return { label: '主代理', color: 'var(--color-role-agent-main)' }
-  const seg = path.split('/').pop() ?? path
+  const seg = (path.split('/').pop() ?? path).replace(NS_TASK_ID_RE, '')
+  if (seg === 'rubric-grader') return { label: '评审', color: 'var(--color-role-agent-sub)' }
   return { label: `子代理 · ${seg}`, color: 'var(--color-role-agent-sub)' }
 }
 
@@ -193,9 +197,10 @@ const MessageBubble = memo(function MessageBubble({
           ) : null}
           {hasKbs ? <KbBadges kbs={msg.kbs!} /> : null}
           {msg.streaming ? (
-            // 流式接收中：纯文本渲染，避免逐 token 重解析 Markdown（性能 + 防半截语法抖动）。
-            // 用户消息无 streaming 标志，恒走 Markdown（支持用户输入的标题/列表/代码等格式）。
-            <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+            // 流式接收中：remend 补全半截语法 + 节流重解析（见 Markdown 组件），
+            // 全程 Markdown 排版（代码/公式/表格边流边成型）。用户消息无 streaming
+            // 标志，恒走下方 breaks 分支
+            <Markdown streaming>{msg.content}</Markdown>
           ) : (
             // breaks：用户输入的换行原样呈现（GFM 默认合并单换行，非技术用户难懂
             // "行尾两空格"约定）；markdown 轻语法仍生效，配合气泡内驯化样式保美观。
@@ -243,18 +248,42 @@ function KbBadges({ kbs }: { kbs: KbRef[] }): ReactNode {
 }
 
 /** 思考过程（可折叠，默认收起）—— thinking 事件落为独立消息条，紧邻其后是正式回复。
+    流式中：shimmer 标签，展开态贴底跟随最新思考；结束：固化「思考 N 秒」
+    （endedAt 落戳，仅 live 流式有值）并转 Markdown 渲染（思考模型常带列表/
+    行内代码/公式）。展开态放宽幅宽（msg-card--thinking-open，长文阅读场景）。
     （memo：仅正在流式增长的那条思考块会随合并批重渲染，历史思考块跳过） */
 const ThinkingBlock = memo(function ThinkingBlock({ msg }: { msg: ChatMessage }): ReactNode {
   const { label, color } = agentMeta(msg.agentPath)
+  const [open, setOpen] = useState(false)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const stickToBottom = useRef(true)
+  // 贴底跟随：用户上滑翻看即停跟，拉回底部（距底 < 24px）恢复
+  const onScroll = () => {
+    const el = bodyRef.current
+    if (el) stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+  }
+  useEffect(() => {
+    const el = bodyRef.current
+    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight
+  }, [msg.reasoning])
+  const secs =
+    !msg.streaming && msg.endedAt
+      ? Math.max(1, Math.round((msg.endedAt - msg.createdAt) / 1000))
+      : null
   return (
     <Flex justify="flex-start" align="flex-start" gap={10} className="msg-in">
       <Avatar role="agent" />
       {/* 家族色 = 所属代理角色色（归属语义）：思考过程与该代理气泡同色系，
           但以透明底 + 左条 + 次级正文与气泡区分 */}
-      <div className="msg-card" style={{ '--card-family': color } as CSSProperties}>
+      <div
+        className={`msg-card msg-card--thinking ${open ? 'msg-card--thinking-open' : ''}`}
+        style={{ '--card-family': color } as CSSProperties}
+      >
         <Collapse
           size="small"
           ghost
+          activeKey={open ? msg.id : []}
+          onChange={(keys) => setOpen(Array.isArray(keys) ? keys.includes(msg.id) : keys === msg.id)}
           items={[
             {
               key: msg.id,
@@ -267,11 +296,21 @@ const ThinkingBlock = memo(function ThinkingBlock({ msg }: { msg: ChatMessage })
                     className={msg.streaming ? 'shimmer' : undefined}
                     style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}
                   >
-                    {label} · 思考过程
+                    {label} · {msg.streaming || !secs ? '思考过程' : `思考 ${secs} 秒`}
                   </span>
                 </Flex>
               ),
-              children: <div className="chat-thinking__body">{msg.reasoning}</div>,
+              children: (
+                <div className="chat-thinking__scroll" ref={bodyRef} onScroll={onScroll}>
+                  {msg.streaming ? (
+                    <div className="chat-thinking__body">{msg.reasoning}</div>
+                  ) : (
+                    <div className="chat-thinking__md">
+                      <Markdown>{msg.reasoning ?? ''}</Markdown>
+                    </div>
+                  )}
+                </div>
+              ),
             },
           ]}
         />

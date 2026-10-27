@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# goduck-platform backend 镜像（支持 MCP stdio 调用）。
+# goduck-platform backend 镜像（支持 MCP stdio 调用 + docling GPU 推理）。
 #
 # 关键设计：stdio 传输下，是 *backend 进程自己* spawn MCP server 子进程
 # （langchain_mcp_adapters -> mcp SDK stdio_client -> create_subprocess_exec），
@@ -9,6 +9,11 @@
 # 进一步：uvx/npx 默认在运行时联网拉包（冷启动慢 / 离线即失败 / 不可复现）。
 # 为规避此问题，构建期用 PREWARM_* 预热常用 MCP 的包缓存进镜像，
 # 运行时命中缓存即可秒起、离线可用。
+#
+# GPU（docling layout/TableFormer）：见下方 "---- 0)" 层注释。要点：CUDA 版
+# torch wheel 自带全套 CUDA 运行时，镜像保持 python:slim 基底；宿主机只需
+# NVIDIA 驱动（570 系）+ Container Toolkit，compose 层用 docker-compose.gpu.yml
+# 显式声明设备。
 #
 # 构建上下文 = backend/ 目录：
 #   docker build -t goduck-backend ./backend
@@ -23,6 +28,12 @@ ARG NODE_MAJOR=20
 # 需要新增默认预热的 MCP，扩展这两个列表即可。
 ARG UVX_MCP_PACKAGES="mcp-server-fetch mcp-server-time arxiv-mcp-server"
 ARG NPM_MCP_PACKAGES="@modelcontextprotocol/server-filesystem @modelcontextprotocol/server-memory"
+# GPU 推理：CUDA 版 torch 配套矩阵（升级只改这三行，或 --build-arg 覆盖）。
+#   torch 2.6.0+cu124 ↔ 宿主机驱动 ≥550（推荐 570 系；RTX 3080 / sm_86 在
+#   官方内核列表内）。换 cu126/cu128 时同步换 TORCH_INDEX_URL 并重验驱动门槛。
+ARG TORCH_VERSION=2.6.0+cu124
+ARG TORCHVISION_VERSION=0.21.0+cu124
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
 
 # ---- 环境变量 ----------------------------------------------------------------
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -69,9 +80,28 @@ RUN useradd --create-home --uid 1001 --shell /bin/bash app \
 
 WORKDIR /app
 
+# ---- 0) GPU 推理（docling layout/TableFormer）：CUDA 版 torch -------------------
+# docling 的 layout + TableFormer 走 torch（docling-ibm-models 传递依赖），PyPI
+# 默认 wheel 为 CPU 版；此处改装 cu124 版后 KB_DOCLING_DEVICE=auto/cuda 即走 GPU。
+# 三层免装设计：
+#   ① cu124 wheel 自带全套 CUDA 运行时（nvidia-* pip 包 + cuDNN 9.1）——镜像
+#      无需 nvidia/cuda 基底，宿主机无需装 CUDA Toolkit；
+#   ② 宿主机只需驱动（570 系）+ NVIDIA Container Toolkit（注入 libcuda.so）；
+#   ③ compose 层 docker-compose.gpu.yml 声明设备后容器内 GPU 才可见。
+# 分层顺序：torch 先于 requirements.txt —— docling 对 torch/torchvision 的
+# 传递约束（>=2.x）被已装的 cu124 版满足，后续 pip 不会拉 CPU 版覆盖；
+# requirements 变更也不触发 ~2.5GB torch 层重下。代价：镜像体积 +4~6GB。
+# 末行 import 自检：无 GPU 的构建机也能过（不触发 CUDA 调用），仅验证
+# wheel 形态（torch.version.cuda 应为 12.4）。
+RUN pip install --index-url "${TORCH_INDEX_URL}" \
+        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
+    && python -c "import torch; print('torch', torch.__version__, '/ cuda', torch.version.cuda)"
+
 # ---- 1) 安装运行时依赖（requirements.txt 变化才重装，缓存命中重依赖）---------
 # 常规 pip 安装（与本地开发一致）。仅运行依赖，不含 dev 依赖。
 # app 包本身不 pip install —— 运行期从 WORKDIR=/app 直接 import app 即可。
+# torch/torchvision 已由上方 0) 层以 cu124 版预装，docling 的传递依赖在此
+# 被满足，pip 不会拉 CPU 版覆盖（本地开发走本文件则装 PyPI CPU 版，行为一致）。
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 

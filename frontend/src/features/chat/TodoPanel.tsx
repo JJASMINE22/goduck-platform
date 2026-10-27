@@ -11,10 +11,13 @@ import { ChevronDown, ChevronUp, Circle, CircleCheck, CircleDot, ListChecks } fr
 import { useChatStore } from '@/store/chatStore'
 import type { TodoItem } from '@/types'
 
-/** 与 MessageList.agentMeta 一致的主/子代理标签 */
+/** 与 MessageList.agentMeta 一致的主/子代理标签（含 rubric 评审归一、任务 id 兜底剥离） */
+const NS_TASK_ID_RE = /:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
+
 function agentLabel(path: string): { label: string; color: string } {
   if (path === 'root') return { label: '主代理', color: 'var(--color-role-agent-main)' }
-  const seg = path.split('/').pop() ?? path
+  const seg = (path.split('/').pop() ?? path).replace(NS_TASK_ID_RE, '')
+  if (seg === 'rubric-grader') return { label: '评审', color: 'var(--color-role-agent-sub)' }
   return { label: `子代理 · ${seg}`, color: 'var(--color-role-agent-sub)' }
 }
 

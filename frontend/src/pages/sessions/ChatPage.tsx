@@ -212,13 +212,12 @@ export function ChatPage(): ReactNode {
   // 拖拽后写入地板值。消息流保持居中阅读列。
   const [inputHeight, setInputHeight] = useState<number | null>(null)
 
-  // —— 发送框随滚动方向收起/展开（走查需求）——
-  // 向上滚（读历史）→ 收起为 sliver；向下滚 → 立即展开（不必滚到底——用户
-  // 可能正在回看中想就当前内容提问）。收起 = transform 沉降 + --composer-h
-  // 同步收缩，阅读空间真实释放；展开让位恢复。
-  // 稳定性（浏览器地址栏模式）：逐 scroll 事件累积位移，超阈值（28px）才切换，
-  // 方向改变即重置累积——滚轮动量尾/微抖不会反复开合；贴底恒展开；聚焦输入
-  // （正在编写）锁定展开，失焦后等下一次向上意图再收（不做自动猜心）。
+  // —— 发送框随滚动收起（走查调整：只要滚动即收起）——
+  // 用户任意方向滚动会话 → 收起为 sliver，阅读空间真实释放（收起 = transform
+  // 沉降 + --composer-h 同步收缩）；悬停 sliver / 聚焦 / 单击手柄 / 贴底
+  // 恒展开。程序化滚动（流式追底/跳底）静默豁免——那是机器跟随而非阅读意图；
+  // 逐 scroll 事件累积位移超阈值（28px）才切换，滚轮动量尾/微抖不误收；
+  // 聚焦输入（正在编写）锁定展开，失焦后等下一次滚动意图再收（不做自动猜心）。
   const [dockState, setDockState] = useState<{ sessionId: string; collapsed: boolean }>({
     sessionId,
     collapsed: false,
@@ -226,9 +225,12 @@ export function ChatPage(): ReactNode {
   const dockCollapsed = dockState.sessionId === sessionId && dockState.collapsed
   const dockCollapsedRef = useRef(false)
   const applyComposerHRef = useRef<(() => void) | null>(null)
-  /** 上次 scroll 位置与方向累积量（换向重置；会话切换时一并复位） */
+  /** 上次 scroll 位置与位移累积量（会话切换时一并复位） */
   const prevTopRef = useRef(0)
   const dockAccRef = useRef(0)
+  /** 程序化滚动静默截止时刻：scrollToBottom / 跳底前主动写入，窗口内的
+      scroll 事件不参与收起判定（流式追底是机器跟随，不代表用户阅读意图） */
+  const dockMuteUntilRef = useRef(0)
   /** 焦点在 composer 内（onFocus/onBlur 冒泡到 dock 维护）：编写中不收起 */
   const dockFocusRef = useRef(false)
   useEffect(() => {
@@ -295,7 +297,10 @@ export function ChatPage(): ReactNode {
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    // 程序化滚动：静默收起判定一个窗口（追底/回底是机器行为，不算滚动意图）
+    dockMuteUntilRef.current = Date.now() + 800
+    el.scrollTop = el.scrollHeight
   }, [])
 
   const handleScroll = useCallback(() => {
@@ -304,9 +309,9 @@ export function ChatPage(): ReactNode {
     const top = el.scrollTop
     const pinned = el.scrollHeight - top - el.clientHeight < 96
     pinnedRef.current = pinned
-    // —— 发送框方向意图（累积位移滞回，详见 dockState 声明处注释）——
-    // dy>0 = 向下滚（趋向较新内容）→ 展开发送框；dy<0 = 向上读历史 → 收起。
-    // 程序化滚动（流式追底/跳底）天然 dy>0 或贴底恒展开，方向语义不受干扰。
+    // —— 发送框收起意图（只要滚动即收起，详见 dockState 声明处注释）——
+    // 不论方向：用户滚动累积 28px 即收起；贴底恒展开；程序化滚动（静默窗口
+    // 内）豁免；正在编写（焦点在 composer 内）不收起。
     const dy = top - prevTopRef.current
     prevTopRef.current = top
     if (pinned) {
@@ -314,15 +319,12 @@ export function ChatPage(): ReactNode {
       if (dockCollapsedRef.current) {
         setDockState((cur) => (cur.sessionId === sessionId ? { ...cur, collapsed: false } : cur))
       }
+    } else if (Date.now() < dockMuteUntilRef.current) {
+      // 程序化滚动进行中（追底/跳底动画）：重置累积，不视为阅读意图
+      dockAccRef.current = 0
     } else if (Math.abs(dy) >= 2) {
-      // 换向即重置：反向意图须重新累积满阈值才可切换（滞回防抖）
-      dockAccRef.current = dy > 0 ? Math.max(dockAccRef.current, 0) + dy : Math.min(dockAccRef.current, 0) + dy
-      if (dockAccRef.current > 28) {
-        dockAccRef.current = 0
-        if (dockCollapsedRef.current) {
-          setDockState((cur) => (cur.sessionId === sessionId ? { ...cur, collapsed: false } : cur))
-        }
-      } else if (dockAccRef.current < -28) {
+      dockAccRef.current += Math.abs(dy)
+      if (dockAccRef.current >= 28) {
         dockAccRef.current = 0
         // 正在编写（焦点在 composer 内）不收起
         if (dockCollapsedRef.current === false && !dockFocusRef.current) {
@@ -342,6 +344,8 @@ export function ChatPage(): ReactNode {
     const el = scrollRef.current
     if (!el) return
     pinnedRef.current = true
+    // 平滑回底动画期间的 scroll 事件均为程序化：静默收起判定
+    dockMuteUntilRef.current = Date.now() + 800
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [])
 
@@ -383,9 +387,10 @@ export function ChatPage(): ReactNode {
     forcedLoadRef.current = false
     forcedAtRef.current = 0
     lastCronLoadAtRef.current = 0
-    // 发送框方向意图基准复位：旧会话的 scrollTop 不参与新会话首个 dy 计算
+    // 发送框滚动意图基准复位：旧会话的 scrollTop 不参与新会话首个 dy 计算
     prevTopRef.current = 0
     dockAccRef.current = 0
+    dockMuteUntilRef.current = 0
     if (!retainedRef.current) {
       // 跨会话进入：拆除上一会话的本地消费连接（防旧流事件串进新会话的
       // store）——服务端 run 不受影响，重进原会话经观察流补帧
@@ -855,9 +860,8 @@ export function ChatPage(): ReactNode {
               {/* 玻璃 dock：composer 悬浮于滚动区底部（流体玻璃取景消息流，
                   发送后消息从玻璃下滚过、模糊可见）；dock 本身不拦截指针，
                   宽屏两侧空白处可正常 hover/点击下方消息。
-                  方向收起（--collapsed）：向上滚读历史沉降为 sliver（拖拽条 +
-                  玻璃上缘），向下滚任意距离即展开（无需到底——回看中可随时提问）；
-                  悬停/聚焦临时展开，贴底恒展开，单击拖拽条唤起。
+                  滚动收起（--collapsed）：用户任意方向滚动会话即沉降为 sliver（玻璃
+                  上缘 + grip 手柄）；悬停/聚焦临时展开，贴底恒展开，单击手柄唤起。
                   归档/任务会话不渲染（只读，发送窗由下方常规流 Alert 替代） */}
               {!readOnly ? (
                 <div
@@ -875,7 +879,16 @@ export function ChatPage(): ReactNode {
                     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) dockFocusRef.current = false
                   }}
                 >
-                  <div className="row-resizer" onMouseDown={onInputResizeDown} title="拖拽调整输入区高度" />
+                  {/* 高度手柄：全宽隐形热区骑跨玻璃上缘，视觉重心为居中 grip 胶囊
+                      （与 DragTextarea 抓手同语言）；单击收起态=展开，双击=高度复位 */}
+                  <div
+                    className="composer-resize"
+                    onMouseDown={onInputResizeDown}
+                    onDoubleClick={() => setInputHeight(null)}
+                    title="拖拽调整输入区高度（双击复位）"
+                  >
+                    <span className="composer-resize__grip" />
+                  </div>
                   <div className="chat-panel__composer" style={{ minHeight: inputHeight ?? undefined }}>
                     <ChatInput
                       sessionId={session.id}

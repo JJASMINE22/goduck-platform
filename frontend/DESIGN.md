@@ -41,7 +41,8 @@
 | UI 组件库 | **Ant Design 5**（中文友好，Table/Tree/Steps/Drawer/Form/Upload 成熟） | 个人工具优先**开发速度**；树形（递归 subagents）、多选（tool_names）、步骤式编辑器是刚需 |
 | 样式 | **CSS Variables 主题** + 少量 **CSS Modules**；聊天界面可定制 | 不引入 Tailwind 以避免与 AntD 冲突；主题用 AntD 的 `ConfigProvider` + token |
 | 图标 | **lucide-react** | 轻量、风格统一 |
-| Markdown | **react-markdown + remark-gfm + rehype-highlight** | 渲染 agent 回复、rubric、附件清单 |
+| Markdown | **react-markdown + remark-gfm + rehype-highlight**；流式期 **remend** 补全半截语法 + 120ms 尾沿节流重解析（`Markdown` 组件 `streaming` prop） | 渲染 agent 回复、rubric、附件清单；边流边排版 |
+| Mermaid/SVG 流式门禁 | **语法/净化门禁渐进渲染**（`MdStreamingContext`） | mermaid 半截语法 parse 失败静默等待（`.md-deferred` 占位），通过才渲；流式中 SVG 未闭合走源码降级 |
 | Mermaid | **mermaid.js** | 后端只产文本，前端渲染（零网络依赖） |
 | SSE | **`@microsoft/fetch-event-source`** | ⚠️ 后端是 **POST 返回 SSE**，浏览器原生 `EventSource` 仅支持 GET，**必须**用 fetch-based 方案 |
 | 代码高亮 | **rehype-highlight**（随 markdown） | 工具调用参数 / 代码块 |
@@ -387,6 +388,9 @@ async function streamMessage(sessionId, body, handlers) {
 布局：左会话历史抽屉 + 中消息流 + 右上下文面板（附件/KB 留口）。
 
 - **消息流**：user（右）/ agent（左，按 `agent_path` 标主/子代理）/ 工具卡（折叠）/ HITL 卡。
+- **思考块**：默认收起（不自动展开/收起，尊重用户操作）；展开态放宽幅宽（`min(90%, 960px)`，
+  收起回窄列）；流式中展开态贴底跟随（上滑即停跟），结束固化「思考 N 秒」
+  （`endedAt` 落戳，仅 live 流式有值）并转 Markdown 渲染。
 - **输入区**：
   - 文本框 + 发送（禁用条件：`streamStatus !== idle && !== interrupted`；另：未选智能体的空会话禁发）。
   - **智能体选择器**（会话-智能体解耦）：composer 左下角，逐回合选择；切换即按新选中

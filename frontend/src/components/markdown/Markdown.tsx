@@ -1,19 +1,25 @@
 /* Markdown 渲染 —— agent 回复 / rubric / 附件清单展示。
    react-markdown + gfm + 代码高亮 + 数学公式（remark-math → KaTeX）。
+   流式期（streaming prop）：remend 先补全半截语法（加粗/行内代码/链接/$$ 等），
+   配合尾沿节流重解析实现「边流边排版」；mermaid/svg 块走语法/净化门禁渐进渲染
+   （MdStreamingContext 区分流式中与终态）。
    代码块带「复制」；mermaid 块带「下载 SVG / 复制源码」；svg 围栏走 SvgFigure
    （净化 + 作用域主题化，见 svgScope.css）；图像带「下载」。
    mermaid/svg 均走单一渲染入口（准则 F7）。未启用 rehype-raw：内联 HTML 不渲染。 */
-import { type ReactElement, type ReactNode, memo, useEffect, useRef, useState } from 'react'
+import { type ReactElement, type ReactNode, memo, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components, type Options } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import remarkBreaks from 'remark-breaks'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
+import remend from 'remend'
 import 'katex/dist/katex.min.css'
-import { renderMermaidInto } from '@/lib/mermaid'
+import { renderMermaidInto, validateMermaid } from '@/lib/mermaid'
 import { ensureCanvasBackground } from './svgNormalize'
 import { SvgFigure } from './SvgFigure'
+import { MdStreamingContext } from './mdStreaming'
+import { panHandlers } from './dragPan'
 import { useThemeStore } from '@/store/themeStore'
 
 /** LLM 常把公式写作 \(..\)/\[..\]，remark-math 只认 $..$/$$..$$。
@@ -81,20 +87,41 @@ function CodeBlock({ lang, source, children }: { lang: string; source: string; c
   )
 }
 
+/** mermaid 块渐进渲染节拍：流式增长中半截语法 parse 必失败，防抖等待即可；
+    parse 通过 = 语法自洽（长图会在流式中段「渐现」，短图在围栏闭合后渲出） */
+const MERMAID_DEBOUNCE_MS = 300
+
 /** mermaid 块：顶栏（复制源码 + 下载 SVG） + 渲染图。SVG 序列化自渲染容器内的 <svg>。
-    theme 入依赖：Light|Dark 切换后以对应 mermaid 主题重渲染。 */
+    theme 入依赖：Light|Dark 切换后以对应 mermaid 主题重渲染。
+    渲染门禁：validateMermaid 通过才渲（失败静默等待）；流式中语法回退非法时
+    保留上一帧已渲图，首帧成功前以占位文案区分「生成中」与「终态解析失败」。 */
 function MermaidBlock({ code }: { code: string }): ReactNode {
   const ref = useRef<HTMLDivElement>(null)
   const [copied, setCopied] = useState(false)
+  const [rendered, setRendered] = useState(false)
+  const streaming = useContext(MdStreamingContext)
   const theme = useThemeStore((s) => s.theme)
+  const lastRenderRef = useRef<{ code: string; theme: string } | null>(null)
   useEffect(() => {
     let active = true
-    void (async () => {
-      await renderMermaidInto(ref.current, code)
-      if (!active && ref.current) ref.current.innerHTML = ''
-    })()
+    // 主题切换（代码未变）即时重渲；代码变化走防抖 + 语法门禁
+    const themeOnly = lastRenderRef.current?.code === code && lastRenderRef.current.theme !== theme
+    const timer = setTimeout(() => {
+      void (async () => {
+        if (!(await validateMermaid(code))) return
+        if (!active) return
+        await renderMermaidInto(ref.current, code)
+        if (!active) {
+          if (ref.current) ref.current.innerHTML = ''
+          return
+        }
+        lastRenderRef.current = { code, theme }
+        setRendered(true)
+      })()
+    }, themeOnly ? 0 : MERMAID_DEBOUNCE_MS)
     return () => {
       active = false
+      clearTimeout(timer)
     }
   }, [code, theme])
   const onCopySource = async () => {
@@ -123,7 +150,17 @@ function MermaidBlock({ code }: { code: string }): ReactNode {
           下载 SVG
         </button>
       </div>
-      <div ref={ref} className="md-mermaid__body" />
+      {/* 首帧成功前不挂画布（空 body 占位条）；占位与画布互斥，innerHTML 直写不与
+          React 子树混管 */}
+      {!rendered ? (
+        <div className="md-deferred">{streaming ? '图表生成中…' : '图表解析失败，可复制源码排查'}</div>
+      ) : null}
+      <div
+        ref={ref}
+        className="md-mermaid__body"
+        style={rendered ? undefined : { display: 'none' }}
+        {...panHandlers}
+      />
     </div>
   )
 }
@@ -157,10 +194,10 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }): ReactNode 
     不会写"行尾两空格"或空行分段，GFM 默认会把多行合并成一段；
     同时保留加粗/列表/代码等轻量语法，懂 markdown 的用户不受影响。
 
-    性能：插件表与组件映射提为模块常量、组件本身 memo——props 仅有
-    （children: string, breaks），内容不变即完全跳过重渲染， remark→rehype
-    （gfm/math/highlight/katex）全管线不重跑。这是流式期间"每 token 重解析
-    全部历史消息"这一长会话卡顿主因的修复点之一。 */
+    性能：插件表与组件映射提为模块常量、渲染内核独立 memo（MdRender）——
+    src 不变即完全跳过重渲染，remark→rehype（gfm/math/highlight/katex）
+    全管线不重跑。流式合并批（≈30fps）只更新引用，src 由上层节流提交，
+    历史消息与节拍间隙的消息零重解析。 */
 const REMARK_PLUGINS: Options['remarkPlugins'] = [remarkGfm, remarkMath]
 const REMARK_PLUGINS_BREAKS: Options['remarkPlugins'] = [remarkGfm, remarkMath, remarkBreaks]
 const REHYPE_PLUGINS: Options['rehypePlugins'] = [
@@ -196,8 +233,17 @@ const MD_COMPONENTS: Components = {
     </code>
   ),
   img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
+  /* remend 把流式半截链接补为 [text](streamdown:incomplete-link)：占位 href
+     中和为纯文本（无悬停链接感、不产生无效导航），url 到齐后自然恢复 */
+  a: ({ href, children, ...props }) =>
+    href === 'streamdown:incomplete-link' ? <span>{children}</span> : <a {...props} href={href}>{children}</a>,
+  /* 表格：横向滚动壳（.md-table-wrap）+ 拖拽平移兜住宽表——表格取 max-content
+     自然宽度（宽度规则见 index.css，width:auto 会被钳回容器宽导致列压扁、
+     滚动条永不出现）；td/th 原生样式不变 */
   table: (props) => (
-    <table {...props} style={{ borderCollapse: 'collapse', width: '100%', margin: '8px 0' }} />
+    <div className="md-table-wrap" {...panHandlers}>
+      <table {...props} style={{ borderCollapse: 'collapse', margin: 0 }} />
+    </div>
   ),
   th: (props) => (
     <th {...props} style={{ border: '1px solid var(--color-border)', padding: '4px 8px', background: 'var(--color-border-soft)' }} />
@@ -205,22 +251,56 @@ const MD_COMPONENTS: Components = {
   td: (props) => <td {...props} style={{ border: '1px solid var(--color-border)', padding: '4px 8px' }} />,
 }
 
+/** 渲染内核隔离（memo）：src 不变即跳过 remark→rehype 全管线 */
+const MdRender = memo(function MdRender({ src, breaks }: { src: string; breaks: boolean }): ReactNode {
+  return (
+    <ReactMarkdown
+      remarkPlugins={breaks ? REMARK_PLUGINS_BREAKS : REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
+      components={MD_COMPONENTS}
+    >
+      {src}
+    </ReactMarkdown>
+  )
+})
+
+/** 流式重解析节流间隔：吐字观感与解析开销的平衡点 */
+const STREAM_THROTTLE_MS = 120
+
 export const Markdown = memo(function Markdown({
   children,
   breaks = false,
+  streaming = false,
 }: {
   children: string
   breaks?: boolean
+  /** true=token 流式接收中：remend 补全半截语法 + 节流重解析，全程 Markdown 排版 */
+  streaming?: boolean
 }): ReactNode {
+  // 流式视图节流：合并批（≈30fps）仅更新引用，src 按节拍（120ms）提交——
+  // 吐字观感几乎无损，remark→rehype 全管线重跑频率有界。
+  // 终态直接从 props 渲染（不经 state），流式→终态切换无同步开销
+  const [view, setView] = useState(children)
+  const committedAt = useRef(0)
+  useEffect(() => {
+    if (!streaming) return
+    // 尾沿节流：等待时长按上次提交点推算，批间反复重排不推迟提交点、不丢尾帧
+    const wait = Math.max(0, STREAM_THROTTLE_MS - (Date.now() - committedAt.current))
+    const timer = setTimeout(() => {
+      committedAt.current = Date.now()
+      setView(children)
+    }, wait)
+    return () => clearTimeout(timer)
+  }, [children, streaming])
+  const src = useMemo(
+    () => (streaming ? remend(normalizeMathDelimiters(view)) : normalizeMathDelimiters(children)),
+    [streaming, view, children],
+  )
   return (
     <div className="gd-md" style={{ lineHeight: 1.7, wordBreak: 'break-word' }}>
-      <ReactMarkdown
-        remarkPlugins={breaks ? REMARK_PLUGINS_BREAKS : REMARK_PLUGINS}
-        rehypePlugins={REHYPE_PLUGINS}
-        components={MD_COMPONENTS}
-      >
-        {normalizeMathDelimiters(children)}
-      </ReactMarkdown>
+      <MdStreamingContext.Provider value={streaming}>
+        <MdRender src={src} breaks={breaks} />
+      </MdStreamingContext.Provider>
     </div>
   )
 })

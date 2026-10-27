@@ -8,8 +8,10 @@
    独立文件在任意浏览器打开同样带色。 */
 import { Drawer } from 'antd'
 import DOMPurify from 'dompurify'
-import { memo, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ensureCanvasBackground, normalizeSvgColors } from './svgNormalize'
+import { panHandlers, panState } from './dragPan'
+import { MdStreamingContext } from './mdStreaming'
 import './svgScope.css'
 import scopeCssRaw from './svgScope.css?raw'
 
@@ -93,6 +95,7 @@ function triggerDownload(content: string, filename: string): void {
 export const SvgFigure = memo(function SvgFigure({ code }: { code: string }): ReactNode {
   // 净化结果缓存：内容不变不重跑（流式围栏闭合后内容即稳定）
   const prepared = useMemo(() => prepareSvg(code), [code])
+  const streaming = useContext(MdStreamingContext)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [copied, setCopied] = useState(false)
   const [zoom, setZoom] = useState(false)
@@ -109,12 +112,13 @@ export const SvgFigure = memo(function SvgFigure({ code }: { code: string }): Re
     if (svg) triggerDownload(buildStandaloneSvg(svg as SVGSVGElement), 'diagram.svg')
   }
 
-  // 无法净化/解析：降级为源码展示（不吞内容，用户仍可复制排查）
+  // 无法净化/解析：降级为源码展示（不吞内容，用户仍可复制排查）。
+  // 流式半截 SVG（XML 严格解析对未闭合标签必失败）同走此降级，闭合后自动转图
   if (prepared === null) {
     return (
       <div className="md-svg">
         <div className="md-svg__bar">
-          <span>svg</span>
+          <span>{streaming ? 'svg · 生成中…' : 'svg'}</span>
           <button type="button" className="md-codeblock__btn" onClick={onCopySource}>
             {copied ? '源码已复制' : '复制源码'}
           </button>
@@ -141,7 +145,13 @@ export const SvgFigure = memo(function SvgFigure({ code }: { code: string }): Re
       <div
         ref={bodyRef}
         className="md-svg__body svg-scope"
-        onClick={() => setZoom(true)}
+        {...panHandlers}
+        onClick={() => {
+          // 拖拽平移的收尾 click 不触发放大（pointerdown 已复位 panning，
+          // 其后的正常点击不受影响）
+          if (panState.panning) return
+          setZoom(true)
+        }}
         role="button"
         tabIndex={0}
         aria-label="放大查看 SVG 图表"
