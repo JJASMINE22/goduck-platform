@@ -1,0 +1,34 @@
+# 不打包进镜像：密钥/缓存/构建产物/IDE 文件等。
+# 尤其 .env —— 凭据必须在运行期通过环境变量注入，绝不烤进镜像。
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 版本控制与 IDE
+.git/
+.gitignore/
+.idea/
+.vscode/
+
+# 日志与临时
+*.log
+logs/
+tmp/

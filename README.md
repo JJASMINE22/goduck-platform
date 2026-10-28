@@ -90,7 +90,7 @@ Nginx 边缘网关（容器部署唯一对外入口 :80；本地开发由 Vite p
                     ├── PostgreSQL 16     业务表(8张) + LangGraph checkpoints / store
                     ├── MinIO             附件与知识库原文字节持久层
                     ├── Elasticsearch     知识库向量 / 全文检索
-                    ├── TEI（外部）        向量化（OpenAI 兼容 /v1/embeddings）
+                    ├── TEI（compose 内置） 向量化（OpenAI 兼容 /v1/embeddings）
                     ├── MCP servers       stdio / http 工具生态（含本仓库 mcp-servers 网关）
                     └── AssemblyAI（外部） 语音输入 Streaming STT（可选）
 ```
@@ -110,7 +110,7 @@ Nginx 边缘网关（容器部署唯一对外入口 :80；本地开发由 Vite p
 | 后端 | FastAPI · LangGraph · deepagents · langchain-openai · psycopg3 · MinIO · Elasticsearch · pydantic-settings |
 | 前端 | React 19 · TypeScript · Vite · Ant Design · Zustand · TanStack Query · Mermaid · @xyflow/react · react-hook-form |
 | MCP 生态 | fastmcp · langchain-mcp-adapters · uv/uvx · node/npx（镜像内预热 MCP 包缓存） |
-| 基础设施 | PostgreSQL 16 · MinIO · Elasticsearch 8 · Nginx（docker-compose 编排 6 服务） |
+| 基础设施 | PostgreSQL 16 · MinIO · Elasticsearch 8 · TEI · Nginx（docker-compose 编排 7 服务） |
 
 <a id="quickstart"></a>
 
@@ -123,13 +123,26 @@ Nginx 边缘网关（容器部署唯一对外入口 :80；本地开发由 Vite p
 适用于服务器 / NAS / 内网环境长期运行。前置要求：**Docker + Docker Compose v2**。
 
 ```bash
-# 1)（可选）根目录创建 .env 覆盖默认值；唯一必改项：EMBEDDING_BASE_URL（见"能力开关 · 知识库"）
+# 1) 生成边缘网关登录凭据（nginx basic auth，必做一次；平台自身无登录体系，
+#    这是唯一门禁。文件已 gitignore，缺失时 nginx 起不来属预期防呆）
+printf 'admin:$(openssl passwd -apr1 "你的强密码")\n' > nginx/.htpasswd
+
+# 2) 准备宿主机数据目录 + 预下嵌入模型（TEI 以本地路径加载，运行期零下载）
+mkdir -p volumes/backend volumes/docling volumes/tei
+cp -r backend/data/skills volumes/backend/skills          # 技能种子（一次性）
+sudo chown -R 1001:1001 volumes/backend volumes/docling  # 容器内 app 用户 uid=1001
+docker run --rm -v "$PWD/volumes/tei:/out" python:3.11-slim bash -c \
+  "pip -q install huggingface_hub && huggingface-cli download \
+   Qwen/Qwen3-Embedding-0.6B --local-dir /out/Qwen3-Embedding-0.6B"
+# （CN 网络给上面的 docker run 加 -e HF_ENDPOINT=https://hf-mirror.com）
+
+# 3)（可选）根目录创建 .env 覆盖默认值（含数据根 VOLUMES_ROOT，默认 ./volumes）
 vi .env
 
-# 2) 构建并启动全部 6 个服务（postgres / minio / elasticsearch / backend / frontend / nginx）
+# 4) 构建并启动全部 7 个服务（postgres / minio / elasticsearch / tei / backend / frontend / nginx）
 docker compose up -d --build
 
-# 3) 就绪检查：日志出现 "goduck-platform started"
+# 5) 就绪检查：日志出现 "goduck-platform started"
 docker compose logs -f backend
 ```
 
@@ -137,14 +150,14 @@ docker compose logs -f backend
 
 | 访问目标 | 地址 |
 |---|---|
-| **平台入口（唯一对外）** | `http://<服务器IP>/`（端口由 `EDGE_PORT` 控制，默认 80） |
+| **平台入口（唯一对外）** | `http://<服务器IP>/`（端口由 `EDGE_PORT` 控制，默认 80；登录 = nginx/.htpasswd 凭据） |
 | 后端 API 文档 | `http://<服务器IP>/api/docs` |
-| MinIO 控制台（调试） | `http://<服务器IP>:9001`（`minioadmin / minioadmin123`） |
-| Elasticsearch（调试） | `http://<服务器IP>:9200` |
+| MinIO 控制台（调试） | `http://127.0.0.1:9001`（仅本机/SSH 隧道；`minioadmin / minioadmin123`） |
+| Elasticsearch（调试） | `http://127.0.0.1:9200`（仅本机/SSH 隧道） |
 
-> - 仅 nginx 对外发布端口；backend / frontend 走内部网络，postgres / minio / es 的宿主端口仅供本机调试，生产建议删除对应 `ports` 映射。
-> - 数据全部落在命名卷：`goduck_pgdata` / `goduck_miniodata` / `goduck_esdata` / `goduck_backend_data`，重打镜像不丢数据。
-> - 嵌入服务（TEI）默认不在 compose 内：将 `EMBEDDING_BASE_URL` 指向任意 OpenAI 兼容嵌入端点即可，自建示例见[能力开关 · 知识库](#cap-kb)。
+> - 仅 nginx 对外发布端口；backend / frontend 走内部网络；postgres / minio / es / tei 的调试端口已全部绑定 `127.0.0.1`（LAN 不可见），缺省即生产安全，无需删改。如需对外/远程暴露，由部署方自行选择网关方案（nginx basic auth 为站点唯一门禁）。
+> - 数据持久化：pg / minio / es 用命名卷；**backend 数据、docling 模型、TEI 模型用宿主机 bind mount**（默认 `./volumes/`，`.env` 的 `VOLUMES_ROOT` 可整体挪位，已 gitignore），重打镜像 / 重建容器不丢，且模型预下后重启不再联网下载。
+> - 嵌入服务（TEI）已内置 compose：默认模型 `Qwen/Qwen3-Embedding-0.6B`，首次启动联网拉模型入卷（一次性），此后离线可用；改用外部 OpenAI 兼容端点：`.env` 覆盖 `EMBEDDING_BASE_URL` 并 `docker compose stop tei`（详见[能力开关 · 知识库](#cap-kb)）。
 > - 不需要知识库？设 `KB_ENABLED=false`，可不依赖 TEI / ES。
 
 常用运维命令：
@@ -154,14 +167,17 @@ docker compose logs -f nginx            # 排查网关
 docker compose restart backend          # 重启后端（自动重载 DB 中的模型 / MCP / 智能体）
 docker compose up -d --build backend    # 改后端代码后重建单个服务
 docker compose down                     # 停止（保留数据卷）
-docker compose down -v                  # 停止并清空全部数据（谨慎）
+docker compose down -v                  # 停止并清空命名卷（volumes/ 另见 FAQ 重置条目）
 ```
 
 <details>
-<summary><b>可选：GPU 加速 docling 解析（NVIDIA，RTX 3080 实测配套）</b></summary>
+<summary><b>GPU 加速 docling 解析 + TEI 嵌入（默认内置；NVIDIA，RTX 3080 实测配套）</b></summary>
 
-镜像已预装 CUDA 版 torch（`torch 2.6.0+cu124`，见 `backend/Dockerfile` "0)" 层），
-docling 的 layout / TableFormer 模型自动走 GPU（RapidOCR 仍为 CPU，仅扫描页触发）。
+目标主机（Linux + 32G 内存 + RTX 3080 10G）的 GPU 能力已内置 docker-compose.yml，
+无需 override 文件。镜像已预装 CUDA 版 torch（`torch 2.6.0+cu124`，见
+`backend/Dockerfile` "0)" 层），docling 的 layout / TableFormer 模型自动走 GPU
+（RapidOCR 仍为 CPU，仅扫描页触发）；TEI 直接以 `cuda-1.9` 镜像运行走 GPU 嵌入
+（0.6B fp16 ≈1.5GB 显存，与 docling 共用单卡，10GB 卡可并存）。
 宿主机三步前置（Ubuntu 示例，一次性）：
 
 ```bash
@@ -179,19 +195,19 @@ curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-contai
 sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
 
-# 3) 叠加 GPU override 启动（此后所有 compose 命令带双 -f）
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# 3) 启动（GPU 已内置 compose，常规单文件命令即可）
+docker compose up -d --build
 ```
 
 验证（torch 直连 GPU 即 驱动→工具包→容器 全链路打通）：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec backend \
+docker compose exec backend \
   python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 # 期望: 2.6.0+cu124 True NVIDIA GeForce RTX 3080
 ```
 
-> - 未装工具包/驱动就叠加 override：backend 起不来（`could not select device driver nvidia`），去掉 `-f docker-compose.gpu.yml` 即回退 CPU 部署（`KB_DOCLING_DEVICE=auto` 自动回落 cpu）。
+> - 未装工具包/驱动：backend / tei 起不来（`could not select device driver nvidia`）——装齐后 `docker compose up -d` 即恢复；临时在无 GPU 机器跑：注释 backend/tei 两处 `deploy` 段并 `.env` 置 `KB_DOCLING_DEVICE=auto`、`TEI_IMAGE=cpu-1.9`。
 > - GPU 镜像体积比 CPU 大 +4~6GB（CUDA 运行时随 torch wheel 打入）；宿主机**无需**装 CUDA Toolkit。
 
 </details>
@@ -205,8 +221,9 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec backend \
 #### 1. 启动基础设施
 
 ```powershell
-docker compose up -d postgres minio elasticsearch
+docker compose up -d postgres minio elasticsearch tei
 # PostgreSQL → localhost:5433   MinIO → localhost:9000 / 控制台 9001   ES → localhost:9200
+# TEI → localhost:8082（backend/.env 的 EMBEDDING_BASE_URL 默认即指向它）
 ```
 
 #### 2. 启动后端
@@ -317,7 +334,7 @@ MinIO / ES / EMBEDDING 系列须与 backend 侧**严格一致**（尤其 `EMBEDD
 
 | 能力 | 总开关 | 默认 | 开启依赖 | 体验提升 |
 |---|---|---|---|---|
-| [知识库 RAG](#cap-kb) | `KB_ENABLED` | ✅ 开 | 外部嵌入端点（TEI）+ ES | 会话锚定私有知识，先检索后作答 |
+| [知识库 RAG](#cap-kb) | `KB_ENABLED` | ✅ 开 | TEI（compose 内置）+ ES | 会话锚定私有知识，先检索后作答 |
 | [语音输入](#cap-voice) | `VOICE_ENABLED` | ⛔ 关 | AssemblyAI API Key | 长按说话，实时转写直发会话 |
 | [JEV 智能审批](#cap-jev) | `JEV_ENABLED` | ⛔ 关 | TypeSafe API Key | `allow_shell` 高频只读命令免审批 |
 
@@ -344,24 +361,91 @@ curl http://localhost:8000/health
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `KB_ENABLED` | `true` | 总开关；`false` 时知识库路由不挂载、前端入口隐藏，不依赖 TEI / ES |
-| `EMBEDDING_BASE_URL` | 占位地址 | **必改**：OpenAI 兼容嵌入端点（TEI 等） |
+| `EMBEDDING_BASE_URL` | `http://tei:8082/v1`（compose 层） | compose 内置 TEI 默认直连；改用外部 OpenAI 兼容端点时覆盖 |
 | `EMBEDDING_DIMS` | `512` | 全局向量维度，backend 与 mcp-servers **必须一致** |
-| `EMBEDDING_BATCH_SIZE` | `4`（compose 层 `24`） | 须对齐 TEI `--max-batch-size`，否则入库延迟成倍放大 |
+| `EMBEDDING_BATCH_SIZE` | `4`（compose 层 `24`） | 须 ≤ TEI `--max-client-batch-size` 且单批 token ≤ `--max-batch-tokens`（内置 tei 已对齐：32 / 32768），否则入库延迟成倍放大 |
 | `KB_PARSER_ENGINE` | `legacy` | `legacy` = pymupdf 文本层 + 滑窗切块；`docling` = 结构化解析 + 扫描件 OCR（需先安装 `docling>=2.130,<3`） |
-| `KB_DOCLING_DEVICE` | `auto` | docling 推理设备 `auto/cpu/cuda/mps`；GPU 主机叠加 `docker-compose.gpu.yml` 后锁 `cuda`（驱动 570 系 + Container Toolkit，见[快速开始](#deploy-docker)） |
+| `KB_DOCLING_DEVICE` | `cuda`（compose 层） | docling 推理设备 `auto/cpu/cuda/mps`；GPU 已内置 compose，默认锁 `cuda`（驱动 570 系 + Container Toolkit，见[快速开始](#deploy-docker)） |
 | `KB_TOP_K` | `5` | 会话检索条数 |
 
 <details>
-<summary><b>可选：自建 TEI 嵌入服务（与 .env 默认值对齐的示例）</b></summary>
+<summary><b>内置 TEI 嵌入服务（本地模型目录，运行期零下载）</b></summary>
+
+compose 已内置 TEI 服务（`ghcr.io/huggingface/text-embeddings-inference`，默认
+CUDA 镜像 `cuda-1.9`；CPU 机器可 `.env` 置 `TEI_IMAGE=cpu-1.9`）。`--model-id`
+默认指向**容器内本地目录** `/data/Qwen3-Embedding-0.6B`（bind mount 自宿主机
+`volumes/tei/`）：TEI 判定路径存在即本地加载，全程不触网。模型原生 1024 维，
+经 MRL 截断到 512，与 `EMBEDDING_DIMS` 对齐。目录内容 = HF 快照全量文件：
+
+```text
+volumes/tei/
+└── Qwen3-Embedding-0.6B/     ← 容器内路径 /data/Qwen3-Embedding-0.6B（--model-id）
+    ├── config.json
+    ├── model.safetensors     # ≈1.2GB
+    ├── tokenizer.json / tokenizer_config.json / ...
+```
+
+预下（任一联网机器；CN 网络前置 `HF_ENDPOINT=https://hf-mirror.com`）：
 
 ```bash
-# Qwen3-Embedding，MRL 截断到 512 维；--max-batch-size 与 EMBEDDING_BATCH_SIZE 对齐（默认 4）
-docker run -d --gpus all -p 8082:80 \
-  ghcr.io/huggingface/text-embeddings-inference:latest \
-  --model-id Qwen/Qwen3-Embedding-0.6B \
-  --max-batch-size 4 --max-client-batch-size 32
-# 然后 .env: EMBEDDING_BASE_URL=http://<TEI机器IP>:8082/v1
+huggingface-cli download Qwen/Qwen3-Embedding-0.6B --local-dir volumes/tei/Qwen3-Embedding-0.6B
 ```
+
+可调项（根目录 `.env`）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `TEI_MODEL_ID` | `/data/Qwen3-Embedding-0.6B` | 本地路径或 HF repo id；填 repo id 则首启经 hub 下载入同卷（之后离线复用） |
+| `TEI_IMAGE` | `cuda-1.9` | 版本升级 / CPU 机器（`cpu-1.9`）时覆盖 |
+| `TEI_PORT` | `8082` | 宿主调试端口（127.0.0.1 绑定，LAN 不可见） |
+| `VOLUMES_ROOT` | `./volumes` | backend / docling / tei 三处 bind mount 的宿主机根目录 |
+
+就绪观测：`docker compose logs -f tei` 出现 Ready、`docker compose ps` 显 healthy。
+改用外部嵌入端点：`.env` 覆盖 `EMBEDDING_BASE_URL`，并 `docker compose stop tei`
+（backend 懒连接嵌入端点，无需改其他配置）。
+
+</details>
+
+<details>
+<summary><b>docling 模型目录与预下（断网可用）</b></summary>
+
+容器 `/models/docling`（bind mount 宿主机 `volumes/docling/`）双布局：
+`artifacts/` = 生产路径（`KB_DOCLING_ARTIFACTS_PATH` 指向它，缺件显式失败、
+绝不运行时下载）；`hf-cache/` = 简化模式兜底（`HF_HOME`，artifacts 置空时经
+hub 加载）。
+
+**预下推荐用容器内 docling-tools**（自动配套镜像内 docling 版本的 revision；
+layout / tableformer 取自 HF，**RapidOCR 取自 ModelScope 而非 HF**，且 `org--repo`
+目录名随 docling 版本漂移——手动搬运易错）：
+
+```bash
+mkdir -p volumes/docling && sudo chown -R 1001:1001 volumes/docling
+docker compose run --rm --no-deps -e HF_HUB_OFFLINE=0 backend \
+  docling-tools models download layout tableformer rapidocr -o /models/docling/artifacts
+ls volumes/docling/artifacts   # 产物目录名即权威（org 前缀随版本可能变化）
+```
+
+以当前 docling `<3` 最新版（HF org 已迁至 `docling-project`；旧版为 `ds4sd`）为例：
+
+```mermaid
+graph TD
+    V["volumes/docling/<br/>（容器 /models/docling）"]
+    V --> A["artifacts/<br/>KB_DOCLING_ARTIFACTS_PATH"]
+    V --> H["hf-cache/<br/>HF_HOME（简化模式兜底）"]
+    A --> L["docling-project--docling-layout-heron/<br/>HF: docling-project/docling-layout-heron<br/>仓库根即模型文件（config/权重）"]
+    A --> T["docling-project--docling-models/<br/>HF: docling-project/docling-models（pin revision）"]
+    T --> T2["model_artifacts/tableformer/"]
+    T2 --> T3["accurate/ ← 本项目 TableFormerMode.ACCURATE<br/>tm_config.json + 权重"]
+    T2 --> T4["fast/"]
+    A --> R["RapidOcr/ ← 非 HF！源自 ModelScope（RapidAI/RapidOCR）<br/>onnx/PP-OCRv6/…、resources/fonts/"]
+```
+
+纯手动（不推荐；仅 layout / tableformer 可行，RapidOCR 无 HF 源）：
+`huggingface-cli download <repo_id> --revision <rev> --local-dir volumes/docling/artifacts/<org>--<repo>`，
+目录名与 revision 必须与容器内 docling 版本一致；缺件按报错提示补
+`docling-tools models download-hf-repo <repo_id>`。docling 升级（requirements
+版本变更）后需重新预热并断网验证（上传真实 PDF 以 `KB_PARSER_ENGINE=docling`
+重解析成功）。
 
 </details>
 
@@ -486,7 +570,7 @@ npm run lint                  # eslint
 <details>
 <summary><b>知识库入库慢 / 嵌入超时？</b></summary>
 
-`EMBEDDING_BATCH_SIZE` 必须对齐 TEI 的 `--max-batch-size`（默认 4）。客户端 batch 大于它时单请求内多轮前向推理，延迟成倍放大（实测 batch=24 → 53s vs batch=4 → 6.5s）。同时确认 `EMBEDDING_TIMEOUT` 大于单批实际耗时。
+`EMBEDDING_BATCH_SIZE` 须 ≤ TEI 的 `--max-client-batch-size`（内置 tei 为 32，超则 422）；单请求总 token 量超过 `--max-batch-tokens` 时 TEI 拆多轮前向推理，延迟成倍放大（内置 tei 已设 32768 ≥ 24 条 × ~1k token，自建端点须自行对齐）。同时确认 `EMBEDDING_TIMEOUT` 大于单批实际耗时（CPU 部署建议调大）。
 </details>
 
 <details>
@@ -510,7 +594,7 @@ npm run lint                  # eslint
 <details>
 <summary><b>如何彻底重置数据？</b></summary>
 
-`docker compose down -v` 清空全部命名卷（业务数据 + 附件 + 知识库 + workspace），之后 `up -d` 重建。
+`docker compose down -v` 清空命名卷（业务库 + 附件 + 知识库索引），再 `sudo rm -rf volumes/` 清 bind mount 数据（backend 数据 + docling/TEI 模型），之后 `up -d` 重建。
 </details>
 
 <details>

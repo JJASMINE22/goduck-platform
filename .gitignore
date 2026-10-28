@@ -5,6 +5,14 @@
 !.env.example
 !.env.development
 !.env.production
+# nginx basic auth 真实凭据（模板见 nginx/.htpasswd.example）
+nginx/.htpasswd
+# 个人远程部署方案笔记（内网穿透等，不随仓库分发）
+/REMOTE_ACCESS.md
+
+# ===================== 容器 bind mount 数据根（docker-compose VOLUMES_ROOT）=====================
+# 运行时数据 + 模型权重（backend 数据 / docling 模型 / TEI 模型），体积大且含用户内容
+/volumes/
 
 # ===================== Python =====================
 __pycache__/

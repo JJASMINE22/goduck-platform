@@ -12,8 +12,8 @@
 #
 # GPU（docling layout/TableFormer）：见下方 "---- 0)" 层注释。要点：CUDA 版
 # torch wheel 自带全套 CUDA 运行时，镜像保持 python:slim 基底；宿主机只需
-# NVIDIA 驱动（570 系）+ Container Toolkit，compose 层用 docker-compose.gpu.yml
-# 显式声明设备。
+# NVIDIA 驱动（570 系）+ Container Toolkit，compose 层（docker-compose.yml）
+# 已内置 nvidia 设备声明。
 #
 # 构建上下文 = backend/ 目录：
 #   docker build -t goduck-backend ./backend
@@ -87,7 +87,7 @@ WORKDIR /app
 #   ① cu124 wheel 自带全套 CUDA 运行时（nvidia-* pip 包 + cuDNN 9.1）——镜像
 #      无需 nvidia/cuda 基底，宿主机无需装 CUDA Toolkit；
 #   ② 宿主机只需驱动（570 系）+ NVIDIA Container Toolkit（注入 libcuda.so）；
-#   ③ compose 层 docker-compose.gpu.yml 声明设备后容器内 GPU 才可见。
+#   ③ compose 层（docker-compose.yml 的 deploy 设备声明）让容器内 GPU 可见。
 # 分层顺序：torch 先于 requirements.txt —— docling 对 torch/torchvision 的
 # 传递约束（>=2.x）被已装的 cu124 版满足，后续 pip 不会拉 CPU 版覆盖；
 # requirements 变更也不触发 ~2.5GB torch 层重下。代价：镜像体积 +4~6GB。
@@ -112,9 +112,10 @@ RUN chown -R app:app /app
 
 # ---- 2b) 数据卷挂载点 /data（workspace/memories/skills 持久化）----------------
 # LOCAL_ROOT=/data（见 docker-compose.yml），三目录均派生自 local_dir。
-# 技能种子在此烘焙：命名卷首次挂载时，Docker 会把镜像内 /data 的内容（含属主）
-# 拷入卷 —— 无需 entrypoint 脚本。之后卷即真相源，用户上传的技能随卷持久，
-# 跨重打镜像不丢失（agent 配置的技能引用始终有效）。
+# 技能种子在此烘焙：若以命名卷挂 /data，Docker 首次挂载会把镜像内 /data 的
+# 内容（含属主）拷入卷，卷即真相源；生产 compose 现用宿主机 bind mount
+# （volumes/backend），不会自动拷种子 —— 首次部署需手动
+#   cp -r backend/data/skills volumes/backend/skills（见 compose 注释 / README）。
 # 源在 backend/data/skills/（与本地 dev 同一布局，统一镜像与本地目录）。
 COPY data/skills/ /data/skills/
 RUN mkdir -p /data/workspace /data/memories && chown -R app:app /data

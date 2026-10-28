@@ -1,12 +1,21 @@
 # goduck-platform 一体化部署（单文件，直观易改）。
 #
-# 一条命令拉起全部：docker-compose up -d --build
+# 目标主机：Linux + 32G 内存 + RTX 3080 10G。GPU 已内置声明（backend 的
+# docling/torch 峰值 ~3-4G 显存 + tei ~1.5-2G，共占单卡），一条命令拉起全部：
+#   docker compose up -d --build
 # 浏览器访问：      http://<服务器IP>   （nginx 唯一对外入口 :80）
 # 凭据自定义：      同目录建 .env 覆盖 ${VAR:-默认值}
 #
+# GPU 前置（一次性）：NVIDIA 驱动 ≥550（推荐 570 系）+ NVIDIA Container Toolkit：
+#   sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+# 防呆：未装工具包/驱动时 backend / tei 起不来（"could not select device driver
+#   nvidia"）——属预期失败。临时在无 GPU 机器跑：注释 backend/tei 两处 deploy
+#   段 + .env 置 KB_DOCLING_DEVICE=auto、TEI_IMAGE=cpu-1.9。
+#
 # 架构：所有服务共享 compose 默认网络，按"服务名"互访（无需显式 networks）。
-#       仅 nginx 发布 :80；backend/frontend 不对宿主发布，经 nginx 转发。
-#       postgres/minio 的 ports: 仅供本机调试，生产可删。
+#       仅 nginx 发布 :80（唯一入口，内网穿透也只转发它）；backend/frontend 不对
+#       宿主发布，经 nginx 转发；postgres/minio/es/tei 的 ports 均绑定 127.0.0.1
+#       （仅本机调试，LAN 不可见）——缺省即生产安全，无需删改。
 
 services:
   # ============ 基础设施 ============
@@ -18,7 +27,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       POSTGRES_DB: ${POSTGRES_DB:-langgraph_db}
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"      # 本机调试；生产建议删除
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"      # 仅本机调试（127.0.0.1 绑定，LAN 不可见）
     volumes:
       - goduck_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -37,8 +46,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     ports:
-      - "${MINIO_PORT:-9000}:9000"         # 本机调试；生产建议删除
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"         # 仅本机调试（127.0.0.1 绑定，LAN 不可见）
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - goduck_miniodata:/data
     restart: unless-stopped
@@ -50,9 +59,9 @@ services:
     environment:
       discovery.type: single-node
       xpack.security.enabled: "false"          # dev：关闭安全
-      ES_JAVA_OPTS: "-Xms512m -Xmx512m"        # NAS 资源约束；按机器调整
+      ES_JAVA_OPTS: "-Xms2g -Xmx2g"            # 32G 主机：堆 2g（KB 检索/入库宽裕）；按机器调整
     ports:
-      - "${ES_PORT:-9200}:9200"                 # 本机调试；生产建议删除
+      - "127.0.0.1:${ES_PORT:-9200}:9200"            # 仅本机调试（127.0.0.1 绑定，LAN 不可见）
     volumes:
       - goduck_esdata:/usr/share/elasticsearch/data
     healthcheck:
@@ -60,6 +69,55 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    restart: unless-stopped
+
+  tei:
+    # 文本嵌入推理（TEI）——知识库 RAG 向量化引擎（OpenAI 兼容 /v1/embeddings）。
+    # 与其余服务同机同网部署，backend 按服务名直连（EMBEDDING_BASE_URL 见 backend 段）。
+    # 镜像：cuda-1.9 = CUDA 多目标镜像（入口脚本按 GPU compute capability 自动
+    # 分发二进制，RTX 3080/sm_86 → Ampere/Ada 版 + flash-attn v2；镜像含
+    # cuda-compat，宿主机驱动 ≥550 即可用）。版本升级 / 换硬件：.env 覆盖
+    # TEI_IMAGE（CPU 机器用 cpu-1.9）/ TEI_MODEL_ID 即可。
+    image: ghcr.io/huggingface/text-embeddings-inference:${TEI_IMAGE:-cuda-1.9}
+    container_name: goduck-tei
+    # 模型对齐 EMBEDDING_DIMS=512：Qwen3-Embedding-0.6B 原生 1024 维，由 OpenAI
+    # 兼容端点按请求的 dimensions 参数做 MRL 截断（换模型须同步核对维度）。
+    # --model-id 默认指向容器内本地目录 /data/Qwen3-Embedding-0.6B（bind mount
+    # 自宿主机 volumes/tei/）：TEI 判定路径存在即本地加载，运行期零联网；覆盖
+    # TEI_MODEL_ID 为 HF repo id 则首启经 hub 下载（缓存落同卷，之后离线复用）。
+    # --port 8082：沿用既有端口约定（backend EMBEDDING_BASE_URL / 宿主调试口同源）。
+    # 批参数防"单请求多轮前向、延迟成倍放大"陷阱（见 README FAQ）：
+    #   --max-client-batch-size 32 ≥ EMBEDDING_BATCH_SIZE(24)：单请求文本数上限（超则 422）
+    #   --max-batch-tokens 32768 ≥ 24 条 × ~1k token/条：单批一轮前向完成，不再轮转
+    command: >-
+      --model-id ${TEI_MODEL_ID:-/data/Qwen3-Embedding-0.6B}
+      --port 8082
+      --max-client-batch-size 32
+      --max-batch-tokens 32768
+    environment:
+      # 向容器注入的驱动能力：compute=CUDA 计算，utility=nvidia-smi（观测用）
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    ports:
+      - "127.0.0.1:${TEI_PORT:-8082}:8082"      # 仅本机调试（本地直跑后端可用；LAN 不可见）
+    volumes:
+      # 模型目录（bind mount → 宿主机 ${VOLUMES_ROOT:-./volumes}/tei/）。预下命令见
+      # README「内置 TEI 嵌入服务」；CN 网络可对下载进程设 HF_ENDPOINT=https://hf-mirror.com。
+      - ${VOLUMES_ROOT:-./volumes}/tei:/data
+    healthcheck:
+      # /health：就绪（模型加载完成）才转 healthy；镜像自带 curl。
+      test: ["CMD", "curl", "-fs", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        reservations:
+          devices:
+            # 与 backend 共占单卡：0.6B fp16 权重 ≈1.2G + 批激活 ≈ 显存 1.5-2G，
+            # 并发 docling 解析 + 入库时留意 nvidia-smi 水位。
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     restart: unless-stopped
 
   # ============ 后端 ============
@@ -87,8 +145,10 @@ services:
       MCP_ALLOW_LOOPBACK: "true"
       MAX_INVOKE_RETRIES: ${MAX_INVOKE_RETRIES:-2}
       # ---- 知识库（RAG）----
+      # TEI 已内置 compose（上方 tei 服务）：默认服务名直连；改用外部嵌入端点时
+      # .env 覆盖本值（backend 懒连接嵌入端点，故不设 tei 的 depends_on）。
       ES_URL: http://elasticsearch:9200
-      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://192.168.x.x:8082/v1}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://tei:8082/v1}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-dummy}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embeddings-inference}
       EMBEDDING_CHECK_CTX_LENGTH: ${EMBEDDING_CHECK_CTX_LENGTH:-false}
@@ -101,10 +161,12 @@ services:
       KB_PARSER_ENGINE: ${KB_PARSER_ENGINE:-legacy}
       KB_DOCLING_SHARD_PAGES: ${KB_DOCLING_SHARD_PAGES:-100}
       KB_DOCLING_THREADS: ${KB_DOCLING_THREADS:-4}
-      # 推理设备 auto/cpu/cuda/mps（auto=按 torch 探测，无 GPU 回落 cpu）。
-      # GPU 主机：叠加 docker-compose.gpu.yml（nvidia 设备声明 + 锁 cuda；
-      # 前置 = 宿主机 570 系驱动 + NVIDIA Container Toolkit，见该文件头注释）。
-      KB_DOCLING_DEVICE: ${KB_DOCLING_DEVICE:-auto}
+      # 推理设备 auto/cpu/cuda/mps。GPU 已内置 compose（下方 deploy 设备声明），
+      # 默认显式锁 cuda（容器能起 = 设备声明已过，cuda 必然可用；不想硬锁可
+      # .env 覆盖回 auto——按 torch 探测，缺卡回落 cpu）。
+      KB_DOCLING_DEVICE: ${KB_DOCLING_DEVICE:-cuda}
+      # 向容器注入的驱动能力：compute=CUDA 计算，utility=nvidia-smi（观测用）
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
       KB_UNIT_MAX_CHARS: ${KB_UNIT_MAX_CHARS:-2000}
       # 权重目录 = 命名卷内 artifacts/（<org--repo> 子目录布局，docling 缺件
       # 即 FileNotFoundError 显式失败，绝不运行时下载）；HF_HOME 指向同卷
@@ -120,21 +182,26 @@ services:
       # key 缺省为空 → 后端降级：voice 路由不挂载、健康能力位 false（前端无麦克风入口）。
       VOICE_ENABLED: ${VOICE_ENABLED:-false}
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
-    # 跨机 TEI 可选：把 tei 服务名映射到 GPU 机 LAN IP，则 EMBEDDING_BASE_URL 可写 http://tei:8082/v1
-    # extra_hosts:
-    #   - "tei:192.168.x.x"
     expose: ["8000"]                       # 仅内部网络可见，不对宿主发布
     volumes:
-      - goduck_backend_data:/data          # workspace/memories/skills 持久化
-      # docling 模型卷（artifacts/ + hf-cache/ 双布局）。runbook：
-      # ① 预热（一次性，联网，与运行镜像同 docling 版本）：
-      #    docker compose run --rm -e HF_HUB_OFFLINE=0 backend \
+      # 宿主机 bind mount（${VOLUMES_ROOT:-./volumes}）。首次部署（顺序执行）：
+      #   mkdir -p volumes/backend volumes/docling volumes/tei
+      #   cp -r backend/data/skills volumes/backend/skills   # 技能种子（一次性；bind
+      #     mount 不像命名卷会自动拷镜像内种子，漏拷则种子技能缺失）
+      #   sudo chown -R 1001:1001 volumes/backend volumes/docling  # 容器内 app uid=1001
+      - ${VOLUMES_ROOT:-./volumes}/backend:/data
+      # docling 模型（bind mount → 宿主机 volumes/docling/，artifacts/ + hf-cache/
+      # 双布局，目录结构见 README「docling 模型目录与预下」）。runbook：
+      # ① 预热（一次性，联网，与运行镜像同 docling 版本；产物直接落宿主机——
+      #    layout/tableformer 取自 HF、RapidOCR 取自 ModelScope，故必须用容器内
+      #    docling-tools 下载而非手动搬运）：
+      #    docker compose run --rm --no-deps -e HF_HUB_OFFLINE=0 backend \
       #      docling-tools models download layout tableformer rapidocr -o /models/docling/artifacts
       # ② 冻结验证（断网复跑，失败信息会点名缺失仓库，按提示补
       #    `docling-tools models download-hf-repo <repo>` 后重跑）：
       #    上传一份真实 PDF 到任一知识库并 KB_PARSER_ENGINE=docling 重解析成功
       # ③ 运行期恒 HF_HUB_OFFLINE=1；docling 升级（requirements 版本变更）= 重跑 ①②
-      - goduck_docling_models:/models/docling
+      - ${VOLUMES_ROOT:-./volumes}/docling:/models/docling
     depends_on:
       postgres:
         condition: service_healthy
@@ -143,6 +210,15 @@ services:
       elasticsearch:
         condition: service_healthy
     restart: unless-stopped
+    # GPU 声明（docker compose v2 本地部署即生效）：docling layout/TableFormer
+    # 走 torch（cu124 wheel 自带 CUDA 运行时），与 tei 共占单卡（峰值 ~3-4G 显存）。
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # ============ 前端 ============
   frontend:
@@ -158,8 +234,11 @@ services:
     container_name: goduck-nginx
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # basic auth 凭据（nginx.conf auth_basic）：部署前先生成（见 nginx/.htpasswd.example，
+      # 已 gitignore）；文件缺失时 nginx 起不来——预期防呆，防裸奔上线。
+      - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
     ports:
-      - "${EDGE_PORT:-80}:80"              # 唯一对外端口
+      - "${EDGE_PORT:-80}:80"              # 唯一对外端口（内网穿透只转发它）
     depends_on:
       - backend
       - frontend
@@ -168,6 +247,4 @@ services:
 volumes:
   goduck_pgdata:
   goduck_miniodata:
-  goduck_backend_data:
   goduck_esdata:
-  goduck_docling_models:

@@ -44,7 +44,7 @@ rapidocr-onnxruntime>=1.3
 #      预置 KB_DOCLING_ARTIFACTS_PATH（容器挂载见 docker-compose.yml runbook）。
 #      torch 不入本清单：本地开发经传递依赖装 PyPI CPU 版；GPU 容器由 Dockerfile
 #      "---- 0)" 层预装 cu124 版（torch 2.6.0+cu124 ↔ 驱动 570 系 + NVIDIA
-#      Container Toolkit + docker-compose.gpu.yml 设备声明）。----
+#      Container Toolkit + docker-compose.yml 的 deploy 设备声明）。----
 docling[rapidocr]>=2.130,<3
 # ---- docling 2.135 读取 rapidocr.utils.model_resolver.PP_OCRV6_LANGS，该符号
 #      在 3.10.0 被移走（docling 自身约束 <4 过宽）——上界收紧至实测兼容；
