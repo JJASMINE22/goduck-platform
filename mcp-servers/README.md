@@ -53,7 +53,16 @@ pip install -r requirements.txt
 
 ## 启动
 
+**生产（Docker，推荐）**：根 compose 已内置 `mcp-servers` 服务（`mcp-servers/Dockerfile`
+构建，配置经环境变量注入，与 backend 同值），随 `docker compose up -d --build`
+一并启动，无需本地 pip。
+
+**本地开发**：
+
 ```powershell
+cd mcp-servers
+copy .env.example .env       # Linux/macOS 用 cp
+pip install -r requirements.txt
 python main.py
 # 或: python -m core.server
 ```
@@ -63,6 +72,9 @@ python main.py
 ## 注册到 goduck backend
 
 在界面 `/settings/mcp` 注册，或调 API（写入后端 `mcp_server` 表，重启自动加载）。
+- 容器部署（compose 内置服务）：URL 填 `http://mcp-servers:8088/mcp/`（服务名内部直连）
+- 本地开发：URL 填 `http://localhost:8088/mcp/`
+
 工具命名空间化后为 `super-goduck__kb_search` —— 知识库检索（会话锚定 KB 时 agent 自动调用）。
 
 ## 扩展新功能

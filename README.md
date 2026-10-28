@@ -110,7 +110,7 @@ Nginx 边缘网关（容器部署唯一对外入口 :80；本地开发由 Vite p
 | 后端 | FastAPI · LangGraph · deepagents · langchain-openai · psycopg3 · MinIO · Elasticsearch · pydantic-settings |
 | 前端 | React 19 · TypeScript · Vite · Ant Design · Zustand · TanStack Query · Mermaid · @xyflow/react · react-hook-form |
 | MCP 生态 | fastmcp · langchain-mcp-adapters · uv/uvx · node/npx（镜像内预热 MCP 包缓存） |
-| 基础设施 | PostgreSQL 16 · MinIO · Elasticsearch 8 · TEI · Nginx（docker-compose 编排 7 服务） |
+| 基础设施 | PostgreSQL 16 · MinIO · Elasticsearch 8 · TEI · Nginx（docker-compose 编排 8 服务） |
 
 <a id="quickstart"></a>
 
@@ -139,7 +139,7 @@ docker run --rm -v "$PWD/volumes/tei:/out" python:3.11-slim bash -c \
 # 3)（可选）根目录创建 .env 覆盖默认值（含数据根 VOLUMES_ROOT，默认 ./volumes）
 vi .env
 
-# 4) 构建并启动全部 7 个服务（postgres / minio / elasticsearch / tei / backend / frontend / nginx）
+# 4) 构建并启动全部 8 个服务（postgres / minio / elasticsearch / tei / backend / mcp-servers / frontend / nginx）
 docker compose up -d --build
 
 # 5) 就绪检查：日志出现 "goduck-platform started"
@@ -159,6 +159,7 @@ docker compose logs -f backend
 > - 数据持久化：pg / minio / es 用命名卷；**backend 数据、docling 模型、TEI 模型用宿主机 bind mount**（默认 `./volumes/`，`.env` 的 `VOLUMES_ROOT` 可整体挪位，已 gitignore），重打镜像 / 重建容器不丢，且模型预下后重启不再联网下载。
 > - 嵌入服务（TEI）已内置 compose：默认模型 `Qwen/Qwen3-Embedding-0.6B`，首次启动联网拉模型入卷（一次性），此后离线可用；改用外部 OpenAI 兼容端点：`.env` 覆盖 `EMBEDDING_BASE_URL` 并 `docker compose stop tei`（详见[能力开关 · 知识库](#cap-kb)）。
 > - 不需要知识库？设 `KB_ENABLED=false`，可不依赖 TEI / ES。
+> - 知识库检索工具（kb_search）：compose 已内置 `mcp-servers` 网关；部署后到 `/settings/mcp` 注册 HTTP server 指向 `http://mcp-servers:8088/mcp/`（一次性，存 DB 重启自动加载），会话锚定知识库后 agent 即可调用。
 
 常用运维命令：
 

@@ -220,6 +220,28 @@ services:
               count: 1
               capabilities: [gpu]
 
+  # ============ MCP 网关（goduck 自研）============
+  mcp-servers:
+    # 知识库检索网关（kb_search 工具，FastMCP http 传输，端点 /mcp/）。
+    # ES/TEI 均懒连接（工具调用时才建链）⇒ 无需 depends_on；无 PG/MinIO 依赖。
+    # 部署后一次性注册（DB 表驱动，重启自动加载）：/settings/mcp 添加 HTTP server
+    #   URL = http://mcp-servers:8088/mcp/（注册名任意，工具即 {name}__kb_search）
+    build: ./mcp-servers
+    image: goduck-mcp-servers:latest
+    container_name: goduck-mcp-servers
+    environment:
+      ES_URL: http://elasticsearch:9200
+      # 与 backend 严格同值（维度对称：入库 backend / 检索本服务，见 mcp-servers/README）
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://tei:8082/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-dummy}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embeddings-inference}
+      EMBEDDING_CHECK_CTX_LENGTH: ${EMBEDDING_CHECK_CTX_LENGTH:-false}
+      EMBEDDING_DIMS: ${EMBEDDING_DIMS:-512}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-24}
+      KB_TOP_K: ${KB_TOP_K:-5}
+    expose: ["8088"]                      # 仅内部网络，backend 经服务名访问
+    restart: unless-stopped
+
   # ============ 前端 ============
   frontend:
     build: ./frontend
