@@ -167,6 +167,10 @@ docker compose logs -f backend
 docker compose logs -f nginx            # 排查网关
 docker compose restart backend          # 重启后端（自动重载 DB 中的模型 / MCP / 智能体）
 docker compose up -d --build backend    # 改后端代码后重建单个服务
+# 版本更新（pull 后按需重建；数据在命名卷 + ./volumes，重建容器不丢）
+git pull
+docker compose up -d --build backend frontend mcp-servers   # 代码服务按需列
+docker image prune -f                  # 清理被替换的旧悬空镜像
 docker compose down                     # 停止（保留数据卷）
 docker compose down -v                  # 停止并清空命名卷（volumes/ 另见 FAQ 重置条目）
 ```

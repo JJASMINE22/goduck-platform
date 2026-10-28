@@ -182,6 +182,14 @@ services:
       # key 缺省为空 → 后端降级：voice 路由不挂载、健康能力位 false（前端无麦克风入口）。
       VOICE_ENABLED: ${VOICE_ENABLED:-false}
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
+      # ---- Jev 守卫（allow_shell HITL 减负，TypeSafe System One；默认关）----
+      # .env 置 JEV_ENABLED=true + TYPESAFE_API_KEY 后重启生效；key 缺失自动
+      # 回落全人工审批（启动警告不崩）。shadow 起步校准后再切 enforce（见 README FAQ）。
+      JEV_ENABLED: ${JEV_ENABLED:-false}
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      JEV_MODE: ${JEV_MODE:-shadow}
+      JEV_RUBRIC_ENABLED: ${JEV_RUBRIC_ENABLED:-false}
+      JEV_KB_RERANK_ENABLED: ${JEV_KB_RERANK_ENABLED:-false}
     expose: ["8000"]                       # 仅内部网络可见，不对宿主发布
     volumes:
       # 宿主机 bind mount（${VOLUMES_ROOT:-./volumes}）。首次部署（顺序执行）：
