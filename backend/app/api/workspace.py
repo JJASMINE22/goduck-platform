@@ -34,13 +34,13 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api.stream import capability_agent_row
 from app.core.schema_utils import AgentConfig
-from app.core.user_scoped_backend import user_workspace_path
-from app.deps import get_appstate
+from app.core.user_scoped_backend import user_workspace_path, workspace_key
+from app.deps import get_appstate, get_current_user
 from app.models.schemas import (
     WorkspaceCapability,
     WorkspaceDeleted,
@@ -67,17 +67,23 @@ MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-async def _load_session_user(st, session_id: uuid.UUID) -> str:
-    """加载 session 并返回 user_id（404 if not found）。"""
+async def _load_session_user(st, session_id: uuid.UUID, user: dict) -> uuid.UUID:
+    """加载 session 校验属主后返回 user_id（非本人一律 404，不暴露存在性）。"""
     session = await SessionService(st.pool).get(session_id)
-    if session is None:
+    if session is None or session["user_id"] != user["id"]:
         raise HTTPException(status_code=404, detail="session not found")
     return session["user_id"]
 
 
-def _user_root(st, user_id: str) -> Path:
-    """该用户的磁盘工作区根（同源 sanitize，写=读）。"""
-    return user_workspace_path(st.settings.workspace_dir, user_id)
+def _user_root(st, user: dict, user_id) -> Path:
+    """该用户的磁盘工作区根（同源 workspace_key + sanitize，写=读）。
+
+    user_id 为属主校验后的 uuid；username 来自会话 cookie 用户，与后端
+    写入侧（SimpleUser）经同一 workspace_key 组合，目录名恒一致。
+    """
+    return user_workspace_path(
+        st.settings.workspace_dir, workspace_key(user.get("username"), str(user_id))
+    )
 
 
 def _resolve_safe(user_root: Path, rel: str) -> Path:
@@ -128,6 +134,7 @@ async def workspace_capability(
     session_id: uuid.UUID,
     request: Request,
     agent_id: Optional[uuid.UUID] = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+    user: dict = Depends(get_current_user),
 ):
     """是否启用工作区 —— 驱动会话页工作区面板可见性（准则 F2 能力驱动 UI）。
 
@@ -136,7 +143,7 @@ async def workspace_capability(
     """
     st = get_appstate(request)
     session = await SessionService(st.pool).get(session_id)
-    if session is None:
+    if session is None or session["user_id"] != user["id"]:
         raise HTTPException(status_code=404, detail="session not found")
     allow = False
     agent_row = await capability_agent_row(st, session, agent_id)
@@ -149,11 +156,13 @@ async def workspace_capability(
 # tree
 # ---------------------------------------------------------------------------
 @router.get("/{session_id}/workspace/tree", response_model=list[WorkspaceNode])
-async def workspace_tree(session_id: uuid.UUID, request: Request):
+async def workspace_tree(
+    session_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
+):
     """递归列出该用户工作区文件树（受限条目/深度）。空工作区返回 []。"""
     st = get_appstate(request)
-    user_id = await _load_session_user(st, session_id)
-    root = _user_root(st, user_id)
+    user_id = await _load_session_user(st, session_id, user)
+    root = _user_root(st, user, user_id)
     if not root.is_dir():
         return []
 
@@ -200,11 +209,12 @@ async def workspace_file(
     session_id: uuid.UUID,
     request: Request,
     path: str = Query(..., description="相对用户工作区根的路径"),
+    user: dict = Depends(get_current_user),
 ):
     """读文本文件内容（带截断）。二进制文件 content=None，前端改走 download/preview。"""
     st = get_appstate(request)
-    user_id = await _load_session_user(st, session_id)
-    root = _user_root(st, user_id)
+    user_id = await _load_session_user(st, session_id, user)
+    root = _user_root(st, user, user_id)
     full = _resolve_safe(root, path)
     if not full.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -251,6 +261,7 @@ async def workspace_preview(
     session_id: uuid.UUID,
     request: Request,
     path: str = Query(..., description="相对用户工作区根的路径"),
+    user: dict = Depends(get_current_user),
 ):
     """office 文档（docx/xlsx/pptx/pdf 等）→ markitdown Markdown，供前端 marked 渲染。
 
@@ -258,8 +269,8 @@ async def workspace_preview(
     非 office 类型 → 415。
     """
     st = get_appstate(request)
-    user_id = await _load_session_user(st, session_id)
-    root = _user_root(st, user_id)
+    user_id = await _load_session_user(st, session_id, user)
+    root = _user_root(st, user, user_id)
     full = _resolve_safe(root, path)
     if not full.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -287,11 +298,12 @@ async def workspace_download(
     session_id: uuid.UUID,
     request: Request,
     path: str = Query(..., description="相对用户工作区根的路径（文件或目录）"),
+    user: dict = Depends(get_current_user),
 ):
     """下载单文件（中文文件名走 RFC5987）或目录（流式 zip，总量受限）。"""
     st = get_appstate(request)
-    user_id = await _load_session_user(st, session_id)
-    root = _user_root(st, user_id)
+    user_id = await _load_session_user(st, session_id, user)
+    root = _user_root(st, user, user_id)
     full = _resolve_safe(root, path)
     if not full.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -348,6 +360,7 @@ async def workspace_delete(
     session_id: uuid.UUID,
     request: Request,
     path: str = Query(..., description="相对用户工作区根的路径（文件或目录）"),
+    user: dict = Depends(get_current_user),
 ):
     """删除文件或目录（递归删目录）—— 用户裁剪历史产物以专注当前任务。
 
@@ -355,8 +368,8 @@ async def workspace_delete(
     安全：路径穿越由 ``_resolve_safe`` 拦截；禁止删除用户根（空路径 / "."）。
     """
     st = get_appstate(request)
-    user_id = await _load_session_user(st, session_id)
-    root = _user_root(st, user_id)
+    user_id = await _load_session_user(st, session_id, user)
+    root = _user_root(st, user, user_id)
 
     rel = (path or "").strip().lstrip("/")
     if not rel:
@@ -384,7 +397,7 @@ async def workspace_delete(
         strerror = getattr(e, "strerror", None) or str(e)
         raise HTTPException(status_code=500, detail=f"删除失败: {strerror}") from e
 
-    logger.info("workspace delete: user=%s path=%s is_dir=%s", _sanitize_log(user_id), rel, is_dir)
+    logger.info("workspace delete: user=%s path=%s is_dir=%s", _sanitize_log(str(user_id)), rel, is_dir)
     return WorkspaceDeleted(deleted=rel, name=name, was_dir=is_dir)
 
 

@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.deps import get_appstate
+from app.deps import get_appstate, require_manager
 from app.models.schemas import ModelCreate, ModelOut, ModelTestRequest, ModelUpdate
 from app.services.model_service import ModelInUseError, ModelService
 from typing import Optional
@@ -52,7 +52,9 @@ async def list_models(
 
 
 @router.post("", response_model=ModelOut)
-async def create_model(body: ModelCreate, request: Request):
+async def create_model(
+    body: ModelCreate, request: Request, _admin: dict = Depends(require_manager)
+):
     st = _appstate(request)
     svc = _service(request)
     try:
@@ -77,7 +79,12 @@ async def create_model(body: ModelCreate, request: Request):
 
 
 @router.put("/{model_id}", response_model=ModelOut)
-async def update_model(model_id: uuid.UUID, body: ModelUpdate, request: Request):
+async def update_model(
+    model_id: uuid.UUID,
+    body: ModelUpdate,
+    request: Request,
+    _admin: dict = Depends(require_manager),
+):
     st = _appstate(request)
     svc = _service(request)
     try:
@@ -107,7 +114,9 @@ async def update_model(model_id: uuid.UUID, body: ModelUpdate, request: Request)
 
 
 @router.delete("/{model_id}")
-async def delete_model(model_id: uuid.UUID, request: Request):
+async def delete_model(
+    model_id: uuid.UUID, request: Request, _admin: dict = Depends(require_manager)
+):
     st = _appstate(request)
     svc = _service(request)
     try:
@@ -128,7 +137,9 @@ async def delete_model(model_id: uuid.UUID, request: Request):
 
 
 @router.post("/test")
-async def test_model(body: ModelTestRequest, request: Request):
+async def test_model(
+    body: ModelTestRequest, request: Request, _admin: dict = Depends(require_manager)
+):
     """Pre-save connectivity probe: build a client from raw params and ping.
 
     Does NOT persist. Avoids saving a misconfigured model.

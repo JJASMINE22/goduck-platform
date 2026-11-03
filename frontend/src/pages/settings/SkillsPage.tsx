@@ -7,6 +7,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { FolderOpen, Plus, Trash2, Upload as UploadIcon } from 'lucide-react'
 import { useDeleteSkill, useSkills, useUploadSkill } from '@/hooks/useSkills'
+import { useCurrentUser } from '@/store/userStore'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
 import { SkillDescriptionText } from '@/components/skills/SkillDescriptionText'
@@ -15,6 +16,8 @@ import { fromDataTransfer, fromInputFiles, stripWrapperMatchingName, type FlatFi
 import type { SkillInfo } from '@/types'
 
 export function SkillsPage(): ReactNode {
+  // 上传/删除为管理员专属；非管理员只读浏览技能池
+  const isManager = useCurrentUser((s) => s.user?.is_manager ?? false)
   const { data, isLoading, isError, refetch } = useSkills()
   const uploadSkill = useUploadSkill()
   const deleteSkill = useDeleteSkill()
@@ -137,6 +140,7 @@ export function SkillsPage(): ReactNode {
     {
       title: '描述',
       key: 'description',
+      align: 'left',
       render: (_, r) => <SkillDescriptionText name={r.name} />,
     },
     {
@@ -146,7 +150,10 @@ export function SkillsPage(): ReactNode {
       width: 100,
       render: (v: number) => <Tag>{v}</Tag>,
     },
-    {
+  ]
+  // 操作列仅管理员渲染（普通用户整列隐藏，写操作本就后端 403 兜底）
+  if (isManager) {
+    columns.push({
       title: '操作',
       key: 'actions',
       width: 80,
@@ -155,8 +162,8 @@ export function SkillsPage(): ReactNode {
           <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
         </Popconfirm>
       ),
-    },
-  ]
+    })
+  }
 
   const selectedList = useMemo(() => [...entries].sort((a, b) => a.path.localeCompare(b.path)), [entries])
 
@@ -165,9 +172,11 @@ export function SkillsPage(): ReactNode {
       title="技能列表"
       subtitle="个人技能池，跨智能体共享；描述取自技能内 SKILL.md"
       extra={
-        <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
-          上传技能
-        </Button>
+        isManager ? (
+          <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
+            上传技能
+          </Button>
+        ) : null
       }
     >
       {isLoading ? (
@@ -175,7 +184,7 @@ export function SkillsPage(): ReactNode {
       ) : isError ? (
         <ErrorState onRetry={() => refetch()} />
       ) : !data?.length ? (
-        <EmptyState title="暂无技能" extra={<Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>上传技能</Button>} />
+        <EmptyState title="暂无技能" extra={isManager ? <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>上传技能</Button> : null} />
       ) : (
         <Table<SkillInfo>
           rowKey="name"

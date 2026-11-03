@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from app.config import get_settings
 from app.deps import AppState
@@ -204,25 +204,25 @@ def create_app() -> FastAPI:
         root_path=settings.root_path,
     )
 
-    from app.api import agents, cron, mcp, models, sessions, skills, stream, uploads, workspace
+    from app.api import agents, auth, cron, mcp, models, sessions, skills, stream, uploads, workspace
+    from app.deps import get_current_user
     from app.models.schemas import HealthResponse
 
-    app.include_router(agents.router)
-    app.include_router(sessions.router)
-    app.include_router(stream.router)
-    app.include_router(skills.router)
-    app.include_router(mcp.router)
-    app.include_router(uploads.router)
-    app.include_router(models.router)
-    app.include_router(workspace.router)
-    app.include_router(cron.router)
+    # 认证路由公开（login/register 自身就是入口）；其余业务路由统一要求
+    # 登录态——身份由此推导，各端点不再接受客户端 user_id 参数。
+    app.include_router(auth.router)
+    for r in (
+        agents.router, sessions.router, stream.router, skills.router,
+        mcp.router, uploads.router, models.router, workspace.router, cron.router,
+    ):
+        app.include_router(r, dependencies=[Depends(get_current_user)])
 
     # 知识库路由：仅 kb_enabled=true 时挂载（避免禁用时仍 import RAG 重依赖；
     # 禁用时 KB 接口 404、会话 knowledge-capability 返回 allow_knowledge=false）。
     if settings.kb_enabled:
         from app.api import knowledge
 
-        app.include_router(knowledge.router)
+        app.include_router(knowledge.router, dependencies=[Depends(get_current_user)])
 
     # 语音路由：仅 voice_enabled=true 且已配 AssemblyAI key 时挂载（能力位同步下发）。
     # key 缺失属部署错误：降级为不挂载 + 警告（健康位 false），不让启动崩溃。

@@ -1,17 +1,17 @@
 /* 定时任务 hooks —— 对应 api/cron.ts。
-   列表按 user_id；变更后失效列表（scheduler 后台推进的 next_run_at/last_status
-   由列表的 staleTime 自然刷新，无需订阅推送）。 */
+   按登录用户列表（身份由 cookie 推导）；变更后失效列表（scheduler 后台推进的
+   next_run_at/last_status 由列表的 staleTime 自然刷新，无需订阅推送）。 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { cronApi } from '@/api/cron'
 import { toastSuccess } from '@/lib/antdStatic'
 import type { CronJobCreate, CronJobUpdate, UUID } from '@/types'
 import { queryKeys } from './queryKeys'
 
-export function useCronJobs(userId: string | null | undefined, refetchMs = 30_000) {
+export function useCronJobs(enabled = true, refetchMs = 30_000) {
   return useQuery({
-    queryKey: queryKeys.cronJobs(userId ?? ''),
-    queryFn: () => cronApi.listByUser(userId!),
-    enabled: !!userId,
+    queryKey: queryKeys.cronJobs,
+    queryFn: () => cronApi.list(),
+    enabled,
     // 任务状态（running/awaiting_approval/下次运行时间）由后端 tick 推进，
     // 30s 的页面停留刷新足以跟上默认 30s 的调度节奏；任务会话页以更密间隔
     // 跟随运行状态（徽标/HITL 信号）
@@ -31,8 +31,8 @@ export function useCreateCronJob() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (body: CronJobCreate) => cronApi.create(body),
-    onSuccess: (job) => {
-      qc.invalidateQueries({ queryKey: queryKeys.cronJobs(job.user_id) })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.cronJobs })
       // 专用任务会话同时落库：会话列表随之出现（带 kind='cron' 徽标）
       qc.invalidateQueries({ queryKey: ['sessions'] })
     },
@@ -44,7 +44,7 @@ export function useUpdateCronJob() {
   return useMutation({
     mutationFn: ({ id, body }: { id: UUID; body: CronJobUpdate }) => cronApi.update(id, body),
     onSuccess: (job) => {
-      qc.invalidateQueries({ queryKey: queryKeys.cronJobs(job.user_id) })
+      qc.invalidateQueries({ queryKey: queryKeys.cronJobs })
       qc.invalidateQueries({ queryKey: queryKeys.cronRuns(job.id) })
     },
   })

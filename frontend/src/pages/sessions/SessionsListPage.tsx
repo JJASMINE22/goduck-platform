@@ -1,4 +1,4 @@
-/* 会话列表页 —— 按 user_id 列出会话（个人工具；user_id 由顶栏统一切换，默认 admin）。
+/* 会话列表页 —— 列出当前登录用户的会话（身份由 cookie 推导）。
    新建会话可选智能体（会话-智能体解耦：不选则创建空会话，进入后再选）；点行进入聊天。 */
 import { App as AntApp, Button, Flex, Form, Input, Modal, Popconfirm, Segmented, Select, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -16,9 +16,9 @@ import type { SessionOut } from '@/types'
 
 export function SessionsListPage(): ReactNode {
   const navigate = useNavigate()
-  const userId = useCurrentUser((s) => s.userId)
+  const nickname = useCurrentUser((s) => s.user?.nickname)
   const [showArchived, setShowArchived] = useState(false)
-  const sessions = useSessions(userId, showArchived)
+  const sessions = useSessions(showArchived)
   const rows = showArchived
     ? (sessions.data ?? []).filter((s) => s.status === 'archived')
     : (sessions.data ?? [])
@@ -34,7 +34,6 @@ export function SessionsListPage(): ReactNode {
   const handleCreate = async () => {
     const v = await form.validateFields()
     const session = await createSession.mutateAsync({
-      user_id: userId,
       // 可选（会话-智能体解耦）：不选 = 空会话，首条消息发送时才确定智能体
       agent_id: v.agent_id || null,
       // 空白标题归一为未命名（后端同名校验仅对非空标题生效）
@@ -72,14 +71,34 @@ export function SessionsListPage(): ReactNode {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
+      width: 360,
+      ellipsis: true,
       render: (v: string | null, r) => (
-        <Flex align="center" gap={6}>
+        <Flex align="center" justify="center" gap={6}>
           {r.kind === 'cron' ? <Tag color="geekblue">定时</Tag> : null}
-          {v || <span style={{ color: 'var(--color-text-tertiary)' }}>未命名（{r.id.slice(0, 8)}）</span>}
+          {/* flex 子项默认 min-width:auto 不收缩：显式可缩 + 单行截断 */}
+          <span
+            style={{
+              minWidth: 0,
+              flex: '0 1 auto',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {v || <span style={{ color: 'var(--color-text-tertiary)' }}>未命名（{r.id.slice(0, 8)}）</span>}
+          </span>
         </Flex>
       ),
     },
-    { title: '智能体（最近使用）', dataIndex: 'agent_name', key: 'agent_name', render: (v: string | null) => v ?? '—' },
+    {
+      title: '智能体（最近使用）',
+      dataIndex: 'agent_name',
+      key: 'agent_name',
+      width: 180,
+      ellipsis: true,
+      render: (v: string | null) => v ?? '—',
+    },
     {
       title: '状态',
       dataIndex: 'status',
@@ -93,7 +112,7 @@ export function SessionsListPage(): ReactNode {
       key: 'actions',
       width: 130,
       render: (_, r) => (
-        <Flex gap={4} onClick={(e) => e.stopPropagation()}>
+        <Flex gap={4} justify="center" onClick={(e) => e.stopPropagation()}>
           <Button
             type="link"
             size="small"
@@ -145,8 +164,8 @@ export function SessionsListPage(): ReactNode {
         <ErrorState onRetry={() => sessions.refetch()} />
       ) : !rows.length ? (
         <EmptyState
-          title={`用户「${userId}」暂无会话`}
-          description={activeAgents.length ? '点击「新建会话」开始对话' : '请先在「智能体」中创建一个可用（活跃）智能体'}
+          title={`${nickname ?? '当前用户'} 暂无会话`}
+          description={activeAgents.length ? '点击「新建会话」开始对话' : '请联系管理员创建可用的智能体，或等待智能体就绪'}
         />
       ) : (
         <Table<SessionOut>

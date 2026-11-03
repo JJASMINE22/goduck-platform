@@ -17,6 +17,7 @@ import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/state
 import { ApiError } from '@/api/client'
 import { formatDateTime } from '@/lib/format'
 import { toastError, toastSuccess } from '@/lib/antdStatic'
+import { useCurrentUser } from '@/store/userStore'
 import type { ModelInUseDetail, ModelOut, ProviderKind } from '@/types'
 
 interface FormValues {
@@ -46,6 +47,8 @@ const emptyForm: FormValues = {
 }
 
 export function ModelsPage(): ReactNode {
+  // 写操作（注册/编辑/删除/连通测试）为管理员专属；非管理员只读预览
+  const isManager = useCurrentUser((s) => s.user?.is_manager ?? false)
   const { data, isLoading, isError, refetch } = useModels()
   const createModel = useCreateModel()
   const updateModel = useUpdateModel()
@@ -194,6 +197,7 @@ export function ModelsPage(): ReactNode {
       title: '端点',
       dataIndex: 'base_url',
       key: 'base_url',
+      align: 'left',
       ellipsis: true,
       render: (v: string | null) =>
         v ? <code style={{ fontSize: 12 }}>{v}</code> : <span style={{ color: 'var(--color-text-tertiary)' }}>原生 OpenAI</span>,
@@ -205,20 +209,23 @@ export function ModelsPage(): ReactNode {
       width: 170,
       render: (v: string) => formatDateTime(v),
     },
-    {
+  ]
+  // 操作列仅管理员渲染（普通用户整列隐藏，写操作本就后端 403 兜底）
+  if (isManager) {
+    columns.push({
       title: '操作',
       key: 'actions',
       width: 120,
       render: (_, record) => (
-        <Flex gap={4}>
+        <Flex gap={4} justify="center">
           <Button type="link" size="small" icon={<Pencil size={14} />} onClick={() => openEdit(record)} />
           <Popconfirm title="删除该模型？" onConfirm={() => handleDelete(record)} okText="删除" cancelText="取消">
             <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
           </Popconfirm>
         </Flex>
       ),
-    },
-  ]
+    })
+  }
 
   const busy = createModel.isPending || updateModel.isPending || testModel.isPending
 
@@ -227,9 +234,11 @@ export function ModelsPage(): ReactNode {
       title="模型列表"
       subtitle="注册 OpenAI 兼容模型；智能体按 model_id 绑定"
       extra={
-        <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
-          注册模型
-        </Button>
+        isManager ? (
+          <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
+            注册模型
+          </Button>
+        ) : null
       }
     >
       {isLoading ? (
@@ -237,15 +246,17 @@ export function ModelsPage(): ReactNode {
       ) : isError ? (
         <ErrorState onRetry={() => refetch()} />
       ) : !data?.length ? (
-        <EmptyState
-          title="暂无模型"
-          description="注册一个 OpenAI 兼容模型后即可创建智能体"
-          extra={
-            <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
-              注册模型
-            </Button>
-          }
-        />
+          <EmptyState
+            title="暂无模型"
+            description="注册一个 OpenAI 兼容模型后即可创建智能体"
+            extra={
+              isManager ? (
+                <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
+                  注册模型
+                </Button>
+              ) : null
+            }
+          />
       ) : (
         <Table<ModelOut>
           rowKey="id"

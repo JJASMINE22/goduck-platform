@@ -102,8 +102,8 @@ export function ChatPage(): ReactNode {
   const session = sessionQ.data
 
   // 任务会话浏览态数据源：绑定任务行（last_status 驱动「任务运行中」徽标与
-  // HITL 重建信号）。非任务会话传 null（query disabled，不产生请求）。
-  const cronJobs = useCronJobs(session?.kind === 'cron' ? session.user_id : null, 5_000)
+  // HITL 重建信号）。非任务会话禁用查询（不产生请求）。
+  const cronJobs = useCronJobs(session?.kind === 'cron', 5_000)
   const cronJob = session?.kind === 'cron'
     ? cronJobs.data?.find((j) => j.session_id === sessionId)
     : undefined
@@ -892,7 +892,6 @@ export function ChatPage(): ReactNode {
                   <div className="chat-panel__composer" style={{ minHeight: inputHeight ?? undefined }}>
                     <ChatInput
                       sessionId={session.id}
-                      userId={session.user_id}
                       status={stream.status}
                       send={stream.send}
                       cancel={handleCancel}

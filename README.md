@@ -131,10 +131,12 @@ printf 'admin:$(openssl passwd -apr1 "你的强密码")\n' > nginx/.htpasswd
 mkdir -p volumes/backend volumes/docling volumes/tei
 cp -r backend/data/skills volumes/backend/skills          # 技能种子（一次性）
 sudo chown -R 1001:1001 volumes/backend volumes/docling  # 容器内 app 用户 uid=1001
-docker run --rm -v "$PWD/volumes/tei:/out" python:3.11-slim bash -c \
-  "pip -q install huggingface_hub && huggingface-cli download \
+docker run --rm -e HF_ENDPOINT=https://hf-mirror.com -v "$PWD/volumes/tei:/out" \
+  python:3.11-slim bash -c "pip -q install huggingface_hub && huggingface-cli download \
    Qwen/Qwen3-Embedding-0.6B --local-dir /out/Qwen3-Embedding-0.6B"
-# （CN 网络给上面的 docker run 加 -e HF_ENDPOINT=https://hf-mirror.com）
+# （默认走国内镜像 hf-mirror.com，免梯子；海外机器去掉 -e HF_ENDPOINT 即可。
+#   或魔搭直下：pip -q install modelscope && modelscope download \
+#     --model Qwen/Qwen3-Embedding-0.6B --local_dir /out/Qwen3-Embedding-0.6B）
 
 # 3)（可选）根目录创建 .env 覆盖默认值（含数据根 VOLUMES_ROOT，默认 ./volumes）
 vi .env
@@ -390,10 +392,15 @@ volumes/tei/
     ├── tokenizer.json / tokenizer_config.json / ...
 ```
 
-预下（任一联网机器；CN 网络前置 `HF_ENDPOINT=https://hf-mirror.com`）：
+预下（任一联网机器；默认国内镜像免梯子，海外机器去掉 `HF_ENDPOINT=` 前缀即可）：
 
 ```bash
-huggingface-cli download Qwen/Qwen3-Embedding-0.6B --local-dir volumes/tei/Qwen3-Embedding-0.6B
+HF_ENDPOINT=https://hf-mirror.com huggingface-cli download Qwen/Qwen3-Embedding-0.6B \
+  --local-dir volumes/tei/Qwen3-Embedding-0.6B
+
+# 或魔搭（ModelScope）直下，产物目录同构：
+modelscope download --model Qwen/Qwen3-Embedding-0.6B \
+  --local_dir volumes/tei/Qwen3-Embedding-0.6B
 ```
 
 可调项（根目录 `.env`）：
@@ -401,6 +408,7 @@ huggingface-cli download Qwen/Qwen3-Embedding-0.6B --local-dir volumes/tei/Qwen3
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `TEI_MODEL_ID` | `/data/Qwen3-Embedding-0.6B` | 本地路径或 HF repo id；填 repo id 则首启经 hub 下载入同卷（之后离线复用） |
+| `HF_ENDPOINT` | `https://hf-mirror.com` | HF hub 端点（tei 首启下载 + backend docling 预热/兜底下载共用）；海外机器可覆盖回 `https://huggingface.co` |
 | `TEI_IMAGE` | `cuda-1.9` | 版本升级 / CPU 机器（`cpu-1.9`）时覆盖 |
 | `TEI_PORT` | `8082` | 宿主调试端口（127.0.0.1 绑定，LAN 不可见） |
 | `VOLUMES_ROOT` | `./volumes` | backend / docling / tei 三处 bind mount 的宿主机根目录 |
@@ -421,7 +429,9 @@ hub 加载）。
 
 **预下推荐用容器内 docling-tools**（自动配套镜像内 docling 版本的 revision；
 layout / tableformer 取自 HF，**RapidOCR 取自 ModelScope 而非 HF**，且 `org--repo`
-目录名随 docling 版本漂移——手动搬运易错）：
+目录名随 docling 版本漂移——手动搬运易错）。HF 下载默认经 compose 注入的
+`HF_ENDPOINT=https://hf-mirror.com`（免梯子；`.env` 可覆盖回官方源），RapidOCR
+本就直连 ModelScope——无梯子服务器可原样执行：
 
 ```bash
 mkdir -p volumes/docling && sudo chown -R 1001:1001 volumes/docling
@@ -445,12 +455,36 @@ graph TD
     A --> R["RapidOcr/ ← 非 HF！源自 ModelScope（RapidAI/RapidOCR）<br/>onnx/PP-OCRv6/…、resources/fonts/"]
 ```
 
-纯手动（不推荐；仅 layout / tableformer 可行，RapidOCR 无 HF 源）：
-`huggingface-cli download <repo_id> --revision <rev> --local-dir volumes/docling/artifacts/<org>--<repo>`，
-目录名与 revision 必须与容器内 docling 版本一致；缺件按报错提示补
-`docling-tools models download-hf-repo <repo_id>`。docling 升级（requirements
-版本变更）后需重新预热并断网验证（上传真实 PDF 以 `KB_PARSER_ENGINE=docling`
-重解析成功）。
+纯手动（不推荐；layout / tableformer 走 HF 镜像，RapidOCR 可经魔搭 CLI 精准拉取）：
+
+- **layout / tableformer（HF）**：
+  `HF_ENDPOINT=https://hf-mirror.com huggingface-cli download <repo_id> --revision <rev> --local-dir volumes/docling/artifacts/<org>--<repo>`，
+  目录名与 revision 必须与容器内 docling 版本一致（当前 2.135.0：
+  `docling-project/docling-layout-heron` 与 `docling-project/docling-layout-heron-onnx`
+  均为 `main`，`docling-project/docling-models` 为 `v2.3.0`）；缺件按报错提示补
+  `docling-tools models download-hf-repo <repo_id>`。
+- **RapidOCR（魔搭 `RapidAI/RapidOCR`，免梯子）**：本管线实际只需 3 个 onnx 权重
+  （onnxruntime 后端 / `lang=["ch"]` → PP-OCRv6 det+rec `small` + PP-OCRv4 cls
+  `mobile`），且 docling 按 `RapidOcr/` 内**平铺文件名**校验——下载后须摊平归位：
+
+  ```bash
+  pip install -U modelscope
+  modelscope download --model RapidAI/RapidOCR --revision v3.9.1 \
+    --include "onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx" \
+              "onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
+              "onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx" \
+    --local_dir /tmp/rapidocr-src
+  mkdir -p volumes/docling/artifacts/RapidOcr
+  find /tmp/rapidocr-src -name "*.onnx" -exec cp {} volumes/docling/artifacts/RapidOcr/ \;
+  # 产物应为三个平铺文件：PP-OCRv6_det_small.onnx / PP-OCRv6_rec_small.onnx /
+  #                       ch_ppocr_mobile_v2.0_cls_mobile.onnx
+  ```
+
+  （`--revision v3.9.1` 对应 requirements 锁定的 rapidocr 版本，其 URL 表随版本
+  变化——升级需同步核对。）
+
+docling 升级（requirements 版本变更）后需重新预热并断网验证（上传真实 PDF 以
+`KB_PARSER_ENGINE=docling` 重解析成功）。
 
 </details>
 

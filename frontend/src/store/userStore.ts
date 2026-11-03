@@ -1,41 +1,36 @@
-/* 当前用户标识（单一身份入口）—— 全局唯一响应式 user_id 源，持久化到 localStorage。
-   Topbar 切换 → 创建智能体(creator)、建会话/聊天(user_id)、附件归属、后端记忆命名空间
-   全部跟随。无登录系统，个人/局域网自觉制：user_id 仍是客户端控制，非安全边界。
-   recent：最近用过的 user_id 列表（去重、上限 8），供顶栏账号切换器一点即切；初始化时
-   把当前 user_id 种入列表，保证切换器至少有一项可展示。 */
+/* 当前用户（单一身份入口）—— 登录态由 httpOnly cookie 会话令牌承载，
+   /auth/me 启动探测后落此 store；userId（= user.id，uuid）为既有消费方的
+   兼容读取面。身份服务端推导：客户端不再传 user_id，localStorage 不落任何
+   身份信息（退出/过期即净空）。 */
 import { create } from 'zustand'
+import { authApi } from '@/api/auth'
+import type { AuthUser } from '@/types/auth'
 
-const USER_KEY = 'goduck.user_id'
-const RECENT_KEY = 'goduck.recent_users'
-const RECENT_CAP = 8
+type AuthStatus = 'loading' | 'authenticated' | 'guest'
 
-function loadRecent(): string[] {
-  try {
-    const raw = localStorage.getItem(RECENT_KEY)
-    const arr = raw ? JSON.parse(raw) : []
-    return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : []
-  } catch {
-    return []
-  }
+interface AuthState {
+  user: AuthUser | null
+  status: AuthStatus
+  /** 兼容面：既有消费方按字符串 user_id 使用（= user.id） */
+  userId: string | null
+  /** 启动探测（App 挂载时调用一次）；401 → guest，其余错误保持 guest 不阻断 */
+  fetchMe: () => Promise<void>
+  setUser: (user: AuthUser) => void
+  clearUser: () => void
 }
 
-const initialUser = localStorage.getItem(USER_KEY) || 'admin'
-const seedRecent = [initialUser, ...loadRecent().filter((u) => u !== initialUser)].slice(0, RECENT_CAP)
-
-interface UserState {
-  userId: string
-  recent: string[]
-  setUserId: (v: string) => void
-}
-
-export const useCurrentUser = create<UserState>((set, get) => ({
-  userId: initialUser,
-  recent: seedRecent,
-  setUserId: (v) => {
-    const value = v || 'admin'
-    localStorage.setItem(USER_KEY, value)
-    const recent = [value, ...get().recent.filter((u) => u !== value)].slice(0, RECENT_CAP)
-    localStorage.setItem(RECENT_KEY, JSON.stringify(recent))
-    set({ userId: value, recent })
+export const useCurrentUser = create<AuthState>((set) => ({
+  user: null,
+  status: 'loading',
+  userId: null,
+  fetchMe: async () => {
+    try {
+      const user = await authApi.me()
+      set({ user, userId: user.id, status: 'authenticated' })
+    } catch {
+      set({ user: null, userId: null, status: 'guest' })
+    }
   },
+  setUser: (user) => set({ user, userId: user.id, status: 'authenticated' }),
+  clearUser: () => set({ user: null, userId: null, status: 'guest' }),
 }))

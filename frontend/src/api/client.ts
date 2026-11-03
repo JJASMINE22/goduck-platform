@@ -103,6 +103,16 @@ async function request<T>(
     } catch {
       /* 忽略解析失败，保留 status */
     }
+    // 401 全局拦截：会话失效（过期/停用/改密吊销）→ 整页跳登录（带回跳地址）。
+    // /auth/* 自身（login/register/me）不跳，避免登录页报错被劫持成循环跳转。
+    if (
+      res.status === 401 &&
+      !path.startsWith('/auth/') &&
+      !window.location.pathname.startsWith('/login')
+    ) {
+      const from = encodeURIComponent(window.location.pathname + window.location.search)
+      window.location.assign(`/login?from=${from}`)
+    }
     throw new ApiError(res.status, detail)
   }
 

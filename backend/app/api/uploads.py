@@ -9,10 +9,10 @@ import asyncio
 import logging
 import uuid
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 
 from app.api.stream import capability_agent_row, resolve_agent_choice_or_409
-from app.deps import get_appstate
+from app.deps import get_appstate, get_current_user
 from app.models import db as dbmod
 from app.models.schemas import AttachmentCapability, UploadOut
 from app.services.attachment_policy import AttachmentPolicyService
@@ -39,10 +39,11 @@ async def upload_file(
     session_id: uuid.UUID,
     request: Request,
     file: UploadFile = File(...),
-    user_id: str = Form(...),
     agent_id: uuid.UUID | None = Form(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+    user: dict = Depends(get_current_user),
 ):
-    """上传附件。前端只传文件流 + filename，mime 服务端魔数判定。
+    """上传附件。前端只传文件流 + filename，mime 服务端魔数判定，user_id
+    取自登录令牌（客户端不再传）。
 
     agent_id 弱绑定解析（§4.4）：附件归属 session（与 agent 无关），能力
     谓词按"显式 > last"选定的当回合智能体派生——上传时可传 A 允许图片、
@@ -50,13 +51,11 @@ async def upload_file(
     """
     st = _appstate(request)
 
-    # ① 校验 session 存在 + 归属
+    # ① 校验 session 存在 + 归属（非本人一律 404，不暴露存在性）
     svc = SessionService(st.pool)
     session = await svc.get(session_id)
-    if session is None:
+    if session is None or session["user_id"] != user["id"]:
         raise HTTPException(status_code=404, detail="session not found")
-    if session["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="无权操作该 session")
 
     # ② 读取字节 + 大小校验
     raw = await file.read()
@@ -109,7 +108,7 @@ async def upload_file(
     upload = await dbmod.insert_upload(
         st.pool,
         session_id=session_id,
-        user_id=user_id,
+        user_id=user["id"],
         bucket_key=bucket_key,
         filename=file.filename or "unnamed",
         mime=real_mime,
@@ -132,11 +131,18 @@ async def upload_file(
 
 
 @router.get("/{session_id}/uploads/{upload_id}/preview")
-async def preview_upload(session_id: uuid.UUID, upload_id: uuid.UUID, request: Request):
+async def preview_upload(
+    session_id: uuid.UUID,
+    upload_id: uuid.UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
     """返回附件字节供前端缩略图渲染（仅 image；文档类附件无二进制预览 → 404，前端回退图标）。"""
     st = _appstate(request)
     upload = await dbmod.get_upload(st.pool, upload_id)
     if upload is None or upload["session_id"] != session_id:
+        raise HTTPException(status_code=404, detail="upload not found")
+    if upload["user_id"] != user["id"]:
         raise HTTPException(status_code=404, detail="upload not found")
     if upload["kind"] != "image":
         raise HTTPException(status_code=404, detail="非图片附件无二进制预览")
@@ -149,6 +155,7 @@ async def get_attachment_capability(
     session_id: uuid.UUID,
     request: Request,
     agent_id: uuid.UUID | None = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+    user: dict = Depends(get_current_user),
 ):
     """前端据此渲染上传组件（支持的文件类型、大小限制）。
 
@@ -162,7 +169,7 @@ async def get_attachment_capability(
     st = _appstate(request)
     svc = SessionService(st.pool)
     session = await svc.get(session_id)
-    if session is None:
+    if session is None or session["user_id"] != user["id"]:
         raise HTTPException(status_code=404, detail="session not found")
 
     agent_row = await capability_agent_row(st, session, agent_id)

@@ -32,6 +32,7 @@ import logging
 import re
 import time
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from websockets.exceptions import WebSocketException
@@ -44,7 +45,7 @@ from app.api.stream import (
     join_cancelled_run,
     resolve_agent_choice_or_409,
 )
-from app.deps import SimpleUser, get_ws_appstate
+from app.deps import SESSION_COOKIE, SimpleUser, get_ws_appstate
 from app.models import db as dbmod
 from app.models.schemas import VoiceStartFrame
 from app.services.message_content import (
@@ -70,10 +71,21 @@ router = APIRouter(prefix="/sessions", tags=["语音输入"])
 _CLOSE_SESSION_GONE = 4404
 _CLOSE_AGENT_CONFLICT = 4409
 _CLOSE_IDLE_TIMEOUT = 4408
+_CLOSE_UNAUTHORIZED = 4401
 
 
 class _SessionClosed(Exception):
     """浏览器 WS 已断开/发送失败，回合应立即终止。"""
+
+
+async def _ws_current_user(ws: WebSocket, st) -> Optional[dict]:
+    """WS 侧登录校验：浏览器 WS 握手自动携带同源 cookie（无法自定义头）。"""
+    from app.services.auth_service import AuthService
+
+    token = ws.cookies.get(SESSION_COOKIE)
+    if not token:
+        return None
+    return await AuthService(st.pool, st.settings).validate_token(token)
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +443,7 @@ async def _run_agent_round(
         # 自愈（_refuse_or_heal_pending）兜底。须在 raise 之前执行。
         if run is not None and await join_cancelled_run(run):
             with contextlib.suppress(Exception):
-                await clear_orphan_pending(st, session)
+                await clear_orphan_pending(st, session, config)
         if watcher_exc is not None:
             raise watcher_exc
     else:
@@ -456,7 +468,13 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
     await ws.accept()
     sess = _VoiceSession(ws, st, settings)
 
-    # 连接级校验：会话存在/未归档（失败 → error 帧 + close）。
+    # 连接级鉴权：登录令牌（cookie）→ 用户；无效即拒（error 帧 + close）。
+    user = await _ws_current_user(ws, st)
+    if user is None:
+        await _session_gone(sess, _CLOSE_UNAUTHORIZED, "未登录或登录已过期")
+        return
+
+    # 连接级校验：会话存在/未归档/归属本人（失败 → error 帧 + close）。
     # 智能体身份的权威解析在回合级（start 帧 agent_id > last_agent_id，见回合
     # 循环），连接级取图只是预热 best-effort：空会话（尚未选择）与悬空 last
     # （agent 已删）都是合法进入态——不关闭连接（麦克风 UI 在未选择时本就
@@ -470,6 +488,9 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
     except PermissionError as e:
         await _session_gone(sess, _CLOSE_SESSION_GONE, str(e))
         return
+    if session["user_id"] != user["id"]:
+        await _session_gone(sess, _CLOSE_SESSION_GONE, "session not found")
+        return
     agent = None
     last_agent = session.get("last_agent_id")
     if last_agent is not None and await dbmod.get_agent(st.pool, last_agent) is not None:
@@ -482,7 +503,10 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
     config = {
         "configurable": {
             "thread_id": session["thread_id"],
-            "langgraph_auth_user": SimpleUser(session["user_id"]),
+            # identity=uuid（隔离键不变）；username 仅用于工作区目录键
+            "langgraph_auth_user": SimpleUser(
+                str(session["user_id"]), user.get("username")
+            ),
         }
     }
 

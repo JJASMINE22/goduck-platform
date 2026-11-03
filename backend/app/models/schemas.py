@@ -33,7 +33,6 @@ class AgentCreate(BaseModel):
             "决定可绑定面：chat 型不可建定时任务，cron 型不可建聊天会话。"
         ),
     )
-    creator: str = Field(min_length=1)
 
 
 class AgentUpdate(BaseModel):
@@ -50,7 +49,6 @@ class AgentUpdate(BaseModel):
         description="可选改名；省略或为 null 表示保持原名（改名时后端排除自身做唯一性校验）",
     )
     description: Optional[str] = None
-    updater: str = Field(min_length=1)
 
 
 class ValidateRequest(BaseModel):
@@ -59,7 +57,6 @@ class ValidateRequest(BaseModel):
 
 class RestoreRequest(BaseModel):
     history_id: uuid.UUID
-    operator: str = Field(min_length=1)
 
 
 class AgentOut(BaseModel):
@@ -152,7 +149,6 @@ class TopologyGraph(BaseModel):
 # Session
 # ---------------------------------------------------------------------------
 class SessionCreate(BaseModel):
-    user_id: str = Field(min_length=1)
     # 可选（会话-智能体解耦）：不选则创建"空会话"，首条消息发送时才确定智能体。
     # 传入时校验存在 + 非 cron 型（service 层）。
     agent_id: Optional[uuid.UUID] = Field(
@@ -181,7 +177,7 @@ class SessionOut(BaseModel):
     # 最近使用的智能体（会话-智能体解耦）：send 时写入；NULL=尚未选择（空会话）
     # 或上次智能体已被删除（FK SET NULL）。前端据此初始化 composer 默认选中。
     last_agent_id: Optional[uuid.UUID] = None
-    user_id: str
+    user_id: uuid.UUID
     thread_id: str
     title: Optional[str]
     status: str
@@ -563,7 +559,6 @@ class ModelTestRequest(BaseModel):
 class KnowledgeBaseCreate(BaseModel):
     name: str = Field(min_length=1, description="唯一知识库名")
     description: Optional[str] = None
-    creator: str = Field(min_length=1)
     dims: Optional[int] = Field(
         default=None, ge=2, le=4096,
         description="库级嵌入维度（ES dense_vector 上限 4096）；缺省=全局 EMBEDDING_DIMS",
@@ -693,7 +688,6 @@ class KbAnchorCard(BaseModel):
 # Cron（定时任务）
 # ---------------------------------------------------------------------------
 class CronJobCreate(BaseModel):
-    user_id: str = Field(min_length=1)
     agent_id: uuid.UUID = Field(..., description="绑定智能体（须为 active 状态）")
     name: str = Field(min_length=1, max_length=100, description="任务名（同用户内唯一）")
     prompt: str = Field(min_length=1, description="任务内容：每次触发注入的固定 user query")
@@ -738,7 +732,7 @@ class CronJobUpdate(BaseModel):
 
 class CronJobOut(BaseModel):
     id: uuid.UUID
-    user_id: str
+    user_id: uuid.UUID
     agent_id: uuid.UUID
     agent_name: Optional[str] = None
     session_id: uuid.UUID
@@ -764,6 +758,77 @@ class CronRunOut(BaseModel):
     error: Optional[str] = None
     started_at: datetime
     finished_at: Optional[datetime] = None
+
+
+# ---------------------------------------------------------------------------
+# 登录认证（auth）
+# ---------------------------------------------------------------------------
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, description="登录标识：mode 对应命名空间的值")
+    password: str = Field(min_length=1)
+    mode: Literal["username", "nickname"] = Field(
+        default="username", description="登录锚点：按用户名 | 按昵称（缺省向后兼容）"
+    )
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(min_length=1)
+    nickname: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class NicknameUpdate(BaseModel):
+    nickname: str = Field(min_length=1)
+
+
+class PasswordChange(BaseModel):
+    old_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=1)
+    confirm_password: str = Field(min_length=1)
+
+
+class AdminPasswordReset(BaseModel):
+    new_password: str = Field(min_length=1)
+    confirm_password: str = Field(min_length=1)
+
+
+class UserStateUpdate(BaseModel):
+    state: Literal["active", "disabled"]
+
+
+class RejectRequest(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=200)
+
+
+class UserOut(BaseModel):
+    """用户公开视图（password_hash 永不出库）。"""
+
+    id: uuid.UUID
+    username: str = Field(description="登录名（不可变）")
+    nickname: str = Field(description="展示昵称（可改）")
+    is_manager: bool
+    state: str
+    last_login_at: Optional[datetime] = None
+    password_updated_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class AuthRequestOut(BaseModel):
+    """注册申请（管理面平铺展示）。payload 仅回显用户名/昵称，哈希不出库。"""
+
+    id: uuid.UUID
+    status: str
+    reason: Optional[str] = None
+    username: str
+    nickname: str
+    created_at: datetime
+    reviewed_at: Optional[datetime] = None
+
+
+class AdminUserOut(UserOut):
+    failed_attempts: int = 0
+    locked_until: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 # MessageOut references UploadOut (defined later in this module). Pydantic v2

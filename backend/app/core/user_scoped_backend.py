@@ -24,10 +24,14 @@ Security:
   when the runtime carries no user, the identity resolves to "" and the backend
   falls back to a distinct hashed bucket that never matches a real user's
   directory — misuse never reads another user's files.
+
+目录命名（可读性）：目录键为 ``{username}-{user_id}``（见 ``workspace_key``），
+仅作用于文件系统；``identity`` 恒为 user_id（uuid），会话/记忆命名空间不受影响。
 """
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from pathlib import Path
 
@@ -41,11 +45,14 @@ from app.core.file_change_tracker import (
     record_change,
 )
 
-# Same whitelist as the deepagents StoreBackend namespace validation
-# (backends/store.py: _NAMESPACE_COMPONENT_RE): alphanumeric plus characters
-# common in user IDs (hyphen, underscore, dot, @, +, colon, tilde). Anything
-# else — crucially path separators and traversal sequences — is hashed.
-_SAFE_USER_RE = re.compile(r"^[A-Za-z0-9\-_.@+:~]+$")
+logger = logging.getLogger(__name__)
+
+# Whitelist superset of the deepagents StoreBackend namespace validation
+# (backends/store.py: _NAMESPACE_COMPONENT_RE): unicode word chars（含 CJK
+# 用户名）plus characters common in user IDs (hyphen, underscore, dot, @, +,
+# colon, tilde). Word chars exclude path separators, whitespace, and control
+# characters — anything else is hashed.
+_SAFE_USER_RE = re.compile(r"^[\w\-_.@+:~]+$")
 # Names made only of dots resolve to self/parent on the filesystem (".", "..",
 # "...") and would escape the per-user root even though each char is whitelisted.
 _ALL_DOTS_RE = re.compile(r"^\.+$")
@@ -69,22 +76,42 @@ def _sanitize_user(user_id: str | None) -> str:
     return "u_" + hashlib.sha256((raw or "<empty>").encode("utf-8")).hexdigest()[:16]
 
 
-def user_workspace_path(base_root: str | Path, user_id: str | None) -> Path:
-    """Resolve the on-disk workspace directory for a user.
+def workspace_key(user_name: str | None, user_id: str | None) -> str:
+    """组合工作区目录键：``{username}-{user_id}``（管理员可读，CJK 放行）。
+
+    username 缺失或含白名单外字符（空格等非 \w 字符，整串会被
+    _sanitize_user 哈希反而不可读）时回退纯 user_id —— uuid 恒过白名单，
+    键稳定且唯一。所有调用方（SimpleUser / 浏览 API / cron）必须经由本
+    函数，禁止手拼。
+    """
+    uid = (user_id or "").strip()
+    name = (user_name or "").strip()
+    composed = f"{name}-{uid}"
+    if uid and name and _SAFE_USER_RE.match(composed):
+        return composed
+    return uid
+
+
+def user_workspace_path(base_root: str | Path, key: str | None) -> Path:
+    """Resolve the on-disk workspace directory for a user workspace key.
 
     Single source of truth shared by the write backend
     (``UserScopedFilesystemBackend.cwd``) and the browse API
     (``app/api/workspace.py``), guaranteeing "write path == read path"
-    (plan §3.1-4 【关键】sanitize 同源). Both sides always derive the user
-    subdirectory from the SAME ``settings.workspace_dir`` base and the SAME
-    ``_sanitize_user`` mapping, so a backend write under ``u_<hash>/`` can never
-    be invisible to the API browsing ``<raw>/`` (or vice versa).
+    (plan §3.1-4 【关键】sanitize 同源). ``key`` is the composed workspace key
+    (``{username}-{uuid}`` or plain uuid from ``workspace_key``); both sides
+    derive it from the SAME inputs so a backend write under one form can never
+    be invisible to the API browsing the other.
     """
-    return Path(base_root).resolve() / _sanitize_user(user_id)
+    return Path(base_root).resolve() / _sanitize_user(key)
 
 
-def _current_user_identity() -> str:
-    """Read the current user identity from the active LangGraph runtime.
+def _current_workspace_key() -> str:
+    """Read the workspace dir key from the active LangGraph runtime.
+
+    优先 ``user.workspace_key``（``{username}-{uuid}``，SimpleUser 预组合），
+    回落 ``user.identity``（uuid）——仅文件系统侧消费；``/memories/`` 命名空间
+    直接读 ``identity``，不受本函数影响。
 
     Returns "" when called outside graph execution (``DEFAULT_RUNTIME`` has
     ``server_info=None``) or when the runtime carries no user — callers then
@@ -100,8 +127,14 @@ def _current_user_identity() -> str:
         return ""
     server_info = getattr(rt, "server_info", None)
     user = getattr(server_info, "user", None) if server_info is not None else None
-    identity = getattr(user, "identity", None) if user is not None else None
-    return identity or ""
+    if user is not None:
+        key = getattr(user, "workspace_key", None)
+        if key:
+            return key
+        identity = getattr(user, "identity", None)
+        if identity:
+            return identity
+    return ""
 
 
 class UserScopedFilesystemBackend(FilesystemBackend):
@@ -150,7 +183,7 @@ class UserScopedFilesystemBackend(FilesystemBackend):
         ``mkdir(parents=True)`` on first write — keeping a read-only property
         free of filesystem side effects.
         """
-        return self._base_root / _sanitize_user(_current_user_identity())
+        return self._base_root / _sanitize_user(_current_workspace_key())
 
 
 class TrackedUserScopedFilesystemBackend(UserScopedFilesystemBackend):
@@ -231,3 +264,33 @@ class TrackedUserScopedFilesystemBackend(UserScopedFilesystemBackend):
                     len(old.splitlines()) if old is not None else None,
                 ))
         return super().delete(file_path)
+
+
+def rename_workspace_dirs(users: list[dict], base_root: str | Path) -> int:
+    """存量 uuid 目录改可读名 ``{username}-{uuid}``（幂等、best-effort）。
+
+    启动期单线程执行（先于流量）：键回退为 uuid 的用户（含空格等非 \w
+    字符的用户名）自动跳过；目标已存在不覆盖（仅告警），仅源目录不存在
+    视为已迁移。失败只影响目录可读性，绝不阻断启动。
+    """
+    root = Path(base_root)
+    renamed = 0
+    for u in users:
+        uid = str(u["id"])
+        key = workspace_key(u.get("username"), uid)
+        if key == uid:
+            continue
+        old, new = root / uid, root / key
+        if not old.exists():
+            continue
+        if new.exists():
+            logger.warning("workspace dir rename skipped (target exists): %s", new)
+            continue
+        try:
+            old.rename(new)
+            renamed += 1
+        except OSError:
+            logger.warning("workspace dir rename failed (best-effort): %s", old, exc_info=True)
+    if renamed:
+        logger.info("renamed %d workspace dir(s) to readable names", renamed)
+    return renamed

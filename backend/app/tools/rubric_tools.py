@@ -20,7 +20,7 @@ from pathlib import Path
 
 from langchain.tools import tool
 
-from app.core.user_scoped_backend import _current_user_identity, user_workspace_path
+from app.core.user_scoped_backend import _current_workspace_key, user_workspace_path
 
 
 def make_grader_tools(workspace_root: str) -> dict:
@@ -34,9 +34,9 @@ def make_grader_tools(workspace_root: str) -> dict:
 
     def _user_root() -> Path:
         # Resolved per-call from the current graph runtime. Outside graph
-        # execution the identity is "" → hashed bucket → reads nothing useful,
+        # execution the key is "" → hashed bucket → reads nothing useful,
         # but never another user's files.
-        return user_workspace_path(_BASE, _current_user_identity())
+        return user_workspace_path(_BASE, _current_workspace_key())
 
     def _safe_join(subdir: str) -> Path | None:
         """Join subdir onto the per-user root with a containment guard."""

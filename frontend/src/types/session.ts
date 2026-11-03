@@ -5,7 +5,6 @@ import type { UploadOut } from './upload'
 import type { UsageTotals } from './stream'
 
 export interface SessionCreate {
-  user_id: string
   /** 可选（会话-智能体解耦）：不选则创建空会话，首条消息发送时才确定智能体 */
   agent_id?: UUID | null
   title?: string | null

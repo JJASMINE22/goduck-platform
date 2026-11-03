@@ -1,5 +1,6 @@
 /* 智能体列表页 —— 列出所有智能体（draft/active/archived）。
-   新建/编辑跳转编辑器；归档；导出 YAML 下载。 */
+   新建/编辑/归档/彻底删除为管理员操作（后端 403 兜底）；非管理员可浏览
+   列表与悬浮预览架构、导出 YAML（只读面）。 */
 import { App as AntApp, Button, Flex, Popconfirm, Segmented, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState, type ReactNode } from 'react'
@@ -7,6 +8,7 @@ import { useNavigate } from 'react-router-dom'
 import { Download, Pencil, Plus, Trash2 } from 'lucide-react'
 import { agentsApi } from '@/api/agents'
 import { useAgents, useArchiveAgent, usePurgeAgent } from '@/hooks/useAgents'
+import { useCurrentUser } from '@/store/userStore'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
 import { AgentTopologyHover } from '@/features/topology/AgentTopologyHover'
@@ -22,6 +24,7 @@ const STATUS_TAG: Record<string, { color: string; text: string }> = {
 
 export function AgentsListPage(): ReactNode {
   const navigate = useNavigate()
+  const isManager = useCurrentUser((s) => s.user?.is_manager ?? false)
   const [showArchived, setShowArchived] = useState(false)
   const { data, isLoading, isError, refetch } = useAgents(showArchived)
   // 后端 include_archived 是「是否把归档项并入」，而非「仅看归档」；
@@ -76,7 +79,12 @@ export function AgentsListPage(): ReactNode {
       key: 'name',
       render: (v: string, r) => (
         <AgentTopologyHover id={r.id}>
-          <a onClick={() => navigate(`/agents/${r.id}`)}>{v}</a>
+          {/* 非管理员不进编辑器：名称只读展示（架构预览走悬浮卡） */}
+          {isManager ? (
+            <a onClick={() => navigate(`/agents/${r.id}`)}>{v}</a>
+          ) : (
+            <span style={{ fontWeight: 600 }}>{v}</span>
+          )}
         </AgentTopologyHover>
       ),
     },
@@ -84,6 +92,7 @@ export function AgentsListPage(): ReactNode {
       title: '描述',
       dataIndex: 'description',
       key: 'description',
+      align: 'left',
       ellipsis: true,
       render: (v: string | null) => v || <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>,
     },
@@ -119,12 +128,15 @@ export function AgentsListPage(): ReactNode {
       },
     },
     { title: '更新', dataIndex: 'updated_at', key: 'updated_at', width: 140, render: formatRelative },
-    {
+  ]
+  // 操作列仅管理员渲染（编辑/导出/归档/删除整列对普通用户隐藏）
+  if (isManager) {
+    columns.push({
       title: '操作',
       key: 'actions',
       width: 150,
       render: (_, r) => (
-        <Flex gap={4}>
+        <Flex gap={4} justify="center">
           <Tooltip title="编辑">
             <Button type="link" size="small" icon={<Pencil size={14} />} onClick={() => navigate(`/agents/${r.id}`)} />
           </Tooltip>
@@ -142,17 +154,19 @@ export function AgentsListPage(): ReactNode {
           )}
         </Flex>
       ),
-    },
-  ]
+    })
+  }
 
   return (
     <PageContainer
       title="智能体列表"
       subtitle="搭建 / 迭代个人智能体；更新即替换，配置历史可还原"
       extra={
-        <Button type="primary" icon={<Plus size={16} />} onClick={() => navigate('/agents/new')}>
-          新建智能体
-        </Button>
+        isManager ? (
+          <Button type="primary" icon={<Plus size={16} />} onClick={() => navigate('/agents/new')}>
+            新建智能体
+          </Button>
+        ) : null
       }
     >
       <Segmented
@@ -174,11 +188,17 @@ export function AgentsListPage(): ReactNode {
         ) : (
           <EmptyState
             title="暂无智能体"
-            description="新建一个智能体，配置 system_prompt / 工具 / 子代理"
+            description={
+              isManager
+                ? '新建一个智能体，配置 system_prompt / 工具 / 子代理'
+                : '暂无可用智能体，请联系管理员创建'
+            }
             extra={
-              <Button type="primary" icon={<Plus size={16} />} onClick={() => navigate('/agents/new')}>
-                新建智能体
-              </Button>
+              isManager ? (
+                <Button type="primary" icon={<Plus size={16} />} onClick={() => navigate('/agents/new')}>
+                  新建智能体
+                </Button>
+              ) : null
             }
           />
         )

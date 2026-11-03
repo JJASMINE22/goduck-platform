@@ -6,9 +6,9 @@ import type { KnowledgeCapability, MessageOut, SessionCreate, SessionOut, UUID, 
 export const sessionsApi = {
   create: (body: SessionCreate) => post<SessionOut>('/sessions', body),
 
-  /** 列出用户会话（含 agent_name） */
-  listByUser: (userId: string, includeArchived = false) =>
-    get<SessionOut[]>('/sessions', { user_id: userId, include_archived: includeArchived }),
+  /** 列出当前登录用户的会话（含 agent_name；身份由 cookie 推导） */
+  list: (includeArchived = false) =>
+    get<SessionOut[]>('/sessions', { include_archived: includeArchived }),
 
   get: (id: UUID) => get<SessionOut>(`/sessions/${id}`),
 

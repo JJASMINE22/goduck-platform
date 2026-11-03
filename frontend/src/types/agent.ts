@@ -54,7 +54,7 @@ export interface AgentConfig {
   task_planning?: boolean // 任务规划（TodoListMiddleware / write_todos）开关，per-node 不继承，主/子代理均可设
 }
 
-// —— 请求体（schemas.py）——
+// —— 请求体（schemas.py；身份字段由登录令牌推导，前端不传）——
 export interface AgentCreate {
   name: string
   description?: string | null
@@ -64,7 +64,6 @@ export interface AgentCreate {
   vision_model_id?: UUID | null
   /** 用途类型：'chat'=聊天会话 | 'cron'=定时任务专用。创建后不可变（后端 AgentUpdate 无此字段） */
   kind?: 'chat' | 'cron'
-  creator: string
 }
 
 export interface AgentUpdate {
@@ -75,7 +74,6 @@ export interface AgentUpdate {
   /** 可选改名；省略时后端保持原名，改名时后端排除自身做唯一性校验（409） */
   name?: string
   description?: string | null
-  updater: string
 }
 
 export interface ValidateRequest {
@@ -84,7 +82,6 @@ export interface ValidateRequest {
 
 export interface RestoreRequest {
   history_id: UUID
-  operator: string
 }
 
 // —— 响应体（schemas.py）——

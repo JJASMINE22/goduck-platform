@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.stream import (
     _build_agent_or_409,
     _load_session_or_404,
     resolve_agent_choice_or_409,
 )
-from app.deps import get_appstate
+from app.deps import get_appstate, get_current_user
 from app.models.schemas import (
     MessageOut,
     SessionCreate,
@@ -31,11 +31,19 @@ def _appstate(request: Request):
     return get_appstate(request)
 
 
+def _ensure_owner(session: dict, user: dict) -> None:
+    """属主校验：非本人会话一律 404（不暴露存在性）。"""
+    if session["user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="session not found")
+
+
 @router.post("", response_model=SessionOut)
-async def create_session(body: SessionCreate, request: Request):
+async def create_session(
+    body: SessionCreate, request: Request, user: dict = Depends(get_current_user)
+):
     svc = _service(request)
     try:
-        return await svc.create(body.user_id, body.agent_id, body.title, body.thread_id)
+        return await svc.create(user["id"], body.agent_id, body.title, body.thread_id)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except FileExistsError:
@@ -51,36 +59,48 @@ async def create_session(body: SessionCreate, request: Request):
 
 @router.get("", response_model=list[SessionOut])
 async def list_sessions(
-    user_id: str = Query(...), include_archived: bool = Query(False), request: Request = None
+    include_archived: bool = Query(False),
+    request: Request = None,
+    user: dict = Depends(get_current_user),
 ):
-    return await _service(request).list_by_user(user_id, include_archived=include_archived)
+    return await _service(request).list_by_user(user["id"], include_archived=include_archived)
 
 
 @router.get("/{session_id}", response_model=SessionOut)
-async def get_session(session_id: uuid.UUID, request: Request):
-    s = await _service(request).get(session_id)
-    if s is None:
-        raise HTTPException(status_code=404, detail="session not found")
-    return s
-
-
-@router.delete("/{session_id}", response_model=SessionOut)
-async def archive_session(session_id: uuid.UUID, request: Request):
+async def get_session(
+    session_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
+):
     svc = _service(request)
     s = await svc.get(session_id)
     if s is None:
         raise HTTPException(status_code=404, detail="session not found")
+    _ensure_owner(s, user)
+    return s
+
+
+@router.delete("/{session_id}", response_model=SessionOut)
+async def archive_session(
+    session_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
+):
+    svc = _service(request)
+    s = await svc.get(session_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    _ensure_owner(s, user)
     _refuse_cron_session(s, action="归档")
     return await svc.archive(session_id)
 
 
 @router.post("/{session_id}/purge", status_code=204)
-async def purge_session(session_id: uuid.UUID, request: Request):
+async def purge_session(
+    session_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
+):
     """Hard delete a session (physical) + checkpoint cleanup. Irreversible."""
     svc = _service(request)
     s = await svc.get(session_id)
     if s is None:
         raise HTTPException(status_code=404, detail="session not found")
+    _ensure_owner(s, user)
     _refuse_cron_session(s, action="彻底删除")
     deleted = await svc.delete(session_id)
     if not deleted:
@@ -99,18 +119,26 @@ def _refuse_cron_session(s: dict, *, action: str) -> None:
 
 
 @router.get("/{session_id}/history", response_model=list[MessageOut])
-async def get_history(session_id: uuid.UUID, request: Request):
+async def get_history(
+    session_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
+):
     st = _appstate(request)
     svc = _service(request)
     session = await svc.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
+    _ensure_owner(session, user)
     # empty list (not error) when no messages yet (plan §11.1)
     return await svc.get_history(st.checkpointer, session["thread_id"], session["id"])
 
 
 @router.post("/{session_id}/withdraw", response_model=WithdrawResponse)
-async def withdraw_turn(body: WithdrawRequest, session_id: uuid.UUID, request: Request):
+async def withdraw_turn(
+    body: WithdrawRequest,
+    session_id: uuid.UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
     """Withdraw (soft-delete) a full conversation turn anchored on a user message.
 
     Refuses while a stream is active (409) to avoid racing checkpoint writes;
@@ -120,6 +148,7 @@ async def withdraw_turn(body: WithdrawRequest, session_id: uuid.UUID, request: R
     """
     st = _appstate(request)
     session, svc = await _load_session_or_404(request, session_id)
+    _ensure_owner(session, user)
     _refuse_cron_session(session, action="回撤消息")
 
     if st.run_manager.is_active(session["thread_id"]):

@@ -1,16 +1,15 @@
 /* 会话 hooks —— 对应 api/sessions.ts。
-   按 user_id 列表；归档失效列表 + 详情。 */
+   按登录用户列表（身份由 cookie 推导）；归档失效列表 + 详情。 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { sessionsApi } from '@/api/sessions'
 import { toastSuccess } from '@/lib/antdStatic'
 import type { SessionCreate, UUID } from '@/types'
 import { queryKeys } from './queryKeys'
 
-export function useSessions(userId: string | null | undefined, includeArchived = false) {
+export function useSessions(includeArchived = false) {
   return useQuery({
-    queryKey: [...queryKeys.sessions(userId ?? ''), { includeArchived }],
-    queryFn: () => sessionsApi.listByUser(userId!, includeArchived),
-    enabled: !!userId,
+    queryKey: [...queryKeys.sessions, { includeArchived }],
+    queryFn: () => sessionsApi.list(includeArchived),
   })
 }
 
@@ -40,8 +39,7 @@ export function useCreateSession() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (body: SessionCreate) => sessionsApi.create(body),
-    onSuccess: (session) =>
-      qc.invalidateQueries({ queryKey: queryKeys.sessions(session.user_id) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.sessions }),
   })
 }
 
@@ -49,8 +47,8 @@ export function useArchiveSession() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: UUID) => sessionsApi.archive(id),
-    onSuccess: (session) => {
-      qc.invalidateQueries({ queryKey: queryKeys.sessions(session.user_id) })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.sessions })
       toastSuccess('会话已归档')
     },
   })

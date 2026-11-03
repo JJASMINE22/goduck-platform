@@ -40,6 +40,30 @@ class Settings(BaseSettings):
     )
     db_pool_max_size: int = 10
 
+    # ---- 登录认证（用户体系）----
+    # 引导语义 create-if-absent：已存在用户以库内为准（env 密码永不覆盖应用内
+    # 修改），改密/改昵称走平台内流程。生产至少引导一个 manager。
+    bootstrap_users: str = Field(
+        default="",
+        description=(
+            "启动引导用户列表：'用户名:昵称:角色:密码' 逗号分隔多条，角色 manager|user。"
+            "密码仅首次建户生效（哈希入库）；单条非法仅告警跳过。"
+        ),
+    )
+    legacy_user_map: str = Field(
+        default="",
+        description=(
+            "存量库 VARCHAR user_id → app_user 用户名 的对齐映射：'旧值:用户名' 逗号分隔。"
+            "仅在 user_id 列仍为 VARCHAR 的旧库触发（幂等，新装自动跳过）；"
+            "存在未映射旧值时启动显式失败。"
+        ),
+    )
+    auth_session_ttl_hours: int = Field(
+        default=168,
+        gt=0,
+        description="登录会话有效期（小时）。改密/停用/管理员重置即时吊销全部会话。",
+    )
+
     # ---- LLM (legacy defaults; per-agent models now live in the `model` table) ----
     max_invoke_retries: int = 2
 

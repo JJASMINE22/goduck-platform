@@ -49,6 +49,8 @@ dependencies = [
     # 语言检测（docling 单元 lang 元数据，软依赖：缺位置 None）
     "langdetect>=1.0.9",
     "websockets>=13",
+    # 登录认证：argon2id 密码哈希（app_user.password_hash）
+    "argon2-cffi>=23.1",
 ]
 
 [project.optional-dependencies]

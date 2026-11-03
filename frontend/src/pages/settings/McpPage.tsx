@@ -33,6 +33,7 @@ import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/state
 import { formatDateTime } from '@/lib/format'
 import { toastError } from '@/lib/antdStatic'
 import { ApiError } from '@/api/client'
+import { useCurrentUser } from '@/store/userStore'
 import type { McpInUseDetail, McpKind, McpServerOut, ToolInfo } from '@/types'
 
 interface FormValues {
@@ -71,6 +72,8 @@ function shortToolName(fullName: string): string {
 }
 
 export function McpPage(): ReactNode {
+  // 注册/编辑/删除/强制重连为管理员专属；非管理员只读浏览服务与工具
+  const isManager = useCurrentUser((s) => s.user?.is_manager ?? false)
   const servers = useMcpServers()
   const tools = useMcpTools()
   const status = useMcpStatus()
@@ -170,7 +173,7 @@ export function McpPage(): ReactNode {
   }
 
   const serverCols: ColumnsType<McpServerOut> = [
-    { title: '名称', dataIndex: 'name', key: 'name', ellipsis: true, render: (v: string) => <code>{v}</code> },
+    { title: '名称', dataIndex: 'name', key: 'name', width: 220, ellipsis: true, render: (v: string) => <code>{v}</code> },
     {
       title: '类型',
       dataIndex: 'kind',
@@ -212,20 +215,23 @@ export function McpPage(): ReactNode {
       ellipsis: true,
       render: formatDateTime,
     },
-    {
+  ]
+  // 操作列仅管理员渲染（普通用户整列隐藏，写操作本就后端 403 兜底）
+  if (isManager) {
+    serverCols.push({
       title: '操作',
       key: 'actions',
       width: 110,
       render: (_, r) => (
-        <Flex gap={4}>
+        <Flex gap={4} justify="center">
           <Button type="link" size="small" icon={<Pencil size={14} />} onClick={() => openEdit(r)} />
           <Popconfirm title="删除该 server？" onConfirm={() => handleDelete(r)} okText="删除" cancelText="取消">
             <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
           </Popconfirm>
         </Flex>
       ),
-    },
-  ]
+    })
+  }
 
   // —— 工具随所属 server 行展开（server 列表与工具列表合并，消除重复） ——
   const [toolSearch, setToolSearch] = useState('')
@@ -272,14 +278,16 @@ export function McpPage(): ReactNode {
       title="MCP 服务列表"
       subtitle="工具全 MCP 化；按 {server}__{tool} 命名防跨服务冲突"
       extra={
-        <Space>
-          <Button icon={<RefreshCw size={14} />} loading={refresh.isPending} onClick={() => refresh.mutate()}>
-            强制重连
-          </Button>
-          <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
-            注册服务
-          </Button>
-        </Space>
+        isManager ? (
+          <Space>
+            <Button icon={<RefreshCw size={14} />} loading={refresh.isPending} onClick={() => refresh.mutate()}>
+              强制重连
+            </Button>
+            <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
+              注册服务
+            </Button>
+          </Space>
+        ) : null
       }
     >
       {/* 状态卡 */}
@@ -300,7 +308,7 @@ export function McpPage(): ReactNode {
       ) : servers.isError ? (
         <ErrorState onRetry={() => servers.refetch()} />
       ) : !servers.data?.length ? (
-        <EmptyState title="暂无 MCP server" extra={<Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>注册服务</Button>} />
+        <EmptyState title="暂无 MCP server" extra={isManager ? <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>注册服务</Button> : null} />
       ) : (
         <>
           {/* 工具搜索：命中工具的所属 server 行自动展开 */}

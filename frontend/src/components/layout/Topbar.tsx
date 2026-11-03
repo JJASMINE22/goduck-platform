@@ -1,5 +1,5 @@
 /* 顶栏 —— 页面标题区（由各页面经 pageHeaderStore 上提注册）+ 后端健康指示灯。
-    用户身份切换已迁至侧边栏底部（见 UserSwitcher），顶栏不再承载用户区。 */
+    用户身份在侧边栏底部（见 UserMenu），顶栏不再承载用户区。 */
 import { Tooltip } from 'antd'
 import type { ReactNode } from 'react'
 import { useHealth } from '@/hooks/useHealth'

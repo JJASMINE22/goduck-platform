@@ -13,9 +13,9 @@ import shutil
 from pathlib import Path
 
 import yaml
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 
-from app.deps import get_appstate
+from app.deps import get_appstate, require_manager
 from app.models.schemas import SkillDetail, SkillInfo
 
 router = APIRouter(prefix="/skills", tags=["技能管理"])
@@ -67,6 +67,7 @@ async def upload_skill(
     request: Request,
     name: str = Form(...),
     files: list[UploadFile] = File(...),
+    _admin: dict = Depends(require_manager),
 ):
     if not _NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="skill 名称仅允许字母/数字/下划线/连字符")
@@ -116,7 +117,9 @@ async def get_skill_description(name: str, request: Request):
 
 
 @router.delete("/{name}")
-async def delete_skill(name: str, request: Request):
+async def delete_skill(
+    name: str, request: Request, _admin: dict = Depends(require_manager)
+):
     if not _NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="skill 名称非法")
     pool = _pool_dir(request)

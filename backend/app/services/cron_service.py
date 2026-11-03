@@ -71,7 +71,7 @@ class CronService:
     async def get(self, job_id: uuid.UUID) -> Optional[dict]:
         return await dbmod.get_cron_job(self.pool, job_id)
 
-    async def list_by_user(self, user_id: str) -> list[dict]:
+    async def list_by_user(self, user_id: uuid.UUID) -> list[dict]:
         return await dbmod.list_cron_jobs_by_user(self.pool, user_id)
 
     async def list_runs(self, job_id: uuid.UUID, limit: int = 50) -> list[dict]:
@@ -82,7 +82,7 @@ class CronService:
     async def create(
         self,
         *,
-        user_id: str,
+        user_id: uuid.UUID,
         agent_id: uuid.UUID,
         name: str,
         prompt: str,

@@ -28,8 +28,7 @@ export function useAttachmentCapability(
 export function useUploadFile(sessionId: UUID, agentId?: UUID | null) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ file, userId }: { file: File; userId: string }) =>
-      uploadsApi.upload(sessionId, file, userId, agentId ?? null),
+    mutationFn: ({ file }: { file: File }) => uploadsApi.upload(sessionId, file, agentId ?? null),
     onSuccess: () =>
       qc.invalidateQueries({
         queryKey: queryKeys.attachmentCapability(sessionId, agentId ?? null),
@@ -59,23 +58,23 @@ function friendlyName(file: File): string {
 }
 
 /** 多入口（选择器/粘贴）共用的附件上传编排。
-     返回 attach（批量入队 + 并发上传）与 retry（按 localId 重试错误占位）。
-     agentId=当前选中智能体（上传门能力谓词按它派生）。 */
-export function useAttachFiles(sessionId: UUID, userId: string, agentId?: UUID | null) {
+      返回 attach（批量入队 + 并发上传）与 retry（按 localId 重试错误占位）。
+      agentId=当前选中智能体（上传门能力谓词按它派生）。 */
+export function useAttachFiles(sessionId: UUID, agentId?: UUID | null) {
   const cap = useAttachmentCapability(sessionId, agentId)
   const { mutateAsync } = useUploadFile(sessionId, agentId)
 
   const run = useCallback(
     async (file: File, localId: string) => {
       try {
-        const res = await mutateAsync({ file, userId })
+        const res = await mutateAsync({ file })
         useChatStore.getState().resolvePending(localId, res)
       } catch {
         // 错误详情已由 mutations.onError 全局提示；占位转错误态留驻供重试
         useChatStore.getState().failPending(localId)
       }
     },
-    [mutateAsync, userId],
+    [mutateAsync],
   )
 
   const attach = useCallback(

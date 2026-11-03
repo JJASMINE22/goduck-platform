@@ -13,7 +13,8 @@ export const queryKeys = {
   agentHistory: (id: string) => ['agents', id, 'history'] as const,
   // 尾缀 'graph' 区分旧 mermaid 文本缓存（负载形态不同，防串型）
   agentTopology: (id: string) => ['agents', id, 'topology', 'graph'] as const,
-  sessions: (userId: string) => ['sessions', { userId }] as const,
+  // 会话/任务按登录用户作用域（身份由 cookie 推导，无需入 key 维度）
+  sessions: ['sessions'] as const,
   session: (id: string) => ['sessions', id] as const,
   sessionHistory: (id: string) => ['sessions', id, 'history'] as const,
   mcpServers: ['mcp', 'servers'] as const,
@@ -41,7 +42,7 @@ export const queryKeys = {
     ['sessions', sessionId, 'workspace-preview', path] as const,
   shellCapability: (sessionId: string, agentId?: string | null) =>
     ['sessions', sessionId, 'shell-capability', agentId ?? ''] as const,
-  cronJobs: (userId: string) => ['cron', 'jobs', { userId }] as const,
+  cronJobs: ['cron', 'jobs'] as const,
   cronRuns: (jobId: string) => ['cron', 'jobs', jobId, 'runs'] as const,
 } as const
 

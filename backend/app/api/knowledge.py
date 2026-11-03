@@ -17,9 +17,9 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 
-from app.deps import get_appstate
+from app.deps import get_appstate, require_manager
 from app.models.schemas import (
     KbAnchorCard,
     KbAnchorCardsRequest,
@@ -62,11 +62,15 @@ async def list_kbs(request: Request):
 
 
 @router.post("", response_model=KnowledgeBaseOut, status_code=201)
-async def create_kb(body: KnowledgeBaseCreate, request: Request):
+async def create_kb(
+    body: KnowledgeBaseCreate,
+    request: Request,
+    user: dict = Depends(require_manager),
+):
     svc = _service(request)
     try:
         row = await svc.create_kb(
-            body.name, body.description, body.creator, dims=body.dims
+            body.name, body.description, user["nickname"], dims=body.dims
         )
     except FileExistsError:
         raise HTTPException(status_code=409, detail=f"知识库名 '{body.name}' 已存在")
@@ -74,7 +78,12 @@ async def create_kb(body: KnowledgeBaseCreate, request: Request):
 
 
 @router.put("/{kb_id}", response_model=KnowledgeBaseOut)
-async def update_kb(kb_id: uuid.UUID, body: KnowledgeBaseUpdate, request: Request):
+async def update_kb(
+    kb_id: uuid.UUID,
+    body: KnowledgeBaseUpdate,
+    request: Request,
+    _admin: dict = Depends(require_manager),
+):
     svc = _service(request)
     try:
         row = await svc.update_kb(
@@ -94,7 +103,9 @@ async def update_kb(kb_id: uuid.UUID, body: KnowledgeBaseUpdate, request: Reques
 
 
 @router.delete("/{kb_id}")
-async def delete_kb(kb_id: uuid.UUID, request: Request):
+async def delete_kb(
+    kb_id: uuid.UUID, request: Request, _admin: dict = Depends(require_manager)
+):
     svc = _service(request)
     try:
         await svc.delete_kb(kb_id)
@@ -115,6 +126,7 @@ async def upload_document(
     kb_id: uuid.UUID,
     request: Request,
     file: UploadFile = File(...),
+    _admin: dict = Depends(require_manager),
 ):
     """注册文档（仅上传留底，不解析）：前端只传文件流，mime 服务端魔数判定。
 
@@ -169,6 +181,7 @@ async def parse_document(
     doc_id: uuid.UUID,
     body: KbParseRequest,
     request: Request,
+    _admin: dict = Depends(require_manager),
 ):
     """手动解析：校验 + 持久化切块参数 → 后台入库（幂等，重建场景同样适用）。
 
@@ -192,7 +205,12 @@ async def parse_document(
 
 
 @router.delete("/{kb_id}/documents/{doc_id}")
-async def delete_document(kb_id: uuid.UUID, doc_id: uuid.UUID, request: Request):
+async def delete_document(
+    kb_id: uuid.UUID,
+    doc_id: uuid.UUID,
+    request: Request,
+    _admin: dict = Depends(require_manager),
+):
     svc = _service(request)
     try:
         await svc.delete_document(kb_id, doc_id)
@@ -202,7 +220,12 @@ async def delete_document(kb_id: uuid.UUID, doc_id: uuid.UUID, request: Request)
 
 
 @router.post("/{kb_id}/documents/{doc_id}/reindex", response_model=KbDocumentOut)
-async def reindex_document(kb_id: uuid.UUID, doc_id: uuid.UUID, request: Request):
+async def reindex_document(
+    kb_id: uuid.UUID,
+    doc_id: uuid.UUID,
+    request: Request,
+    _admin: dict = Depends(require_manager),
+):
     """重建文档索引（沿用已存解析参数；需 MinIO 留底）：删旧 chunk 后重新入库。"""
     st = _appstate(request)
     svc = st.knowledge_service

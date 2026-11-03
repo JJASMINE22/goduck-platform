@@ -1,10 +1,9 @@
 /* 知识库管理页（plan §5.8）—— KB CRUD + 文档入口。
-   - 知识库 = 一组文档的检索集合（es_index_name 不可改）。
-   - 创建需 creator（取顶栏当前用户）；可设嵌入维度（默认全局）；改名/改维度时后端
-     校验唯一性（409）与维度守卫（有文档须 force：文档重置为待解析，不删除）。
-   - 能力驱动（F2）：后端 kb_enabled=false 时路由未挂载（接口 404），本页依据
-     全局能力开关（/health → capabilities）降级为禁用态提示，不依赖接口报错。
-   - 文档管理（上传/手动解析/检索）在抽屉 KbDocumentsDrawer 内完成。 */
+    - 知识库 = 一组文档的检索集合（es_index_name 不可改）。
+    - 创建/编辑/删除/文档入库为管理员操作（后端 403 兜底）；非管理员只读预览。
+    - 能力驱动（F2）：后端 kb_enabled=false 时路由未挂载（接口 404），本页依据
+      全局能力开关（/health → capabilities）降级为禁用态提示，不依赖接口报错。
+    - 文档管理（上传/手动解析/检索）在抽屉 KbDocumentsDrawer 内完成。 */
 import { App as AntApp, Button, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState, type ReactNode } from 'react'
@@ -26,6 +25,7 @@ interface FormValues {
 
 export function KnowledgePage(): ReactNode {
   const { ready, kb_enabled } = useCapabilities()
+  const isManager = useCurrentUser((s) => s.user?.is_manager ?? false)
   const { data, isLoading, isError, refetch } = useKnowledgeBases()
   const createKb = useCreateKb()
   const updateKb = useUpdateKb()
@@ -36,8 +36,6 @@ export function KnowledgePage(): ReactNode {
   const [editing, setEditing] = useState<KnowledgeBaseOut | null>(null)
   const [docKb, setDocKb] = useState<KnowledgeBaseOut | null>(null)
   const [form] = Form.useForm<FormValues>()
-
-  const userId = useCurrentUser((s) => s.userId)
 
   // 全局 KB 能力未启用（kb_enabled=false）→ 降级展示（不依赖接口 404/503）
   const kbDisabled = ready && !kb_enabled
@@ -100,7 +98,6 @@ export function KnowledgePage(): ReactNode {
       await createKb.mutateAsync({
         name: v.name.trim(),
         description: v.description?.trim() || null,
-        creator: userId,
         ...(dims != null ? { dims } : {}),
       })
       setOpen(false)
@@ -123,11 +120,25 @@ export function KnowledgePage(): ReactNode {
       title: '名称',
       dataIndex: 'name',
       key: 'name',
+      width: 280,
+      align: 'left',
       render: (v: string, r) => (
         <Flex vertical gap={2}>
-          <span style={{ fontWeight: 600 }}>{v}</span>
+          <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {v}
+          </span>
           {r.description ? (
-            <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{r.description}</span>
+            <span
+              style={{
+                fontSize: 12,
+                color: 'var(--color-text-tertiary)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {r.description}
+            </span>
           ) : null}
         </Flex>
       ),
@@ -165,7 +176,7 @@ export function KnowledgePage(): ReactNode {
       key: 'actions',
       width: 150,
       render: (_, record) => (
-        <Flex gap={4}>
+        <Flex gap={4} justify="center">
           <Button
             type="link"
             size="small"
@@ -174,12 +185,16 @@ export function KnowledgePage(): ReactNode {
           >
             文档
           </Button>
-          <Tooltip title="编辑">
-            <Button type="link" size="small" icon={<Pencil size={14} />} onClick={() => openEdit(record)} />
-          </Tooltip>
-          <Popconfirm title="删除该知识库？" onConfirm={() => handleDelete(record)} okText="删除" cancelText="取消">
-            <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
-          </Popconfirm>
+          {isManager ? (
+            <>
+              <Tooltip title="编辑">
+                <Button type="link" size="small" icon={<Pencil size={14} />} onClick={() => openEdit(record)} />
+              </Tooltip>
+              <Popconfirm title="删除该知识库？" onConfirm={() => handleDelete(record)} okText="删除" cancelText="取消">
+                <Button type="link" size="small" danger icon={<Trash2 size={14} />} />
+              </Popconfirm>
+            </>
+          ) : null}
         </Flex>
       ),
     },
@@ -192,9 +207,11 @@ export function KnowledgePage(): ReactNode {
       title="知识库列表"
       subtitle="上传 pdf/docx 留底，手动解析入库；智能体经 kb_search 检索召回"
       extra={
-        <Button type="primary" icon={<Plus size={16} />} onClick={openCreate} disabled={kbDisabled}>
-          新建知识库
-        </Button>
+        isManager ? (
+          <Button type="primary" icon={<Plus size={16} />} onClick={openCreate} disabled={kbDisabled}>
+            新建知识库
+          </Button>
+        ) : null
       }
     >
       {isLoading ? (

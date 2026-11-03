@@ -19,12 +19,12 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from langgraph.graph import END
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.schema_utils import AgentConfig
-from app.deps import SimpleUser, get_appstate
+from app.deps import SimpleUser, get_appstate, get_current_user
 from app.models import db as dbmod
 from app.models.schemas import (
     KnowledgeCapability,
@@ -52,11 +52,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sessions", tags=["流式对话"])
 
 
-def _config_for(session: dict) -> dict:
+def _config_for(session: dict, user: dict) -> dict:
     return {
         "configurable": {
             "thread_id": session["thread_id"],
-            "langgraph_auth_user": SimpleUser(session["user_id"]),
+            # identity=user_id（uuid，memories/会话隔离键不变）；username
+            # 仅用于工作区目录键 {username}-{uuid}
+            "langgraph_auth_user": SimpleUser(
+                str(session["user_id"]), user.get("username")
+            ),
         }
     }
 
@@ -195,7 +199,9 @@ async def join_cancelled_run(run, timeout_s: float = _CANCEL_JOIN_TIMEOUT_S) -> 
         return False
 
 
-async def clear_orphan_pending(st, session: dict, agent_id: uuid.UUID | None = None) -> bool:
+async def clear_orphan_pending(
+    st, session: dict, config: dict, agent_id: uuid.UUID | None = None
+) -> bool:
     """清空 cancelled / 崩溃 run 残留的孤儿 pending（取消路径的源头收尾）。
 
     判据与门禁（_refuse_or_heal_pending）一致：state.next 非空且无任何
@@ -203,9 +209,9 @@ async def clear_orphan_pending(st, session: dict, agent_id: uuid.UUID | None = N
     清尾手法与 withdraw 相同（values=None, as_node=END，不经 writer 链，
     任何状态安全）；取图弱绑定（显式 agent_id > last_agent_id），与回撤同
     规则。返回是否执行了清理；异常向上抛，由调用方决定吞或报（取消路径
-    best-effort 吞掉并告警，门禁自愈兜底）。
+    best-effort 吞掉并告警，门禁自愈兜底）。仅 checkpoint 操作，复用调用方
+    既有 config（SSE 与语音 WS 同一入口）。
     """
-    config = _config_for(session)
     chosen = await resolve_agent_choice_or_409(st, session, agent_id)
     agent = await _build_agent_or_409(st, chosen)
     state = await agent.aget_state(config)
@@ -215,12 +221,17 @@ async def clear_orphan_pending(st, session: dict, agent_id: uuid.UUID | None = N
     return True
 
 
-async def _load_session_or_404(request: Request, session_id: uuid.UUID) -> dict:
+async def _load_session_or_404(
+    request: Request, session_id: uuid.UUID, user: dict | None = None
+) -> dict:
     from app.services.session_service import SessionService
 
     svc = SessionService(get_appstate(request).pool)
     session = await svc.get(session_id)
     if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    if user is not None and session["user_id"] != user["id"]:
+        # 非本人会话一律 404（不暴露存在性）
         raise HTTPException(status_code=404, detail="session not found")
     if session["status"] == "archived":
         raise HTTPException(status_code=409, detail="session archived")
@@ -304,11 +315,16 @@ async def _subscriber_gen(st, thread_id: str, after: str | None = None):
 
 
 @router.post("/{session_id}/messages")
-async def send_message(session_id: uuid.UUID, body: SendMessageRequest, request: Request):
+async def send_message(
+    session_id: uuid.UUID,
+    body: SendMessageRequest,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
     st = get_appstate(request)
-    session, _svc = await _load_session_or_404(request, session_id)
+    session, _svc = await _load_session_or_404(request, session_id, user)
     _refuse_cron_session(session, action="手动发送消息")
-    config = _config_for(session)
+    config = _config_for(session, user)
 
     # 写者解析（§4.4）：显式 body.agent_id > last_agent_id，落空/无效 → 409
     chosen_id = await resolve_agent_choice_or_409(st, session, body.agent_id)
@@ -359,6 +375,7 @@ async def get_knowledge_capability(
     session_id: uuid.UUID,
     request: Request,
     agent_id: Optional[uuid.UUID] = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+    user: dict = Depends(get_current_user),
 ):
     """前端据此渲染会话框 KB 选择器（DESIGN 准则 F2 能力驱动 UI）。
 
@@ -370,7 +387,7 @@ async def get_knowledge_capability(
 
     st = get_appstate(request)
     session = await SessionService(st.pool).get(session_id)
-    if session is None:
+    if session is None or session["user_id"] != user["id"]:
         raise HTTPException(status_code=404, detail="session not found")
 
     allow = False
@@ -386,6 +403,7 @@ async def get_shell_capability(
     session_id: uuid.UUID,
     request: Request,
     agent_id: Optional[uuid.UUID] = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+    user: dict = Depends(get_current_user),
 ):
     """是否启用 shell 执行 —— 驱动会话页 shell 能力徽标（准则 F2 能力驱动 UI）。
 
@@ -398,7 +416,7 @@ async def get_shell_capability(
     from app.services.session_service import SessionService
 
     session = await SessionService(st.pool).get(session_id)
-    if session is None:
+    if session is None or session["user_id"] != user["id"]:
         raise HTTPException(status_code=404, detail="session not found")
 
     allow = False
@@ -420,6 +438,7 @@ async def get_pending_interrupt(
     session_id: uuid.UUID,
     request: Request,
     agent_id: Optional[uuid.UUID] = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+    user: dict = Depends(get_current_user),
 ):
     """待审批 HITL 查询（会话重入恢复，plan §5.3 补全）。
 
@@ -434,8 +453,8 @@ async def get_pending_interrupt(
     只读 aget_state，不占用 run 闸；resume 端点同源校验（409 契约不变）。
     """
     st = get_appstate(request)
-    session, _svc = await _load_session_or_404(request, session_id)
-    config = _config_for(session)
+    session, _svc = await _load_session_or_404(request, session_id, user)
+    config = _config_for(session, user)
     chosen_id = await resolve_agent_choice_or_409(st, session, agent_id)
     agent = await _build_agent_or_409(st, chosen_id)
     intr = await HITLResolver().assert_interrupted(agent, config)
@@ -447,10 +466,15 @@ async def get_pending_interrupt(
 
 
 @router.post("/{session_id}/resume")
-async def resume(session_id: uuid.UUID, body: ResumeRequest, request: Request):
+async def resume(
+    session_id: uuid.UUID,
+    body: ResumeRequest,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
     st = get_appstate(request)
-    session, _svc = await _load_session_or_404(request, session_id)
-    config = _config_for(session)
+    session, _svc = await _load_session_or_404(request, session_id, user)
+    config = _config_for(session, user)
     # 强绑定（§4.4 解析矩阵）：resume 必须跑在恰好那张中断的图上，不收
     # agent_id 参数。门禁 D 保证"存在 pending interrupt ⇒ last_agent_id ==
     # 中断 agent"（悬空期 send 被拒、切换是纯 UI 态不落库），构造性精确。
@@ -487,6 +511,7 @@ async def observe_stream(
     request: Request,
     after: str | None = None,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    user: dict = Depends(get_current_user),
 ):
     """观察流（只读幂等）：重进会话 / 网络重连的补帧通道。
 
@@ -501,7 +526,7 @@ async def observe_stream(
     - 落后超出缓冲窗口 → 单发 resync 事件收流，前端回落 /history 重建后重挂。
     """
     st = get_appstate(request)
-    session, _svc = await _load_session_or_404(request, session_id)
+    session, _svc = await _load_session_or_404(request, session_id, user)
     effective_after = after or last_event_id
     if not st.run_manager.is_replayable(session["thread_id"], effective_after):
         return Response(status_code=204)
@@ -511,7 +536,9 @@ async def observe_stream(
 
 
 @router.post("/{session_id}/cancel")
-async def cancel_run(session_id: uuid.UUID, request: Request):
+async def cancel_run(
+    session_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
+):
     """显式取消当前 run：广播 canceled 终态（各订阅者据其落态），随后释放
     单写者闸（withdraw 即刻放行）。无 active run → 409。
 
@@ -521,14 +548,14 @@ async def cancel_run(session_id: uuid.UUID, request: Request):
     告警，残留由 send 门禁的自愈（_refuse_or_heal_pending）兜底。
     """
     st = get_appstate(request)
-    session, _svc = await _load_session_or_404(request, session_id)
+    session, _svc = await _load_session_or_404(request, session_id, user)
     _refuse_cron_session(session, action="手动取消")
     run = st.run_manager.cancel(session["thread_id"])
     if run is None:
         raise HTTPException(status_code=409, detail="当前没有进行中的回合")
     if await join_cancelled_run(run):
         try:
-            await clear_orphan_pending(st, session)
+            await clear_orphan_pending(st, session, _config_for(session, user))
         except Exception:
             logger.warning(
                 "cancel cleanup failed for session %s (send gate will self-heal)",

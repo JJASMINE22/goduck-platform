@@ -85,7 +85,6 @@ function PendingChip({
 
 export function ChatInput({
   sessionId,
-  userId,
   status,
   send,
   cancel,
@@ -97,7 +96,6 @@ export function ChatInput({
   agentLockedReason,
 }: {
   sessionId: UUID
-  userId: string
   status: ChatStreamStatus
   send: (content: string, opts?: SendOptions) => Promise<void>
   cancel: () => void
@@ -125,7 +123,7 @@ export function ChatInput({
 
   // —— 附件（能力按当前选中智能体派生；query key 含 agentId，切换即重拉） ——
   const cap = useAttachmentCapability(sessionId, selectedAgentId)
-  const { attach, retry } = useAttachFiles(sessionId, userId, selectedAgentId)
+  const { attach, retry } = useAttachFiles(sessionId, selectedAgentId)
   const attachments = useChatStore((s) => s.attachments)
   const removeAttachment = useChatStore((s) => s.removeAttachment)
   const pendingAttachments = useChatStore((s) => s.pendingAttachments)

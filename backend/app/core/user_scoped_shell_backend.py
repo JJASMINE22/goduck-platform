@@ -39,7 +39,7 @@ from pathlib import Path
 from deepagents.backends.local_shell import DEFAULT_EXECUTE_TIMEOUT, LocalShellBackend
 
 from app.core.user_scoped_backend import (
-    _current_user_identity,
+    _current_workspace_key,
     user_workspace_path,
 )
 
@@ -106,7 +106,7 @@ class UserScopedLocalShellBackend(LocalShellBackend):
         agent writes with ``write_file`` and one it creates via ``echo > ...``
         land in the identical on-disk directory (写=读).
         """
-        return user_workspace_path(self._base_root, _current_user_identity())
+        return user_workspace_path(self._base_root, _current_workspace_key())
 
     @cwd.setter
     def cwd(self, _value: Path) -> None:

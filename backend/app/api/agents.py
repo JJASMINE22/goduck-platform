@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
-from app.deps import get_appstate
+from app.deps import get_appstate, get_current_user, require_manager
 from app.models.schemas import (
     AgentCreate,
     AgentDetail,
@@ -62,7 +62,9 @@ def _with_mermaid(agent: dict, svc: AgentService) -> dict:
 
 
 @router.post("/validate", response_model=ValidateResponse)
-async def validate(body: ValidateRequest, request: Request):
+async def validate(
+    body: ValidateRequest, request: Request, _user: dict = Depends(get_current_user)
+):
     """Dry-run: validate config + return mermaid preview (no persistence)."""
     svc = _service(request)
     valid, errs = svc.validate_config(body.config)
@@ -74,7 +76,9 @@ async def validate(body: ValidateRequest, request: Request):
 
 
 @router.post("", response_model=AgentDetail)
-async def create_agent(body: AgentCreate, request: Request):
+async def create_agent(
+    body: AgentCreate, request: Request, user: dict = Depends(require_manager)
+):
     st = get_appstate(request)
     svc = _service(request)
     # 校验 model_id 已注册且可用
@@ -83,7 +87,7 @@ async def create_agent(body: AgentCreate, request: Request):
     _validate_vision_mount(st, body.vision_model_id, body.model_id, body.config)
     try:
         agent = await svc.create(
-            body.name, body.description, body.config, body.model_id, body.creator,
+            body.name, body.description, body.config, body.model_id, user["nickname"],
             vision_model_id=body.vision_model_id, kind=body.kind,
         )
     except FileExistsError:
@@ -96,7 +100,12 @@ async def create_agent(body: AgentCreate, request: Request):
 
 
 @router.put("/{agent_id}", response_model=AgentDetail)
-async def update_agent(agent_id: uuid.UUID, body: AgentUpdate, request: Request):
+async def update_agent(
+    agent_id: uuid.UUID,
+    body: AgentUpdate,
+    request: Request,
+    user: dict = Depends(require_manager),
+):
     st = get_appstate(request)
     svc = _service(request)
     # 校验 model_id 已注册且可用（换模型时同样校验）
@@ -105,7 +114,7 @@ async def update_agent(agent_id: uuid.UUID, body: AgentUpdate, request: Request)
     _validate_vision_mount(st, body.vision_model_id, body.model_id, body.config)
     try:
         agent = await svc.update(
-            agent_id, body.config, body.model_id, body.description, body.updater, body.name,
+            agent_id, body.config, body.model_id, body.description, user["nickname"], body.name,
             vision_model_id=body.vision_model_id,
         )
     except KeyError as e:
@@ -191,7 +200,12 @@ async def list_history(agent_id: uuid.UUID, request: Request):
 
 
 @router.post("/{agent_id}/restore", response_model=AgentDetail)
-async def restore_agent(agent_id: uuid.UUID, body: RestoreRequest, request: Request):
+async def restore_agent(
+    agent_id: uuid.UUID,
+    body: RestoreRequest,
+    request: Request,
+    user: dict = Depends(require_manager),
+):
     st = get_appstate(request)
     svc = _service(request)
     # validate the snapshot's model BEFORE the restore commit:
@@ -213,7 +227,7 @@ async def restore_agent(agent_id: uuid.UUID, body: RestoreRequest, request: Requ
     snapshot_vision = snapshot.get("vision_model_id")
     if snapshot_vision is not None and not st.model_store.supports_vision(snapshot_vision):
         snapshot_vision = None
-    agent = await svc.restore(agent_id, body.history_id, body.operator, vision_model_id=snapshot_vision)
+    agent = await svc.restore(agent_id, body.history_id, user["nickname"], vision_model_id=snapshot_vision)
     if agent is None:
         raise HTTPException(status_code=404, detail="agent or history not found")
     st.agent_registry.invalidate(agent["id"])
@@ -222,7 +236,9 @@ async def restore_agent(agent_id: uuid.UUID, body: RestoreRequest, request: Requ
 
 
 @router.delete("/{agent_id}", response_model=AgentOut)
-async def archive_agent(agent_id: uuid.UUID, request: Request):
+async def archive_agent(
+    agent_id: uuid.UUID, request: Request, _user: dict = Depends(require_manager)
+):
     st = get_appstate(request)
     svc = _service(request)
     agent = await svc.archive(agent_id)
@@ -233,7 +249,9 @@ async def archive_agent(agent_id: uuid.UUID, request: Request):
 
 
 @router.post("/{agent_id}/purge", status_code=204)
-async def purge_agent(agent_id: uuid.UUID, request: Request):
+async def purge_agent(
+    agent_id: uuid.UUID, request: Request, _user: dict = Depends(require_manager)
+):
     """Hard delete an agent (physical).
 
     会话-智能体解耦语义：chat 会话与 checkpoint 不再随删（last_agent_id 置空，

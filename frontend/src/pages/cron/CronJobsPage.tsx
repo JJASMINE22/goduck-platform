@@ -54,8 +54,8 @@ interface JobFormValues {
 
 export function CronJobsPage(): ReactNode {
   const navigate = useNavigate()
-  const userId = useCurrentUser((s) => s.userId)
-  const jobs = useCronJobs(userId)
+  const nickname = useCurrentUser((s) => s.user?.nickname)
+  const jobs = useCronJobs()
   const agents = useAgents()
   const createJob = useCreateCronJob()
   const updateJob = useUpdateCronJob()
@@ -119,7 +119,6 @@ export function CronJobsPage(): ReactNode {
         await updateJob.mutateAsync({ id: editing.id, body })
       } else {
         await createJob.mutateAsync({
-          user_id: userId,
           agent_id: v.agent_id,
           name: v.name.trim(),
           prompt: v.prompt,
@@ -164,6 +163,7 @@ export function CronJobsPage(): ReactNode {
       title: '任务名',
       dataIndex: 'name',
       key: 'name',
+      align: 'left',
       render: (v: string, r) => (
         <Flex vertical gap={2}>
           <span>{v}</span>
@@ -218,7 +218,7 @@ export function CronJobsPage(): ReactNode {
       key: 'actions',
       width: 270,
       render: (_, r) => (
-        <Flex gap={0} align="center" onClick={(e) => e.stopPropagation()}>
+        <Flex gap={0} align="center" justify="center" onClick={(e) => e.stopPropagation()}>
           <Tooltip title={r.enabled ? '停用' : '启用（一个间隔后首跑）'}>
             <Switch size="small" checked={r.enabled} onChange={(v) => handleToggle(r, v)} />
           </Tooltip>
@@ -260,7 +260,7 @@ export function CronJobsPage(): ReactNode {
         <ErrorState onRetry={() => jobs.refetch()} />
       ) : !rows.length ? (
         <EmptyState
-          title={`用户「${userId}」暂无定时任务`}
+          title={`${nickname ?? '当前用户'} 暂无定时任务`}
           description={
             cronAgents.length
               ? '点击「新建任务」绑定 cron 型智能体开始调度'
@@ -397,6 +397,7 @@ function CronRunsDrawer({ job, onClose }: { job: CronJobOut | null; onClose: () 
       title: '错误',
       dataIndex: 'error',
       key: 'error',
+      align: 'left',
       ellipsis: { showTitle: true },
       render: (v: string | null) =>
         v ? (

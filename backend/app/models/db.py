@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from psycopg.errors import UniqueViolation
@@ -55,6 +56,53 @@ CREATE TABLE IF NOT EXISTS model (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ============================ 用户与登录（auth）============================
+-- app_user：当前生效事实（pending/rejected 只活在 auth_request，不进本表）。
+-- username=登录锚点（不可变，唯一性按 casefold 比较）；nickname=纯展示名
+-- （即时查重+黑名单，可改）。业务表 user_id 一律 FK 到本表 uuid——身份与
+-- 展示解耦，改名零级联。
+CREATE TABLE IF NOT EXISTS app_user (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username            VARCHAR NOT NULL,
+    nickname            VARCHAR NOT NULL,
+    password_hash       TEXT    NOT NULL,                   -- argon2id，明文永不落库
+    is_manager          BOOLEAN NOT NULL DEFAULT false,
+    state               VARCHAR NOT NULL DEFAULT 'active',  -- active | disabled
+    failed_attempts     INT     NOT NULL DEFAULT 0,         -- 连续登录失败（成功即清零）
+    locked_until        TIMESTAMPTZ,                        -- 爆破锁退避（NULL=未锁）
+    last_login_at       TIMESTAMPTZ,
+    password_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_app_user_username ON app_user(lower(username));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_app_user_nickname ON app_user(lower(nickname));
+
+-- 注册申请（审批制）：批准 = 原子建户；驳回 = no-op。rejected 行保留 =
+-- 用户名占位（防骚扰重放），需重新开放由管理员删除申请行。
+CREATE TABLE IF NOT EXISTS auth_request (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    type        VARCHAR NOT NULL DEFAULT 'register',        -- 当前仅 register（泛化预留）
+    payload     JSONB   NOT NULL,                           -- {username, nickname, password_hash}
+    status      VARCHAR NOT NULL DEFAULT 'pending',         -- pending | approved | rejected
+    reason      TEXT,                                       -- 驳回原因（可选）
+    reviewed_by UUID REFERENCES app_user(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    reviewed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_auth_request_status ON auth_request(status, created_at DESC);
+
+-- 登录会话令牌：服务端会话表（登出/停用/改密 = 删行即时吊销）。cookie 只存
+-- 原始 token，库内存 sha256 哈希——库泄露不可逆推 token。
+CREATE TABLE IF NOT EXISTS auth_session (
+    token_hash   VARCHAR(64) PRIMARY KEY,                   -- sha256 hex
+    user_id      UUID NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_auth_session_user ON auth_session(user_id);
 
 CREATE TABLE IF NOT EXISTS agent (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -92,7 +140,8 @@ CREATE TABLE IF NOT EXISTS session (
     -- 最近使用的智能体（会话-智能体解耦）：send 时写入，非绑定关系。
     -- NULL=创建后尚未选择/发送；agent 删除时 SET NULL，会话与 checkpoint 存活。
     last_agent_id UUID REFERENCES agent(id) ON DELETE SET NULL,
-    user_id       VARCHAR NOT NULL,
+    -- 归属用户（FK app_user；身份由登录令牌推导，客户端不再传 user_id）
+    user_id       UUID NOT NULL REFERENCES app_user(id),
     thread_id     VARCHAR NOT NULL UNIQUE,
     title         TEXT,
     status        VARCHAR NOT NULL DEFAULT 'active',
@@ -116,7 +165,7 @@ CREATE TABLE IF NOT EXISTS mcp_server (
 CREATE TABLE IF NOT EXISTS upload (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id    UUID NOT NULL REFERENCES session(id) ON DELETE CASCADE,
-    user_id       VARCHAR NOT NULL,
+    user_id       UUID NOT NULL REFERENCES app_user(id),
     bucket_key    TEXT NOT NULL,
     filename      TEXT NOT NULL,
     mime          TEXT NOT NULL,
@@ -138,7 +187,7 @@ CREATE INDEX IF NOT EXISTS idx_upload_user ON upload(user_id);
 -- session 侧经 kind='cron' 鉴别（见 _MIGRATIONS），1:1 绑定任务专用会话。
 CREATE TABLE IF NOT EXISTS cron_job (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id             VARCHAR NOT NULL,
+    user_id             UUID NOT NULL REFERENCES app_user(id),
     agent_id            UUID NOT NULL REFERENCES agent(id) ON DELETE CASCADE,
     -- 专用任务会话（session.kind='cron'）。不设硬 FK：session 已由 agent 级联管
     -- 理，交叉 FK 会引入级联顺序脆弱性；删除路径由 API 层守卫（kind='cron' 拒删）。
@@ -670,7 +719,7 @@ async def list_history(pool: AsyncConnectionPool, agent_id: uuid.UUID) -> list[d
 async def create_session(
     pool: AsyncConnectionPool,
     agent_id: Optional[uuid.UUID],
-    user_id: str,
+    user_id: uuid.UUID,
     thread_id: str,
     title: Optional[str],
     kind: str = "chat",
@@ -723,7 +772,7 @@ async def set_session_last_agent(
 
 
 async def get_active_session_by_user_title(
-    pool: AsyncConnectionPool, user_id: str, title: str
+    pool: AsyncConnectionPool, user_id: uuid.UUID, title: str
 ) -> Optional[dict]:
     """按 (user_id, title) 查活跃会话（去重预检用；归档会话豁免）。"""
     async with pool.connection() as conn:
@@ -752,7 +801,7 @@ async def get_session_by_thread(
 
 
 async def list_sessions_by_user(
-    pool: AsyncConnectionPool, user_id: str, include_archived: bool = False
+    pool: AsyncConnectionPool, user_id: uuid.UUID, include_archived: bool = False
 ) -> list[dict]:
     # LEFT JOIN（会话-智能体解耦）：last_agent 悬空（agent 已删 / 未选择）时
     # 会话仍需列出，agent_name 为 NULL 由前端优雅降级展示。
@@ -968,7 +1017,7 @@ async def delete_mcp_server(pool: AsyncConnectionPool, server_id: uuid.UUID) -> 
 async def insert_upload(
     pool: AsyncConnectionPool,
     session_id: uuid.UUID,
-    user_id: str,
+    user_id: uuid.UUID,
     bucket_key: str,
     filename: str,
     mime: str,
@@ -1552,13 +1601,13 @@ _CRON_JOB_COLUMNS = (
     "j.id, j.user_id, j.agent_id, j.session_id, j.name, j.prompt, j.interval_minutes, "
     "j.start_at, j.enabled, j.next_run_at, j.last_run_at, j.last_status, j.last_error, "
     "j.consecutive_failures, j.created_at, j.updated_at, "
-    "a.name AS agent_name, s.thread_id"
+    "a.name AS agent_name, s.thread_id, u.username AS owner_username"
 )
 
 
 async def create_cron_job(
     pool: AsyncConnectionPool,
-    user_id: str,
+    user_id: uuid.UUID,
     agent_id: uuid.UUID,
     name: str,
     prompt: str,
@@ -1610,6 +1659,7 @@ async def get_cron_job(pool: AsyncConnectionPool, job_id: uuid.UUID) -> Optional
                 f"SELECT {_CRON_JOB_COLUMNS} FROM cron_job j "
                 "JOIN agent a ON a.id = j.agent_id "
                 "LEFT JOIN session s ON s.id = j.session_id "
+                "LEFT JOIN app_user u ON u.id = j.user_id "
                 "WHERE j.id = %s",
                 (job_id,),
             )
@@ -1618,7 +1668,7 @@ async def get_cron_job(pool: AsyncConnectionPool, job_id: uuid.UUID) -> Optional
 
 
 async def get_cron_job_by_user_name(
-    pool: AsyncConnectionPool, user_id: str, name: str
+    pool: AsyncConnectionPool, user_id: uuid.UUID, name: str
 ) -> Optional[dict]:
     """按 (user_id, name) 查任务（建/改名去重预检用）。"""
     async with pool.connection() as conn:
@@ -1630,13 +1680,14 @@ async def get_cron_job_by_user_name(
             return await cur.fetchone()
 
 
-async def list_cron_jobs_by_user(pool: AsyncConnectionPool, user_id: str) -> list[dict]:
+async def list_cron_jobs_by_user(pool: AsyncConnectionPool, user_id: uuid.UUID) -> list[dict]:
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"SELECT {_CRON_JOB_COLUMNS} FROM cron_job j "
                 "JOIN agent a ON a.id = j.agent_id "
                 "LEFT JOIN session s ON s.id = j.session_id "
+                "LEFT JOIN app_user u ON u.id = j.user_id "
                 "WHERE j.user_id = %s ORDER BY j.created_at DESC",
                 (user_id,),
             )
@@ -1689,6 +1740,7 @@ async def due_cron_jobs(pool: AsyncConnectionPool) -> list[dict]:
                 f"SELECT {_CRON_JOB_COLUMNS} FROM cron_job j "
                 "JOIN agent a ON a.id = j.agent_id "
                 "LEFT JOIN session s ON s.id = j.session_id "
+                "LEFT JOIN app_user u ON u.id = j.user_id "
                 "WHERE j.enabled AND j.next_run_at IS NOT NULL AND j.next_run_at <= now() "
                 "ORDER BY j.next_run_at"
             )
@@ -1906,3 +1958,542 @@ async def insert_jev_decision(
                  source, verdict, command, state_rendered,
                  Json(answers) if answers is not None else None, latency_ms, model),
             )
+
+
+# ============================ User / auth ops ==============================
+
+_USER_PUBLIC_COLUMNS = (
+    "id, username, nickname, is_manager, state, failed_attempts, locked_until, "
+    "last_login_at, password_updated_at, created_at, updated_at"
+)
+
+
+async def get_user_by_username(pool: AsyncConnectionPool, username: str) -> Optional[dict]:
+    """按登录名取用户（casefold 比较；含 password_hash，仅供认证路径）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM app_user WHERE lower(username) = lower(%s)", (username,)
+            )
+            return await cur.fetchone()
+
+
+async def get_login_user_by_nickname(pool: AsyncConnectionPool, nickname: str) -> Optional[dict]:
+    """按昵称取登录候选（casefold 比较；含 password_hash，仅供认证路径）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM app_user WHERE lower(nickname) = lower(%s)", (nickname,)
+            )
+            return await cur.fetchone()
+
+
+async def get_user(pool: AsyncConnectionPool, user_id: uuid.UUID) -> Optional[dict]:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_USER_PUBLIC_COLUMNS} FROM app_user WHERE id = %s", (user_id,)
+            )
+            return await cur.fetchone()
+
+
+async def list_users(pool: AsyncConnectionPool) -> list[dict]:
+    """全量用户（不含 password_hash，管理面展示）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_USER_PUBLIC_COLUMNS} FROM app_user ORDER BY created_at"
+            )
+            return await cur.fetchall()
+
+
+async def get_user_by_nickname(pool: AsyncConnectionPool, nickname: str) -> Optional[dict]:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_USER_PUBLIC_COLUMNS} FROM app_user WHERE lower(nickname) = lower(%s)",
+                (nickname,),
+            )
+            return await cur.fetchone()
+
+
+async def count_managers(pool: AsyncConnectionPool) -> int:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT count(*) FROM app_user WHERE is_manager")
+            row = await cur.fetchone()
+    return row[0]
+
+
+async def insert_user(
+    pool: AsyncConnectionPool,
+    username: str,
+    nickname: str,
+    password_hash: str,
+    is_manager: bool = False,
+) -> dict:
+    """建户（引导/审批共用）。UniqueViolation（用户名/昵称任一）→ FileExistsError。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            try:
+                await cur.execute(
+                    "INSERT INTO app_user (username, nickname, password_hash, is_manager) "
+                    "VALUES (%s, %s, %s, %s) "
+                    f"RETURNING {_USER_PUBLIC_COLUMNS}",
+                    (username, nickname, password_hash, is_manager),
+                )
+                return await cur.fetchone()
+            except UniqueViolation:
+                raise FileExistsError(username)
+
+
+async def mark_login_success(pool: AsyncConnectionPool, user_id: uuid.UUID) -> None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE app_user SET failed_attempts = 0, locked_until = NULL, "
+                "last_login_at = now() WHERE id = %s",
+                (user_id,),
+            )
+
+
+async def mark_login_failure(
+    pool: AsyncConnectionPool, user_id: uuid.UUID,
+    failed_attempts: int, locked_until: Optional[object],
+) -> None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE app_user SET failed_attempts = %s, locked_until = %s WHERE id = %s",
+                (failed_attempts, locked_until, user_id),
+            )
+
+
+async def update_user_nickname(
+    pool: AsyncConnectionPool, user_id: uuid.UUID, nickname: str
+) -> Optional[dict]:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            try:
+                await cur.execute(
+                    "UPDATE app_user SET nickname = %s, updated_at = now() WHERE id = %s "
+                    f"RETURNING {_USER_PUBLIC_COLUMNS}",
+                    (nickname, user_id),
+                )
+                return await cur.fetchone()
+            except UniqueViolation:
+                raise FileExistsError(nickname)
+
+
+async def update_user_password(
+    pool: AsyncConnectionPool, user_id: uuid.UUID, password_hash: str
+) -> None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE app_user SET password_hash = %s, password_updated_at = now(), "
+                "updated_at = now() WHERE id = %s",
+                (password_hash, user_id),
+            )
+
+
+async def set_user_state(pool: AsyncConnectionPool, user_id: uuid.UUID, state: str) -> None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE app_user SET state = %s, updated_at = now() WHERE id = %s",
+                (state, user_id),
+            )
+
+
+async def unlock_user(pool: AsyncConnectionPool, user_id: uuid.UUID) -> None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE app_user SET failed_attempts = 0, locked_until = NULL "
+                "WHERE id = %s",
+                (user_id,),
+            )
+
+
+# ---- 注册申请 ----
+
+_REQUEST_COLUMNS = (
+    "id, type, payload, status, reason, reviewed_by, created_at, reviewed_at"
+)
+
+
+async def insert_auth_request(pool: AsyncConnectionPool, payload: dict) -> dict:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "INSERT INTO auth_request (payload) VALUES (%s) "
+                f"RETURNING {_REQUEST_COLUMNS}",
+                (Json(payload),),
+            )
+            return await cur.fetchone()
+
+
+async def get_auth_request(
+    pool: AsyncConnectionPool, request_id: uuid.UUID
+) -> Optional[dict]:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_REQUEST_COLUMNS} FROM auth_request WHERE id = %s",
+                (request_id,),
+            )
+            return await cur.fetchone()
+
+
+async def list_auth_requests(
+    pool: AsyncConnectionPool, status: Optional[str] = None
+) -> list[dict]:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            where = " WHERE status = %s" if status else ""
+            await cur.execute(
+                f"SELECT {_REQUEST_COLUMNS} FROM auth_request{where} "
+                "ORDER BY created_at DESC" + ("" if status else ""),
+                (status,) if status else (),
+            )
+            return await cur.fetchall()
+
+
+async def find_auth_requests_by_username(
+    pool: AsyncConnectionPool, username: str
+) -> list[dict]:
+    """按 payload.username 查申请（判重：pending 占位 / rejected 占位均需可见）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_REQUEST_COLUMNS} FROM auth_request "
+                "WHERE payload->>'username' = %s ORDER BY created_at DESC",
+                (username,),
+            )
+            return await cur.fetchall()
+
+
+async def approve_register_request(
+    pool: AsyncConnectionPool, request_id: uuid.UUID, reviewer_id: uuid.UUID
+) -> dict:
+    """原子审批：认领申请（pending → approved）+ 建户，任一步失败整体回滚。
+
+    KeyError=申请不存在/已审；FileExistsError=用户名/昵称已被占用（审批期间
+    被抢先）。返回新建用户行。
+    """
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "UPDATE auth_request SET status = 'approved', reviewed_by = %s, "
+                    "reviewed_at = now() WHERE id = %s AND status = 'pending' "
+                    f"RETURNING {_REQUEST_COLUMNS}",
+                    (reviewer_id, request_id),
+                )
+                req = await cur.fetchone()
+                if req is None:
+                    raise KeyError(f"申请不存在或已处理: {request_id}")
+                p = req["payload"]
+                try:
+                    await cur.execute(
+                        "INSERT INTO app_user (username, nickname, password_hash) "
+                        f"VALUES (%s, %s, %s) RETURNING {_USER_PUBLIC_COLUMNS}",
+                        (p["username"], p["nickname"], p["password_hash"]),
+                    )
+                    return await cur.fetchone()
+                except UniqueViolation:
+                    raise FileExistsError(p["username"])
+
+
+async def reject_register_request(
+    pool: AsyncConnectionPool, request_id: uuid.UUID, reviewer_id: uuid.UUID,
+    reason: Optional[str],
+) -> Optional[dict]:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "UPDATE auth_request SET status = 'rejected', reason = %s, "
+                "reviewed_by = %s, reviewed_at = now() "
+                "WHERE id = %s AND status = 'pending' "
+                f"RETURNING {_REQUEST_COLUMNS}",
+                (reason, reviewer_id, request_id),
+            )
+            return await cur.fetchone()
+
+
+async def delete_rejected_auth_request(
+    pool: AsyncConnectionPool, request_id: uuid.UUID
+) -> Optional[dict]:
+    """删除被拒申请行（状态卫兵内嵌 SQL，防 get/delete 间隙并发变更）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "DELETE FROM auth_request WHERE id = %s AND status = 'rejected' "
+                f"RETURNING {_REQUEST_COLUMNS}",
+                (request_id,),
+            )
+            return await cur.fetchone()
+
+
+# ---- 登录会话令牌 ----
+
+async def insert_auth_session(
+    pool: AsyncConnectionPool, token_hash: str, user_id: uuid.UUID, expires_at
+) -> None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO auth_session (token_hash, user_id, expires_at) "
+                "VALUES (%s, %s, %s)",
+                (token_hash, user_id, expires_at),
+            )
+
+
+async def get_auth_session_user(
+    pool: AsyncConnectionPool, token_hash: str
+) -> Optional[dict]:
+    """按令牌哈希取有效会话的用户行（过期行顺手清理）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT u.id, u.username, u.nickname, u.is_manager, u.state, "
+                "u.failed_attempts, u.locked_until, u.last_login_at, "
+                "u.password_updated_at, u.created_at, u.updated_at, "
+                "s.token_hash AS _token_hash, s.expires_at AS _expires_at "
+                "FROM auth_session s JOIN app_user u ON u.id = s.user_id "
+                "WHERE s.token_hash = %s",
+                (token_hash,),
+            )
+            row = await cur.fetchone()
+            if row is not None and row["_expires_at"] <= datetime.now(timezone.utc):
+                await cur.execute(
+                    "DELETE FROM auth_session WHERE token_hash = %s", (token_hash,)
+                )
+                return None
+            return row
+
+
+async def delete_auth_session(pool: AsyncConnectionPool, token_hash: str) -> bool:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM auth_session WHERE token_hash = %s", (token_hash,)
+            )
+            return cur.rowcount > 0
+
+
+async def delete_user_sessions(pool: AsyncConnectionPool, user_id: uuid.UUID) -> int:
+    """吊销该用户全部会话（改密/停用/管理员重置密码时调用）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM auth_session WHERE user_id = %s", (user_id,)
+            )
+            return cur.rowcount
+
+
+# ============================ 存量 user_id 对齐迁移 =========================
+# 一次性迁移：session/upload/cron_job.user_id VARCHAR(客户端字符串) → UUID FK。
+# 幂等探测：session.user_id 列类型为 uuid 即跳过（新装 DDL 直接建 uuid）。
+# fail-visible：存在未映射旧值即 RuntimeError（列出值），绝不静默丢行。
+
+
+async def _session_user_id_is_uuid(pool: AsyncConnectionPool) -> bool:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = 'session' AND column_name = 'user_id'"
+            )
+            row = await cur.fetchone()
+    return bool(row) and row[0] == "uuid"
+
+
+async def _distinct_legacy_user_ids(pool: AsyncConnectionPool) -> list[str]:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT DISTINCT user_id FROM session "
+                "UNION SELECT DISTINCT user_id FROM upload "
+                "UNION SELECT DISTINCT user_id FROM cron_job"
+            )
+            rows = await cur.fetchall()
+    return sorted(r[0] for r in rows)
+
+
+def _mapping_values_clause(mapping: dict[str, uuid.UUID]) -> tuple[str, list]:
+    """(VALUES ('old','uuid'),...) 的 SQL 片段 + 参数列表。"""
+    parts = ", ".join(["(%s, %s::uuid)"] * len(mapping))
+    params: list = []
+    for old, new in mapping.items():
+        params.extend([old, str(new)])
+    return parts, params
+
+
+async def migrate_legacy_user_ids(
+    pool: AsyncConnectionPool,
+    mapping: dict[str, uuid.UUID],
+    workspace_root,
+) -> None:
+    """列类型对齐 + 记忆命名空间/工作区目录跟随。
+
+    mapping: 旧 user_id 字符串 → 目标 app_user uuid。合并冲突的保全规则：
+    - 同标题活跃会话：保留 updated_at 最新，其余归档（行与 checkpoint 保留）；
+    - 记忆同 key（store prefix 合并）：保留最新，其余 key 加 .merged.<id前8> 后缀；
+    - 同名 cron 任务：旧任务改名 + 停用（防双触发）。
+    工作区目录 rename 在 DB 事务提交后执行（best-effort，失败仅告警）。
+    """
+    import logging as _logging
+    import shutil as _shutil
+    from pathlib import Path as _Path
+
+    log = _logging.getLogger("goduck.migrate")
+    if await _session_user_id_is_uuid(pool):
+        return
+    if not mapping:
+        raise RuntimeError(
+            "session.user_id 仍为 VARCHAR（存量库），但未配置 LEGACY_USER_MAP —— "
+            "请在 .env 提供旧值→用户名映射后重启"
+        )
+    legacy_values = await _distinct_legacy_user_ids(pool)
+    unmapped = [v for v in legacy_values if v not in mapping]
+    if unmapped:
+        raise RuntimeError(
+            f"存量 user_id 未在 LEGACY_USER_MAP 中映射: {unmapped} —— 补齐映射后重启"
+        )
+
+    values_sql, values_params = _mapping_values_clause(mapping)
+    log.info("aligning legacy user_id columns: %s", mapping)
+
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                # —— 合并冲突保全（须在列类型切换前，按旧值分组判定）——
+                await cur.execute(
+                    "WITH m(old, new) AS (VALUES " + values_sql + "), "
+                    "ranked AS ("
+                    "  SELECT s.id, row_number() OVER ("
+                    "    PARTITION BY m.new, s.title ORDER BY s.updated_at DESC, s.id) rn"
+                    "  FROM session s JOIN m ON s.user_id = m.old"
+                    "  WHERE s.status = 'active' AND s.title IS NOT NULL AND s.title <> ''"
+                    ") "
+                    "UPDATE session SET status = 'archived', updated_at = now() "
+                    "WHERE id IN (SELECT id FROM ranked WHERE rn > 1)",
+                    values_params,
+                )
+                if cur.rowcount:
+                    log.info("archived %d title-colliding session(s) (keep newest)", cur.rowcount)
+                await cur.execute(
+                    "WITH m(old, new) AS (VALUES " + values_sql + "), "
+                    "ranked AS ("
+                    "  SELECT j.id, row_number() OVER ("
+                    "    PARTITION BY m.new, j.name ORDER BY j.updated_at DESC, j.id) rn"
+                    "  FROM cron_job j JOIN m ON j.user_id = m.old"
+                    ") "
+                    "UPDATE cron_job SET name = name || '.merged.' || substr(id::text, 1, 8), "
+                    "enabled = false, updated_at = now() "
+                    "WHERE id IN (SELECT id FROM ranked WHERE rn > 1)",
+                    values_params,
+                )
+                if cur.rowcount:
+                    log.warning(
+                        "renamed+disabled %d name-colliding cron job(s) (keep newest)",
+                        cur.rowcount,
+                    )
+                # store 主键 = (prefix, key)：同 key 合并保留 updated_at 最新，
+                # 旧行 key 追加 .merged.<序号>（内容保留、文件可见）
+                await cur.execute(
+                    "WITH m(old, new) AS (VALUES " + values_sql + "), "
+                    "srow AS ("
+                    "  SELECT st.prefix, st.key, st.updated_at,"
+                    "         m.new || substr(st.prefix, length(m.old) + 1) AS tgt"
+                    "  FROM store st JOIN m ON st.prefix LIKE m.old || '.%%'"
+                    "), "
+                    "ranked AS ("
+                    "  SELECT prefix, key, row_number() OVER ("
+                    "    PARTITION BY tgt, key ORDER BY updated_at DESC) rn"
+                    "  FROM srow"
+                    ") "
+                    "UPDATE store SET key = store.key || '.merged.' || ranked.rn "
+                    "FROM ranked "
+                    "WHERE store.prefix = ranked.prefix AND store.key = ranked.key "
+                    "AND ranked.rn > 1",
+                    values_params,
+                )
+                if cur.rowcount:
+                    log.info("renamed %d key-colliding memory entr(y/ies)", cur.rowcount)
+                await cur.execute(
+                    "UPDATE store SET prefix = m.new || substr(store.prefix, length(m.old) + 1) "
+                    "FROM (VALUES " + values_sql + ") AS m(old, new) "
+                    "WHERE store.prefix LIKE m.old || '.%%'",
+                    values_params,
+                )
+
+                # —— 列类型切换：三表统一"加新列→映射→断言→换列→FK/索引重建"
+                for table in ("session", "upload", "cron_job"):
+                    await cur.execute(
+                        f"ALTER TABLE {table} RENAME COLUMN user_id TO user_id_legacy"
+                    )
+                    await cur.execute(f"ALTER TABLE {table} ADD COLUMN user_id UUID")
+                    await cur.execute(
+                        f"UPDATE {table} t SET user_id = m.new "
+                        f"FROM (VALUES {values_sql}) AS m(old, new) "
+                        f"WHERE t.user_id_legacy = m.old",
+                        values_params,
+                    )
+                    await cur.execute(
+                        f"SELECT DISTINCT user_id_legacy FROM {table} WHERE user_id IS NULL"
+                    )
+                    leftover = [r[0] for r in await cur.fetchall()]
+                    if leftover:
+                        raise RuntimeError(
+                            f"{table}.user_id 存在未映射旧值 {leftover}（事务回滚，未产生任何变更）"
+                        )
+                    await cur.execute(
+                        f"ALTER TABLE {table} ALTER COLUMN user_id SET NOT NULL"
+                    )
+                    await cur.execute(f"ALTER TABLE {table} DROP COLUMN user_id_legacy")
+
+                # DROP legacy 列会连带删掉建在其上的索引/唯一约束，按新列重建
+                await cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_session_user ON session(user_id)"
+                )
+                await cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_user_title_active "
+                    "ON session(user_id, title) "
+                    "WHERE status = 'active' AND title IS NOT NULL AND title <> ''"
+                )
+                await cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_upload_user ON upload(user_id)"
+                )
+                await cur.execute(
+                    "ALTER TABLE cron_job DROP CONSTRAINT IF EXISTS cron_job_user_id_name_key"
+                )
+                await cur.execute(
+                    "ALTER TABLE cron_job ADD CONSTRAINT cron_job_user_id_name_key "
+                    "UNIQUE (user_id, name)"
+                )
+                for table in ("session", "upload", "cron_job"):
+                    await cur.execute(
+                        f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {table}_user_id_fkey"
+                    )
+                    await cur.execute(
+                        f"ALTER TABLE {table} ADD CONSTRAINT {table}_user_id_fkey "
+                        f"FOREIGN KEY (user_id) REFERENCES app_user(id)"
+                    )
+
+    # —— 工作区目录跟随（文件系统，事务外 best-effort）——
+    root = _Path(workspace_root)
+    for old, new in mapping.items():
+        src, dst = root / old, root / str(new)
+        if src.exists() and src != dst:
+            if dst.exists():
+                log.warning(
+                    "workspace dir clash: %s and %s both exist; keep both (rename manually)",
+                    src, dst,
+                )
+                continue
+            _shutil.move(str(src), str(dst))
+            log.info("workspace dir renamed: %s -> %s", src.name, dst.name)
+    log.info("legacy user_id alignment done")

@@ -1,15 +1,15 @@
 /* 附件 API —— 对应后端 api/uploads.py（prefix /sessions）。
-   关键（准则 F6）：前端只传 file（含 filename）+ user_id，不传 mime/kind（服务端魔数判定）。 */
+    关键（准则 F6）：前端只传 file（含 filename），不传 mime/kind/user_id
+    （mime 服务端魔数判定，user_id 登录令牌推导）。 */
 import { ApiClient, get, postForm } from './client'
 import type { AttachmentCapability, UUID, UploadOut } from '@/types'
 
 export const uploadsApi = {
   /** multipart 上传 → MinIO + DB，返回完整元数据。
    *  agentId=当前选中智能体（上传门弱绑定解析：能力谓词按当回合 agent 派生） */
-  upload: (sessionId: UUID, file: File, userId: string, agentId?: UUID | null) => {
+  upload: (sessionId: UUID, file: File, agentId?: UUID | null) => {
     const form = new FormData()
     form.append('file', file, file.name) // 保留 filename（docx 扩展名判定需要）
-    form.append('user_id', userId)
     if (agentId) form.append('agent_id', agentId)
     return postForm<UploadOut>(`/sessions/${sessionId}/uploads`, form)
   },

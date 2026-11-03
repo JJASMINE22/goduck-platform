@@ -17,9 +17,9 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from app.deps import get_appstate
+from app.deps import get_appstate, get_current_user
 from app.models.schemas import CronJobCreate, CronJobOut, CronJobUpdate, CronRunOut
 from app.services.cron_service import CronService
 
@@ -43,8 +43,18 @@ def _http_error(e: Exception) -> HTTPException:
     return HTTPException(status_code=422, detail=str(e))
 
 
+async def _owned_job_or_404(svc: CronService, job_id: uuid.UUID, user: dict) -> dict:
+    """属主校验：非本人任务一律 404（不暴露存在性）。"""
+    job = await svc.get(job_id)
+    if job is None or job["user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="cron job not found")
+    return job
+
+
 @router.post("/jobs", response_model=CronJobOut, status_code=status.HTTP_201_CREATED)
-async def create_cron_job(body: CronJobCreate, request: Request):
+async def create_cron_job(
+    body: CronJobCreate, request: Request, user: dict = Depends(get_current_user)
+):
     """创建定时任务：校验 → 原子落库（专用会话 + 任务行）→ 201。
 
     落库即注册：scheduler 下个 tick 内感知，`next_run_at` 即首次运行时间。
@@ -52,7 +62,7 @@ async def create_cron_job(body: CronJobCreate, request: Request):
     svc = _service(request)
     try:
         job = await svc.create(
-            user_id=body.user_id,
+            user_id=user["id"],
             agent_id=body.agent_id,
             name=body.name,
             prompt=body.prompt,
@@ -65,26 +75,34 @@ async def create_cron_job(body: CronJobCreate, request: Request):
 
 
 @router.get("/jobs", response_model=list[CronJobOut])
-async def list_cron_jobs(user_id: str = Query(...), request: Request = None):
-    return await _service(request).list_by_user(user_id)
+async def list_cron_jobs(
+    request: Request = None,
+    user: dict = Depends(get_current_user),
+):
+    return await _service(request).list_by_user(user["id"])
 
 
 @router.get("/jobs/{job_id}", response_model=CronJobOut)
-async def get_cron_job(job_id: uuid.UUID, request: Request):
-    job = await _service(request).get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="cron job not found")
-    return job
+async def get_cron_job(
+    job_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
+):
+    return await _owned_job_or_404(_service(request), job_id, user)
 
 
 @router.put("/jobs/{job_id}", response_model=CronJobOut)
-async def update_cron_job(job_id: uuid.UUID, body: CronJobUpdate, request: Request):
+async def update_cron_job(
+    job_id: uuid.UUID,
+    body: CronJobUpdate,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
     """部分更新：改名/改 prompt/改调度/启停。
 
     调度规则（详见 CronJobUpdate docstring）：显式 start_at=该时刻首跑；
     仅改 interval 或重新启用=一个完整间隔后首跑。
     """
     svc = _service(request)
+    await _owned_job_or_404(svc, job_id, user)
     provided = body.model_fields_set
     try:
         job = await svc.update(
@@ -106,22 +124,26 @@ async def update_cron_job(job_id: uuid.UUID, body: CronJobUpdate, request: Reque
 
 
 @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_cron_job(job_id: uuid.UUID, request: Request):
+async def delete_cron_job(
+    job_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
+):
     """删除任务（级联删 run 历史）；专用会话软归档保留，历史产出仍可浏览。"""
-    deleted = await _service(request).delete(job_id)
+    svc = _service(request)
+    await _owned_job_or_404(svc, job_id, user)
+    deleted = await svc.delete(job_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="cron job not found")
     return None
 
 
 @router.post("/jobs/{job_id}/run", status_code=status.HTTP_202_ACCEPTED)
-async def run_cron_job_now(job_id: uuid.UUID, request: Request):
+async def run_cron_job_now(
+    job_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
+):
     """立即触发一次（不推进 next_run_at）。禁用态任务也可手动触发（补跑/验证）。"""
     st = get_appstate(request)
     svc = _service(request)
-    job = await svc.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="cron job not found")
+    job = await _owned_job_or_404(svc, job_id, user)
     if st.cron_scheduler is None:
         raise HTTPException(status_code=503, detail="cron 调度器未启用（CRON_ENABLED=false）")
     ok, reason = await st.cron_scheduler.run_now(job)
@@ -131,8 +153,8 @@ async def run_cron_job_now(job_id: uuid.UUID, request: Request):
 
 
 @router.get("/jobs/{job_id}/runs", response_model=list[CronRunOut])
-async def list_cron_runs(job_id: uuid.UUID, request: Request):
-    job = await _service(request).get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="cron job not found")
+async def list_cron_runs(
+    job_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
+):
+    await _owned_job_or_404(_service(request), job_id, user)
     return await _service(request).list_runs(job_id)

@@ -66,3 +66,5 @@ langchain-elasticsearch>=0.2
 elasticsearch>=8.13
 langchain-text-splitters>=0.3
 httpx>=0.27
+# ---- 登录认证：argon2id 密码哈希（app_user.password_hash，明文永不落库）----
+argon2-cffi>=23.1

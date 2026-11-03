@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.deps import get_appstate
+from app.deps import get_appstate, require_manager
 from app.models import db as dbmod
 from app.models.schemas import McpServerCreate, McpServerOut, McpStatusResponse, ToolInfo
 from app.services.mcp_lifecycle import TOOL_SEP
@@ -57,7 +57,7 @@ async def mcp_status(request: Request):
 
 
 @router.post("/refresh")
-async def mcp_refresh(request: Request):
+async def mcp_refresh(request: Request, _admin: dict = Depends(require_manager)):
     """Force reconnect all MCP servers (admin ops)."""
     st = get_appstate(request)
     await st.mcp_lifecycle.refresh()
@@ -70,7 +70,9 @@ async def list_servers(request: Request):
 
 
 @router.post("/servers", response_model=McpServerOut)
-async def create_server(body: McpServerCreate, request: Request):
+async def create_server(
+    body: McpServerCreate, request: Request, _admin: dict = Depends(require_manager)
+):
     st = get_appstate(request)
     # 预检：同名已注册 → 409（不再静默覆盖既有 server 的配置）
     if await dbmod.get_mcp_server_by_name(st.pool, body.name) is not None:
@@ -88,7 +90,12 @@ async def create_server(body: McpServerCreate, request: Request):
 
 
 @router.put("/servers/{server_id}", response_model=McpServerOut)
-async def update_server(server_id: uuid.UUID, body: McpServerCreate, request: Request):
+async def update_server(
+    server_id: uuid.UUID,
+    body: McpServerCreate,
+    request: Request,
+    _admin: dict = Depends(require_manager),
+):
     st = get_appstate(request)
     existing = await dbmod.get_mcp_server(st.pool, server_id)
     if existing is None:
@@ -130,7 +137,9 @@ async def update_server(server_id: uuid.UUID, body: McpServerCreate, request: Re
 
 
 @router.delete("/servers/{server_id}")
-async def delete_server(server_id: uuid.UUID, request: Request):
+async def delete_server(
+    server_id: uuid.UUID, request: Request, _admin: dict = Depends(require_manager)
+):
     st = get_appstate(request)
     existing = await dbmod.get_mcp_server(st.pool, server_id)
     if existing is None:

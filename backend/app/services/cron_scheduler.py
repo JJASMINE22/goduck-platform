@@ -34,7 +34,7 @@ from typing import Optional
 from langgraph.graph.state import CompiledStateGraph
 
 from app.core.schema_utils import cron_unattended_violations, tree_allows_shell
-from app.core.user_scoped_backend import user_workspace_path
+from app.core.user_scoped_backend import user_workspace_path, workspace_key
 from app.deps import AppState, SimpleUser
 from app.models import db as dbmod
 
@@ -291,7 +291,10 @@ class CronScheduler:
         config = {
             "configurable": {
                 "thread_id": thread_id,
-                "langgraph_auth_user": SimpleUser(job["user_id"]),
+                # owner_username 经 job 查询 LEFT JOIN app_user 带出（缺失回退 uuid）
+                "langgraph_auth_user": SimpleUser(
+                    str(job["user_id"]), job.get("owner_username")
+                ),
             }
         }
 
@@ -319,7 +322,10 @@ class CronScheduler:
             # start_run 的亚毫秒窗口）由下方 start_run 的 RunConflictError 兜底，
             # 最坏表现为该次轮次计为 error run，接受。重试路径同样经过这里：截断
             # 的半截状态（含残缺终末 AI 消息）被硬删，重试轮仍是处女上下文。
-            await self._reset_thread_context(agent, config, thread_id, job["user_id"])
+            await self._reset_thread_context(
+                agent, config, thread_id,
+                workspace_key(job.get("owner_username"), str(job["user_id"])),
+            )
 
             def factory():
                 return self.st.stream_adapter.stream_message(
@@ -390,7 +396,7 @@ class CronScheduler:
         agent: CompiledStateGraph,
         config: dict,
         thread_id: str,
-        user_id: str,
+        owner_key: str,
     ) -> None:
         """重置任务专用线程为处女状态（fresh context per run）。
 
@@ -417,7 +423,7 @@ class CronScheduler:
         await self.st.checkpointer.adelete_thread(thread_id)
         if isinstance(sid, str) and sid:
             offload = (
-                user_workspace_path(self.settings.workspace_dir, user_id)
+                user_workspace_path(self.settings.workspace_dir, owner_key)
                 / "conversation_history"
                 / f"{sid}.md"
             )

@@ -44,6 +44,7 @@ import {
 import { useDragResize } from '@/hooks/useDragResize'
 import { formatBytes, formatDateTime, sanitizeKbText } from '@/lib/format'
 import { toastError, toastSuccess } from '@/lib/antdStatic'
+import { useCurrentUser } from '@/store/userStore'
 import { KbDocStatusTag } from './KbDocStatusTag'
 import { KbEvidenceViewer, type EvidenceAnchor } from './KbEvidenceViewer'
 import type { KbDocumentOut, KbSearchResult, KnowledgeBaseOut, UUID } from '@/types'
@@ -86,6 +87,8 @@ export function KbDocumentsDrawer({
 }): ReactNode {
   const kbId = kb?.id ?? ''
   const { data, isLoading, isError, refetch } = useKbDocuments(open ? kbId : null)
+  // 写操作为管理员专属（后端 403 兜底）：非管理员仅浏览文档表 + 检索调试
+  const isManager = useCurrentUser((s) => s.user?.is_manager ?? false)
   const uploadDoc = useUploadDocument(kbId)
   const deleteDoc = useDeleteDocument(kbId)
   const parseDoc = useParseDocument(kbId)
@@ -254,6 +257,7 @@ export function KbDocumentsDrawer({
       title: '文件名',
       dataIndex: 'filename',
       key: 'filename',
+      align: 'left',
       ellipsis: true,
       render: (v: string) => (
         <Tooltip title={v}>
@@ -332,12 +336,15 @@ export function KbDocumentsDrawer({
       width: 160,
       render: (v: string) => formatDateTime(v),
     },
-    {
+  ]
+  // 操作列仅管理员渲染（普通用户整列隐藏，写操作本就后端 403 兜底）
+  if (isManager) {
+    columns.push({
       title: '操作',
       key: 'actions',
       width: 96,
       render: (_, r) => (
-        <Flex gap={4}>
+        <Flex gap={4} justify="center">
           <ParsePopover
             loading={parseDoc.isPending}
             disabled={r.status === 'indexing'}
@@ -356,8 +363,8 @@ export function KbDocumentsDrawer({
           </Popconfirm>
         </Flex>
       ),
-    },
-  ]
+    })
+  }
 
   return (
     <Drawer
@@ -384,45 +391,47 @@ export function KbDocumentsDrawer({
             {kb.description ? ` · ${kb.description}` : ''}
           </Typography.Text>
 
-          {/* 上传区（仅注册；参数配置与解析在下方「待解析文件」面板） */}
-          <div
-            onDragOver={(e) => {
-              e.preventDefault()
-              setDragOver(true)
-            }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={onDrop}
-            style={{
-              border: `1px dashed ${dragOver ? 'var(--color-primary)' : 'var(--color-border)'}`,
-              borderRadius: 8,
-              padding: '18px 12px',
-              textAlign: 'center',
-              background: dragOver ? 'var(--color-bg-hover, rgba(0,0,0,0.02))' : 'transparent',
-              transition: 'border-color .2s, background .2s',
-              cursor: 'pointer',
-            }}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <p style={{ margin: 0, color: 'var(--color-text-secondary)' }}>
-              <UploadIcon size={24} />
-            </p>
-            <p style={{ margin: '6px 0 2px' }}>拖拽 PDF / DOCX 到此，或点击选择</p>
-            <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-              支持多文件；仅 pdf/docx，上传后在下方「待解析文件」中为各文件设置切块参数并解析
-            </p>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={ACCEPT}
-              multiple
-              style={{ display: 'none' }}
-              onChange={onPickFiles}
-            />
-          </div>
+          {/* 上传区（仅注册；参数配置与解析在下方「待解析文件」面板）——管理员专属 */}
+          {isManager ? (
+            <div
+              onDragOver={(e) => {
+                e.preventDefault()
+                setDragOver(true)
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={onDrop}
+              style={{
+                border: `1px dashed ${dragOver ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                borderRadius: 8,
+                padding: '18px 12px',
+                textAlign: 'center',
+                background: dragOver ? 'var(--color-bg-hover, rgba(0,0,0,0.02))' : 'transparent',
+                transition: 'border-color .2s, background .2s',
+                cursor: 'pointer',
+              }}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <p style={{ margin: 0, color: 'var(--color-text-secondary)' }}>
+                <UploadIcon size={24} />
+              </p>
+              <p style={{ margin: '6px 0 2px' }}>拖拽 PDF / DOCX 到此，或点击选择</p>
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-tertiary)' }}>
+                支持多文件；仅 pdf/docx，上传后在下方「待解析文件」中为各文件设置切块参数并解析
+              </p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ACCEPT}
+                multiple
+                style={{ display: 'none' }}
+                onChange={onPickFiles}
+              />
+            </div>
+          ) : null}
 
           {/* 待解析文件配置面板（存在 pending 文档时出现；解析开始后自动移出；
               docling 引擎隐藏滑窗参数——结构单元预算由服务端控制（C1 双轨） */}
-          {pendingDocs.length > 0 ? (
+          {isManager && pendingDocs.length > 0 ? (
             <PendingParsePanel
               docs={pendingDocs}
               busy={parseDoc.isPending}

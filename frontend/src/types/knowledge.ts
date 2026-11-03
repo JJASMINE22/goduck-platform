@@ -14,7 +14,6 @@ export type KbDocStatus = 'pending' | 'indexing' | 'indexed' | 'failed'
 export interface KnowledgeBaseCreate {
   name: string
   description?: string | null
-  creator: string
   /** 嵌入维度；缺省=后端全局 EMBEDDING_DIMS */
   dims?: number | null
 }

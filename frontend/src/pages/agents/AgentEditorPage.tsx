@@ -18,7 +18,6 @@ import { useModels, useVisionModels } from '@/hooks/useModels'
 import { useDragResize } from '@/hooks/useDragResize'
 import { useAgentEditorStore } from '@/store/agentEditorStore'
 import { usePageHeaderStore } from '@/store/pageHeaderStore'
-import { useCurrentUser } from '@/store/userStore'
 import { toConfigTree } from '@/features/agent-editor/graphModel'
 import { NodePalette } from '@/features/agent-editor/canvas/NodePalette'
 import { AgentCanvas } from '@/features/agent-editor/canvas/AgentCanvas'
@@ -42,7 +41,6 @@ export function AgentEditorPage(): ReactNode {
   const restoreAgent = useRestoreAgent()
   const historyQ = useAgentHistory(id ?? null)
   const { modal } = AntApp.useApp()
-  const currentUserId = useCurrentUser((s) => s.userId)
   const setHeader = usePageHeaderStore((s) => s.setHeader)
 
   const nodes = useAgentEditorStore((s) => s.nodes)
@@ -158,7 +156,6 @@ export function AgentEditorPage(): ReactNode {
     const baseModel = (models.data ?? []).find((m) => m.id === modelId)
     const effectiveVision =
       baseModel?.supports_vision || !rootAllowAttachments ? null : visionModelId
-    const user = currentUserId
 
     const doUpdate = () =>
       updateAgent.mutateAsync({
@@ -169,7 +166,6 @@ export function AgentEditorPage(): ReactNode {
           vision_model_id: effectiveVision,
           name: name.trim(),
           description: description.trim() || null,
-          updater: user,
         },
       })
 
@@ -182,7 +178,6 @@ export function AgentEditorPage(): ReactNode {
           model_id: modelId,
           vision_model_id: effectiveVision,
           kind,
-          creator: user,
         })
         .then((detail) => navigate(`/agents/${detail.id}`))
       return
@@ -209,7 +204,7 @@ export function AgentEditorPage(): ReactNode {
       onOk: async () => {
         await restoreAgent.mutateAsync({
           id: id as UUID,
-          body: { history_id: historyId, operator: currentUserId },
+          body: { history_id: historyId },
         })
         await agentQ.refetch()
         setHistOpen(false)

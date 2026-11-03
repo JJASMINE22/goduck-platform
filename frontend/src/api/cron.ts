@@ -6,8 +6,8 @@ import type { CronJobCreate, CronJobOut, CronJobUpdate, CronRunNowResponse, Cron
 export const cronApi = {
   create: (body: CronJobCreate) => post<CronJobOut>('/cron/jobs', body),
 
-  /** 列出用户任务（含 agent_name / next_run_at / last_status） */
-  listByUser: (userId: string) => get<CronJobOut[]>('/cron/jobs', { user_id: userId }),
+  /** 列出当前登录用户的任务（含 agent_name / next_run_at / last_status） */
+  list: () => get<CronJobOut[]>('/cron/jobs'),
 
   get: (id: UUID) => get<CronJobOut>(`/cron/jobs/${id}`),
 

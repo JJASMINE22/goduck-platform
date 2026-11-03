@@ -97,11 +97,14 @@ services:
     environment:
       # 向容器注入的驱动能力：compute=CUDA 计算，utility=nvidia-smi（观测用）
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      # HF hub 端点：仅 TEI_MODEL_ID 为 repo id 时走下载路径（本地目录加载零联网）。
+      # 默认国内镜像 hf-mirror.com（免梯子），海外/有代理可 .env 覆盖回官方源。
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
     ports:
       - "127.0.0.1:${TEI_PORT:-8082}:8082"      # 仅本机调试（本地直跑后端可用；LAN 不可见）
     volumes:
       # 模型目录（bind mount → 宿主机 ${VOLUMES_ROOT:-./volumes}/tei/）。预下命令见
-      # README「内置 TEI 嵌入服务」；CN 网络可对下载进程设 HF_ENDPOINT=https://hf-mirror.com。
+      # README「内置 TEI 嵌入服务」（HF 默认走上方 HF_ENDPOINT 镜像，或魔搭直下）。
       - ${VOLUMES_ROOT:-./volumes}/tei:/data
     healthcheck:
       # /health：就绪（模型加载完成）才转 healthy；镜像自带 curl。
@@ -128,6 +131,10 @@ services:
     environment:
       APP_HOST: 0.0.0.0
       APP_PORT: 8000
+      # 登录认证：引导用户（create-if-absent，'用户名:昵称:角色:密码' 逗号分隔）。
+      # 密码仅首次建户生效；改密走平台内个人中心。生产至少引导一个 manager。
+      BOOTSTRAP_USERS: ${BOOTSTRAP_USERS:-}
+      AUTH_SESSION_TTL_HOURS: ${AUTH_SESSION_TTL_HOURS:-168}
       # 本地文件根：workspace/memories/skills 三目录均派生自它（见 app/config.py）。
       # 挂载命名卷到 /data，使三者持久化、跨重打镜像不丢。
       LOCAL_ROOT: ${LOCAL_ROOT:-/data}
@@ -178,6 +185,11 @@ services:
       KB_DOCLING_ARTIFACTS_PATH: ${KB_DOCLING_ARTIFACTS_PATH-/models/docling/artifacts}
       HF_HOME: ${HF_HOME:-/models/docling/hf-cache}
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      # HF hub 端点：预热（HF_HUB_OFFLINE=0 放行时）与简化模式兜底下载经
+      # huggingface_hub / docling-tools，均读此变量。默认国内镜像 hf-mirror.com
+      # （免梯子直连），海外/有代理可 .env 覆盖回 https://huggingface.co。
+      # RapidOCR 权重本就源自 ModelScope（modelscope.cn 直连），与此开关无关。
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       # ---- 语音输入（STT 触发会话，AssemblyAI Streaming）----
       # key 缺省为空 → 后端降级：voice 路由不挂载、健康能力位 false（前端无麦克风入口）。
       VOICE_ENABLED: ${VOICE_ENABLED:-false}
@@ -202,7 +214,8 @@ services:
       # 双布局，目录结构见 README「docling 模型目录与预下」）。runbook：
       # ① 预热（一次性，联网，与运行镜像同 docling 版本；产物直接落宿主机——
       #    layout/tableformer 取自 HF、RapidOCR 取自 ModelScope，故必须用容器内
-      #    docling-tools 下载而非手动搬运）：
+      #    docling-tools 下载而非手动搬运；HF 下载默认走上方 HF_ENDPOINT 镜像，
+      #    无梯子环境可直接执行）：
       #    docker compose run --rm --no-deps -e HF_HUB_OFFLINE=0 backend \
       #      docling-tools models download layout tableformer rapidocr -o /models/docling/artifacts
       # ② 冻结验证（断网复跑，失败信息会点名缺失仓库，按提示补

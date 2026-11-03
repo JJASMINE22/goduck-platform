@@ -6,7 +6,6 @@ import type { ISODateTime, UUID } from './common'
 export type CronJobStatus = 'running' | 'ok' | 'error' | 'awaiting_approval'
 
 export interface CronJobCreate {
-  user_id: string
   agent_id: UUID // 须为 kind='cron' 且 active 的智能体（后端 422/404）
   name: string // 同用户内唯一
   prompt: string // 每次触发注入的固定 user query
