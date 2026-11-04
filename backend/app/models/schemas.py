@@ -554,28 +554,108 @@ class ModelTestRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Registered embedding (vector model binding, plan kb-embedding-model-registry)
+# ---------------------------------------------------------------------------
+class EmbeddingCreate(BaseModel):
+    name: str = Field(min_length=1, description="唯一展示名，如 'Qwen3-Embedding-0.6B（TEI 内置）'")
+    provider_kind: Literal["openai_compatible"] = Field(
+        default="openai_compatible",
+        description="客户端族枚举。当前仅 openai_compatible（TEI / 云端嵌入通吃）",
+    )
+    model_type: str = Field(min_length=1, description="模型型号（TEI 忽略；云端须真实型号）")
+    api_key: str = Field(min_length=1, description="TEI 用任意非空值（dummy）；云端用真实 key")
+    base_url: str = Field(
+        min_length=1,
+        description="OpenAI 兼容端点，含 /v1（compose 内 TEI=http://tei:8082/v1）",
+    )
+    dims: Optional[int] = Field(
+        default=None, ge=2, le=4096,
+        description="MRL 截断维度；None=模型原生。注册时经端点实证（声明≠实测即拒绝）",
+    )
+    batch_size: int = Field(
+        default=24, ge=1, le=128,
+        description="单请求文本数，须 ≤ TEI --max-client-batch-size（默认32）",
+    )
+    timeout: int = Field(default=90, ge=1, le=600, description="单批嵌入请求超时（秒）")
+    check_ctx_length: bool = Field(
+        default=False,
+        description="TEI 必须 false（tiktoken 规避）；真实 OpenAI 云端设 true",
+    )
+    enabled: bool = True
+
+
+class EmbeddingUpdate(BaseModel):
+    """语义字段（provider_kind/model_type/base_url/dims/check_ctx_length/api_key）
+    被知识库引用时不可变（409 阻断）；其余自由编辑。"""
+
+    name: str = Field(min_length=1)
+    provider_kind: Literal["openai_compatible"] = "openai_compatible"
+    model_type: str = Field(min_length=1)
+    api_key: Optional[str] = Field(default=None, description="留 None 保留旧 key；非空覆盖")
+    base_url: str = Field(min_length=1)
+    dims: Optional[int] = Field(default=None, ge=2, le=4096)
+    batch_size: int = Field(default=24, ge=1, le=128)
+    timeout: int = Field(default=90, ge=1, le=600)
+    check_ctx_length: bool = False
+    enabled: bool = True
+
+
+class EmbeddingOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    provider_kind: str
+    model_type: str
+    base_url: str
+    dims: Optional[int] = None
+    batch_size: int
+    timeout: int
+    check_ctx_length: bool
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class EmbeddingTestRequest(BaseModel):
+    """Pre-save 连通探测（不落库）：embed 一条探针 → 实测维度。"""
+
+    model_type: str = Field(min_length=1)
+    api_key: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    timeout: int = Field(default=30, ge=1, le=600)
+    check_ctx_length: bool = False
+
+
+# ---------------------------------------------------------------------------
 # Knowledge base (RAG)
 # ---------------------------------------------------------------------------
 class KnowledgeBaseCreate(BaseModel):
     name: str = Field(min_length=1, description="唯一知识库名")
     description: Optional[str] = None
+    embedding_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="绑定向量模型（优先；维度随行）。缺省=不绑定，走全局 env 维度（迁移期语义）",
+    )
     dims: Optional[int] = Field(
         default=None, ge=2, le=4096,
-        description="库级嵌入维度（ES dense_vector 上限 4096）；缺省=全局 EMBEDDING_DIMS",
+        description="legacy 维度入参（未绑定向量模型时生效）；缺省=全局 EMBEDDING_DIMS",
     )
 
 
 class KnowledgeBaseUpdate(BaseModel):
     name: str = Field(min_length=1)
     description: Optional[str] = None
+    embedding_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="换绑向量模型（None=不换）。换绑与维度变更同为破坏性变更（见 force）",
+    )
     dims: Optional[int] = Field(
         default=None, ge=2, le=4096,
-        description="新维度；与库当前维度不同时触发守卫（见 force）",
+        description="legacy 维度入参（仅未绑定向量模型的库生效）；与当前维度不同时触发守卫",
     )
     force: bool = Field(
         default=False,
-        description="维度变更确认位：库内有文档时须 true——索引块清空、全部文档重置为"
-                    "待解析（原始文件保留，需手动重新解析），不删除任何文档数据",
+        description="换绑/维度变更确认位：库内有文档时须 true——索引块清空、全部文档"
+                    "重置为待解析（原始文件保留，需手动重新解析），不删除任何文档数据",
     )
 
 
@@ -585,6 +665,8 @@ class KnowledgeBaseOut(BaseModel):
     description: Optional[str] = None
     es_index_name: str
     dims: Optional[int] = None
+    embedding_id: Optional[uuid.UUID] = None
+    embedding_name: Optional[str] = None
     status: str
     doc_count: int = 0
     chunk_count: int = 0

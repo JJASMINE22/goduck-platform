@@ -117,15 +117,41 @@ async def lifespan(app: FastAPI):
     # 8. Knowledge base (RAG) — 仅 kb_enabled=true 时装配（入库/管理写路径）
     if settings.kb_enabled:
         from app.models import db as dbmod
+        from app.services.embedding_store import EmbeddingStore
         from app.services.ingest_pool import IngestPool
         from app.services.knowledge_service import KnowledgeService
         from app.services.vector_store import VectorStoreFactory
 
-        # 嵌入客户端由工厂按 kb.dims 内部构建+缓存（per-dims），此处不再持单例
-        st.vector_factory = VectorStoreFactory(settings)
+        # 向量模型注册化（Phase 1）：seed 默认行（值 ≡ env，create-if-absent）+
+        # 存量库回填 → 注册表加载。默认行被 KB 引用后语义字段锁定（service
+        # 守卫），等价性由"seed 同源 env"保证（plan kb-embedding-model-registry §6）。
+        seed = await dbmod.seed_default_embedding(
+            st.pool,
+            name=settings.embedding_seed_name,
+            provider_kind="openai_compatible",
+            model_type=settings.embedding_model,
+            api_key=settings.embedding_api_key,
+            base_url=settings.embedding_base_url,
+            dims=settings.embedding_dims,
+            batch_size=settings.embedding_batch_size,
+            timeout=settings.embedding_timeout,
+            check_ctx_length=settings.embedding_check_ctx_length,
+        )
+        if seed is not None:
+            backfilled = await dbmod.backfill_kb_embeddings(st.pool, seed["id"])
+            if backfilled:
+                logger.info(
+                    "backfilled %d KB(s) to default embedding '%s'", backfilled, seed["name"]
+                )
+        else:
+            logger.info("embedding seed skipped（注册表已就绪且无待回填库）")
+        st.embedding_store = EmbeddingStore(pool=st.pool)
+        await st.embedding_store.startup()
+        st.vector_factory = VectorStoreFactory(settings, embedding_store=st.embedding_store)
         st.knowledge_service = KnowledgeService(
             pool=st.pool, settings=settings,
             minio=st.minio_storage, vector_factory=st.vector_factory,
+            embedding_store=st.embedding_store,
         )
         st.ingest_pool = IngestPool(st.knowledge_service, settings.kb_ingestion_concurrency)
         # 启动恢复：上个进程周期内中断的入库（重启/崩溃）会把文档永久留在
@@ -195,6 +221,8 @@ async def lifespan(app: FastAPI):
         await st.ingest_pool.shutdown()
     if st.vector_factory is not None:
         st.vector_factory.close()
+    if st.embedding_store is not None:
+        await st.embedding_store.shutdown()
     if st.jev_audit is not None:
         await st.jev_audit.shutdown()
     await st.mcp_lifecycle.shutdown()
@@ -227,10 +255,12 @@ def create_app() -> FastAPI:
 
     # 知识库路由：仅 kb_enabled=true 时挂载（避免禁用时仍 import RAG 重依赖；
     # 禁用时 KB 接口 404、会话 knowledge-capability 返回 allow_knowledge=false）。
+    # 向量模型注册路由（/embeddings）随 KB 能力同挂同卸。
     if settings.kb_enabled:
-        from app.api import knowledge
+        from app.api import embeddings, knowledge
 
         app.include_router(knowledge.router, dependencies=[Depends(get_current_user)])
+        app.include_router(embeddings.router, dependencies=[Depends(get_current_user)])
 
     # 语音路由：仅 voice_enabled=true 且已配 AssemblyAI key 时挂载（能力位同步下发）。
     # key 缺失属部署错误：降级为不挂载 + 警告（健康位 false），不让启动崩溃。

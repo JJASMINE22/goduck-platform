@@ -331,7 +331,7 @@ python -m app.seed agent_confs/default.yaml --name "Default Gateway" --creator a
 
 ### mcp-servers/.env
 
-MinIO / ES / EMBEDDING 系列须与 backend 侧**严格一致**（尤其 `EMBEDDING_DIMS`，维度不对称会导致检索失败）。详见 [mcp-servers/README.md](./mcp-servers/README.md)。
+`DATABASE_URL`（只读）经 `kb → embedding` 注册表解析各库向量模型；未配置/不可达自动回落 `EMBEDDING_*`（与 backend 同值即可，仅为回落一致性）。详见 [mcp-servers/README.md](./mcp-servers/README.md)。
 
 <a id="capabilities"></a>
 
@@ -361,15 +361,18 @@ curl http://localhost:8000/health
 
 **能力**：pdf/docx 上传入库向量化（ES 存储 + MinIO 原文留底，支持 reindex），会话中锚定知识库后 agent 先检索后作答。使用：`/settings/knowledge` 建库 → 上传文件 → 会话输入框左侧选择知识库锚定。
 
+**向量模型注册化**：嵌入端点在 `/settings/embeddings` 注册（端点/维度/凭据随行走，保存前经端点实测维度）；建库时下拉绑定，维度不再需要两侧运维对齐。换绑 = 破坏性变更（清索引块 + 文档重置待解析，原始文件保留）；被引用模型的端点/维度锁定不可改（防向量空间静默错配）。
+
 **触发机制（用户提示注入）**：检索不植入图内核——锚定库列表（kb_id）与检索指令前置注入本轮用户消息，由 agent 原生 function-calling 主动调用其持有的检索工具（如 `kb_search`）；未持有检索工具则如实降级作答。
 
-**配置**（`.env`）：
+**配置**（`.env`；`EMBEDDING_*` 双用途 = 首启 seed 默认向量模型行 + 未绑定库/检索侧回落）：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `KB_ENABLED` | `true` | 总开关；`false` 时知识库路由不挂载、前端入口隐藏，不依赖 TEI / ES |
-| `EMBEDDING_BASE_URL` | `http://tei:8082/v1`（compose 层） | compose 内置 TEI 默认直连；改用外部 OpenAI 兼容端点时覆盖 |
-| `EMBEDDING_DIMS` | `512` | 全局向量维度，backend 与 mcp-servers **必须一致** |
+| `EMBEDDING_BASE_URL` | `http://tei:8082/v1`（compose 层） | seed 默认行端点 + 回落路径；compose 内置 TEI 默认服务名直连 |
+| `EMBEDDING_DIMS` | `512` | seed 默认行维度 + 回落维度（注册化后由向量模型行决定，无需两侧对齐） |
+| `EMBEDDING_SEED_NAME` | `Qwen3-Embedding-0.6B（TEI 内置）` | seed 默认行名（仅首启建行生效；改名即用户接管，不按名重建） |
 | `EMBEDDING_BATCH_SIZE` | `4`（compose 层 `24`） | 须 ≤ TEI `--max-client-batch-size` 且单批 token ≤ `--max-batch-tokens`（内置 tei 已对齐：32 / 32768），否则入库延迟成倍放大 |
 | `KB_PARSER_ENGINE` | `legacy` | `legacy` = pymupdf 文本层 + 滑窗切块；`docling` = 结构化解析 + 扫描件 OCR（需先安装 `docling>=2.130,<3`） |
 | `KB_DOCLING_DEVICE` | `cuda`（compose 层） | docling 推理设备 `auto/cpu/cuda/mps`；GPU 已内置 compose，默认锁 `cuda`（驱动 570 系 + Container Toolkit，见[快速开始](#deploy-docker)） |

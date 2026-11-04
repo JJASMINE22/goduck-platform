@@ -6,7 +6,7 @@
     品牌带右侧为侧栏折叠钮（<=|=> 样式，折叠后移至 Logo 正下方）；分组与
     底部工具区不再用分割线，靠留白区隔（保持卡片一体感）。
     底部为用户区（当前用户芯片 + 菜单 Popover）：身份常驻导航末端。 */
-import { Bot, BookOpen, CalendarClock, Cpu, Database, MessagesSquare, Network, PanelLeftClose, PanelLeftOpen, ShieldCheck } from 'lucide-react'
+import { Bot, BookOpen, Boxes, CalendarClock, Cpu, Database, MessagesSquare, Network, PanelLeftClose, PanelLeftOpen, ShieldCheck } from 'lucide-react'
 import { Menu } from 'antd'
 import type { MenuProps } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -29,6 +29,7 @@ function buildItems(kbEnabled: boolean, isManager: boolean): MenuItem[] {
   ]
   if (kbEnabled) {
     config.push({ key: '/settings/knowledge', icon: icon(<Database size={16} />), label: '知识库' })
+    config.push({ key: '/settings/embeddings', icon: icon(<Boxes size={16} />), label: '向量模型' })
   }
   const groups: MenuItem[] = [
     {

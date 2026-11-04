@@ -1,32 +1,36 @@
 /* 知识库管理页（plan §5.8）—— KB CRUD + 文档入口。
     - 知识库 = 一组文档的检索集合（es_index_name 不可改）。
     - 创建/编辑/删除/文档入库为管理员操作（后端 403 兜底）；非管理员只读预览。
+    - 向量模型经下拉绑定（维度随行，plan kb-embedding-model-registry）：换绑 =
+      破坏性变更（清索引块 + 文档重置待解析），有文档时二次确认。
     - 能力驱动（F2）：后端 kb_enabled=false 时路由未挂载（接口 404），本页依据
-      全局能力开关（/health → capabilities）降级为禁用态提示，不依赖接口报错。
+      全局能力开关（/health → capabilities）降级为禁用态提示。
     - 文档管理（上传/手动解析/检索）在抽屉 KbDocumentsDrawer 内完成。 */
-import { App as AntApp, Button, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Table, Tag, Tooltip } from 'antd'
+import { App as AntApp, Button, Drawer, Flex, Form, Input, Popconfirm, Select, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState, type ReactNode } from 'react'
 import { FolderOpen, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { useCreateKb, useDeleteKb, useKnowledgeBases, useUpdateKb } from '@/hooks/useKnowledge'
+import { useEmbeddings } from '@/hooks/useEmbeddings'
 import { useCurrentUser } from '@/store/userStore'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
 import { formatDateTime } from '@/lib/format'
 import { KbDocumentsDrawer } from '@/features/knowledge/KbDocumentsDrawer'
-import type { KnowledgeBaseOut, KnowledgeBaseUpdate } from '@/types'
+import type { KnowledgeBaseOut, KnowledgeBaseUpdate, UUID } from '@/types'
 
 interface FormValues {
   name: string
   description?: string
-  dims?: number | null
+  embedding_id?: UUID | null
 }
 
 export function KnowledgePage(): ReactNode {
   const { ready, kb_enabled } = useCapabilities()
   const isManager = useCurrentUser((s) => s.user?.is_manager ?? false)
   const { data, isLoading, isError, refetch } = useKnowledgeBases()
+  const { data: embeddings } = useEmbeddings()
   const createKb = useCreateKb()
   const updateKb = useUpdateKb()
   const deleteKb = useDeleteKb()
@@ -40,9 +44,18 @@ export function KnowledgePage(): ReactNode {
   // 全局 KB 能力未启用（kb_enabled=false）→ 降级展示（不依赖接口 404/503）
   const kbDisabled = ready && !kb_enabled
 
+  // 候选 = 已启用向量模型（含禁用的绑定行仅展示，不进新建候选）
+  const embOptions = (embeddings ?? [])
+    .filter((e) => e.enabled)
+    .map((e) => ({
+      value: e.id,
+      label: `${e.name}（${e.dims ?? '原生'}维）`,
+    }))
+
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
+    form.setFieldsValue({ embedding_id: embOptions.length === 1 ? embOptions[0].value : null })
     setOpen(true)
   }
 
@@ -51,7 +64,7 @@ export function KnowledgePage(): ReactNode {
     form.setFieldsValue({
       name: record.name,
       description: record.description ?? '',
-      dims: record.dims ?? undefined,
+      embedding_id: record.embedding_id ?? null,
     })
     setOpen(true)
   }
@@ -63,27 +76,27 @@ export function KnowledgePage(): ReactNode {
     } catch {
       return // 校验失败：表单内联提示
     }
-    const dims = v.dims ?? null
+    const embeddingId = v.embedding_id ?? null
     if (editing) {
-      const dimsChanged = (dims ?? null) !== (editing.dims ?? null)
+      const rebind = embeddingId !== (editing.embedding_id ?? null)
       const submit = (force: boolean) =>
         updateKb.mutateAsync({
           id: editing.id,
           body: {
             name: v.name.trim(),
             description: v.description?.trim() || null,
-            ...(dimsChanged ? { dims, force } : {}),
+            ...(rebind ? { embedding_id: embeddingId, force } : {}),
           } satisfies KnowledgeBaseUpdate,
         })
-      if (dimsChanged && editing.doc_count > 0) {
-        // 维度守卫（前端预检；后端 409 needs_force 为兜底）：重置而非删除
+      if (rebind && editing.doc_count > 0) {
+        // 换绑守卫（前端预检；后端 409 needs_force 为兜底）：重置而非删除
         modal.confirm({
-          title: `确认修改「${editing.name}」的维度？`,
+          title: `确认更换「${editing.name}」的向量模型？`,
           content:
             `将清空该库全部索引块，${editing.doc_count} 个文档重置为待解析状态` +
             '（原始文件保留、不删除），之后需逐个重新解析方可检索。',
           okType: 'danger',
-          okText: '确认修改',
+          okText: '确认更换',
           cancelText: '取消',
           onOk: async () => {
             await submit(true)
@@ -98,7 +111,7 @@ export function KnowledgePage(): ReactNode {
       await createKb.mutateAsync({
         name: v.name.trim(),
         description: v.description?.trim() || null,
-        ...(dims != null ? { dims } : {}),
+        embedding_id: embeddingId,
       })
       setOpen(false)
     }
@@ -158,11 +171,21 @@ export function KnowledgePage(): ReactNode {
       render: (v: number) => <Tag color="blue">{v}</Tag>,
     },
     {
-      title: '维度',
-      dataIndex: 'dims',
-      key: 'dims',
-      width: 80,
-      render: (v?: number | null) => v ?? '—',
+      title: '向量模型',
+      dataIndex: 'embedding_name',
+      key: 'embedding_name',
+      width: 220,
+      render: (v: string | null | undefined, r) =>
+        v ? (
+          <Flex gap={6} align="center">
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>
+            {r.dims != null ? <Tag color="geekblue">{r.dims}维</Tag> : null}
+          </Flex>
+        ) : (
+          <Tooltip title="未绑定（dims + 全局 env 双读回落，迁移期语义）">
+            <Tag>全局默认{r.dims != null ? ` · ${r.dims}维` : ''}</Tag>
+          </Tooltip>
+        ),
     },
     {
       title: '更新时间',
@@ -243,7 +266,7 @@ export function KnowledgePage(): ReactNode {
         />
       )}
 
-      {/* 新建/编辑抽屉：es_index_name 不可改；维度创建后可改（有文档须确认重置） */}
+      {/* 新建/编辑抽屉：es_index_name 不可改；换绑向量模型为破坏性变更（有文档须确认重置） */}
       <Drawer
         title={editing ? `编辑知识库：${editing.name}` : '新建知识库'}
         open={open}
@@ -274,17 +297,33 @@ export function KnowledgePage(): ReactNode {
             <Input.TextArea rows={3} placeholder="选填，说明该库的用途与范围" />
           </Form.Item>
           <Form.Item
-            name="dims"
-            label="向量维度"
-            tooltip="嵌入向量维度（须与嵌入服务能力匹配，如 MRL 截断 512/1024）。库内已有文档时修改需二次确认（文档将重置为待解析）"
-            rules={[{ type: 'number', min: 2, max: 4096, message: '维度范围 2–4096' }]}
+            name="embedding_id"
+            label="向量模型"
+            tooltip="入库与检索的嵌入端点（维度随行）。更换已建库的向量模型为破坏性变更：索引块清空、文档重置为待解析"
+            extra={
+              embOptions.length
+                ? undefined
+                : '暂无已启用的向量模型，将使用全局默认端点（可在「向量模型」页注册）'
+            }
           >
-            <InputNumber
-              min={2}
-              max={4096}
-              precision={0}
-              style={{ width: '100%' }}
-              placeholder="默认使用全局维度"
+            <Select
+              allowClear
+              placeholder="全局默认端点"
+              options={embOptions}
+              // 编辑已绑定库：保持当前绑定可选中（即使该模型已被禁用）
+              {...(editing?.embedding_id && !embOptions.some((o) => o.value === editing.embedding_id)
+                ? {
+                    options: [
+                      ...embOptions,
+                      {
+                        value: editing.embedding_id,
+                        label: `${editing.embedding_name ?? '已绑定'}（已禁用）· ${
+                          editing.dims ?? '原生'
+                        }维`,
+                      },
+                    ],
+                  }
+                : {})}
             />
           </Form.Item>
         </Form>

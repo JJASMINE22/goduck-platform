@@ -14,16 +14,19 @@ export type KbDocStatus = 'pending' | 'indexing' | 'indexed' | 'failed'
 export interface KnowledgeBaseCreate {
   name: string
   description?: string | null
-  /** 嵌入维度；缺省=后端全局 EMBEDDING_DIMS */
+  /** 绑定向量模型（优先；维度随行）。缺省=不绑定，走全局 env 维度（迁移期语义） */
+  embedding_id?: UUID | null
+  /** legacy 维度入参（未绑定向量模型时生效）；缺省=后端全局 EMBEDDING_DIMS */
   dims?: number | null
 }
 
 export interface KnowledgeBaseUpdate {
   name: string
   description?: string | null
-  /** 新维度；与当前不同时后端触发守卫（有文档须 force） */
+  /** 换绑向量模型（不传=不换）。换绑与维度变更同为破坏性变更（有文档须 force） */
+  embedding_id?: UUID | null
   dims?: number | null
-  /** 维度变更确认位：清空索引块 + 文档重置为待解析（原始文件保留，不删除） */
+  /** 换绑/维度变更确认位：清空索引块 + 文档重置为待解析（原始文件保留） */
   force?: boolean
 }
 
@@ -33,6 +36,9 @@ export interface KnowledgeBaseOut {
   description?: string | null
   es_index_name: string
   dims?: number | null
+  /** 绑定向量模型（null=legacy：dims + env 双读回落） */
+  embedding_id?: UUID | null
+  embedding_name?: string | null
   status: string
   doc_count: number
   chunk_count: number

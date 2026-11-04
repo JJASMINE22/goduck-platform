@@ -126,18 +126,22 @@ class Settings(BaseSettings):
     es_user: Optional[str] = None
     es_password: Optional[str] = None
 
-    # ---- 向量化（TEI 经 OpenAI 兼容端点；单一固定后端 + 全局单一维度）----
+    # ---- 向量化（TEI 经 OpenAI 兼容端点）----
+    # 注册化主路径：embedding 表（/embeddings 注册，per-KB 绑定 embedding_id）。
+    # 本组 env 为启动 seed 默认行的取值源 + 迁移期回落（kb 未绑定 / mcp-servers
+    # 未切换）——seed 行值与 env 同源 ⇒ 双路径行为等价（plan: kb-embedding-model-registry）。
     # 本地 TEI：部署时已指定模型 ⇒ 此处 model 任意（TEI 忽略）、无需 key（dummy 即可），
     #          只要 base_url 指向 /v1 正确即可（见 demo/agents/embeddings.py）。
     # check_embedding_ctx_length 必须为 False：否则 langchain 用 tiktoken 按 model 分词，
     #   对 TEI 部署的模型会报错。改用真实 OpenAI 云端嵌入时设 True。
-    # dimensions：全局唯一来源，backend(入库) 与 mcp-servers(检索) 各读同一值 ⇒ ingest/query 维度对称。
-    #   Qwen3-Embedding 支持 MRL，原生 1024 可经 dimensions 参数截断到 512。
+    # dimensions：Qwen3-Embedding 支持 MRL，原生 1024 可经 dimensions 参数截断到 512。
     embedding_base_url: str = "http://192.168.x.x:8082/v1"  # TEI OpenAI 兼容端点（/v1）
     embedding_api_key: str = "-"                            # dummy key，TEI 不验证；云端用真实 key
     embedding_model: str = "text-embeddings-inference"      # 任意字符串，TEI 忽略；云端用真实模型名
     embedding_check_ctx_length: bool = False                # TEI 必须 False（避免 tiktoken 报错）
-    embedding_dims: Optional[int] = None                    # 全局维度（MRL 截断值，如 512）；ingest 与 query 共用
+    embedding_dims: Optional[int] = None                    # 全局维度（MRL 截断值，如 512）；seed 与 legacy 回落共用
+    # seed 默认行名（启动 create-if-absent；各环境端点经 env 自适配，名称保持统一）
+    embedding_seed_name: str = "Qwen3-Embedding-0.6B（TEI 内置）"
     # 单批嵌入请求超时（秒）：必须 > 单批实际处理耗时，否则每批必超时（OpenAI 客户端超时后还会重试 2 次放大延迟）。
     embedding_timeout: int = 90
     # 单次 /v1/embeddings HTTP 请求携带的最大文本数（LangChain 客户端按此自动分批：>此值内部自动切片，

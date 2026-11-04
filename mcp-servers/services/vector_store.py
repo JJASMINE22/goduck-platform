@@ -1,22 +1,28 @@
-"""Elasticsearch 向量库工厂（知识库检索侧，JIT store + 维度感知）。
-
-轻量拷贝自 backend/app/services/vector_store.py（检索侧只需 get_for_index/get_dims）。
+"""Elasticsearch 向量库工厂（知识库检索侧，维度/模型感知）。
 
 一库一索引：index_name = `kb_<kb_id>`。
 - get_dims(kb_ids)：一次 get_mapping 逗号多索引探测 → {index_name: dims}。
-  维度事实来源（store 构造参数 num_dimensions 只是预期值，索引已存在时永不回填）；
-  索引不存在（空库）→ 不在返回值中（无 chunk 无命中，调用方跳过）。
-- get_for_index(index, dims)：按 (index, dims) 懒构建 + 缓存 ElasticsearchStore。
-  - index='kb_a,kb_b'：逗号拼接多库（ES 原生多索引查询），须为同维度组。
-  - dims 决定查询向量维度（嵌入客户端按 dims 构建 + 缓存），与组内 mapping 一致。
-- distance_strategy=COSINE；mapping 由 backend 首写入时按 kb.dims 建。
+  维度事实来源（store 构造参数 num_dimensions 只是预期值，索引已存在时永不
+  回填）；索引不存在（空库）→ 不在返回值中（无 chunk 无命中，调用方跳过）。
+- get_for_index(index, emb, dims)：按 (index, embedding 身份) 懒构建 + 缓存。
+  - index='kb_a,kb_b'：逗号拼接多库（ES 原生多索引查询），须为同向量模型组。
+  - emb=embedding 注册行（注册化主路径）：查询向量出自该行端点/维度；
+    emb=None=legacy（dims + env，注册行缺失/PG 回落），行为=历史版本。
+- distance_strategy=COSINE；mapping 由 backend 首写入时按注册行维度建。
 
-backend(入库/管理) 与 mcp-servers(检索) 各自实例化；嵌入维度取值源对称
-（backend=kb.dims 行记录，本侧=ES mapping 真值 → 同一索引两者恒等）。
+缓存键含 embedding 身份而非仅 dims：同 dims 不同端点是不同向量空间，
+by-dims 复用客户端会拿 A 端点查 B 模型索引（维度对、语义错、静默无报错）。
+注册行客户端按 id 缓存：语义字段被 KB 引用后 backend 侧锁定不可变，
+故按 id 缓存无悬挂风险（batch/timeout 微调至多重启生效，可接受）。
+
+backend(入库/管理) 与 mcp-servers(检索) 各自实例化；嵌入取值同源
+（同一 embedding 注册行）→ ingest 与 query 向量空间恒等。
 """
+
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Optional
 
 from elasticsearch import Elasticsearch, NotFoundError
@@ -28,7 +34,7 @@ from langchain_elasticsearch import (
 )
 
 from config import ES_API_KEY, ES_PASSWORD, ES_URL, ES_USER
-from services.embedding import build_embeddings
+from services.embedding import build_embeddings, build_from_row
 
 logger = logging.getLogger(__name__)
 
@@ -56,51 +62,67 @@ def _build_native_client() -> Elasticsearch:
     return Elasticsearch(ES_URL)
 
 
-class VectorStoreFactory:
-    """按 (索引名, dims) 懒构建 + 缓存 ElasticsearchStore；按 dims 缓存嵌入客户端。
+def _emb_key(emb: Optional[dict], dims: Optional[int]) -> str:
+    """缓存键的 embedding 身份段：注册行 id / legacy dims。"""
+    return f"e:{emb['id']}" if emb is not None else f"d:{dims}"
 
-    用户每次选的 kb_ids 组合不同 → index 名不同 → 按需创建并缓存，
-    避免启动时预载所有库（数量不可控、且大多用不到）。维度进入缓存键：
-    同一 index 组合在不同维度下是不同的查询向量空间。
+
+class VectorStoreFactory:
+    """按 (索引名, embedding 身份) 懒构建 + 缓存 ElasticsearchStore。
+
+    嵌入客户端双源缓存：注册行 by embedding_id / legacy by dims（env）。
+    用户每次选的 kb_ids 组合不同 → index 名不同 → 按需创建并缓存。
     """
 
     def __init__(self):
-        self._embeddings: dict[Optional[int], Embeddings] = {}
-        self._cache: dict[tuple[str, Optional[int]], ElasticsearchStore] = {}
+        self._embeddings: dict[Optional[int], Embeddings] = {}      # legacy: by dims（env）
+        self._row_embeddings: dict[uuid.UUID, Embeddings] = {}      # 注册行: by id
+        self._cache: dict[tuple[str, str], ElasticsearchStore] = {}
         self._client = _build_native_client()
 
-    def _get_embeddings(self, dims: Optional[int]) -> Embeddings:
+    def _client_for(self, emb: Optional[dict], dims: Optional[int]) -> tuple[Embeddings, Optional[int]]:
+        """嵌入客户端 + 建索引预期维度：注册行优先，legacy 回落 env by-dims。"""
+        if emb is not None:
+            em = self._row_embeddings.get(emb["id"])
+            if em is None:
+                em = build_from_row(emb)
+                self._row_embeddings[emb["id"]] = em
+            return em, emb.get("dims")
         em = self._embeddings.get(dims)
         if em is None:
             em = build_embeddings(dims)
             self._embeddings[dims] = em
-        return em
+        return em, dims
 
-    def _build_store(self, index_name: str, dims: Optional[int]) -> ElasticsearchStore:
+    def _build_store(
+        self, index_name: str, dims: Optional[int], embeddings: Embeddings
+    ) -> ElasticsearchStore:
         kw = _es_kwargs()
-        # num_dimensions 与组 dims 同源：查询向量维度与组内各索引 mapping 一致。
-        # None 时不传（模型原生维度场景，由嵌入服务保证对称）。
         if dims is not None:
             kw["num_dimensions"] = dims
         return ElasticsearchStore(
             index_name=index_name,
-            embedding=self._get_embeddings(dims),
+            embedding=embeddings,
             strategy=DenseVectorStrategy(),
             distance_strategy=DistanceStrategy.COSINE,
             **kw,
         )
 
-    def get_for_index(self, index: str, dims: Optional[int] = None) -> ElasticsearchStore:
-        """同维度组 store（懒构建 + 缓存键=(index, dims)）。
+    def get_for_index(
+        self, index: str, emb: Optional[dict] = None, dims: Optional[int] = None
+    ) -> ElasticsearchStore:
+        """同向量模型组 store（懒构建 + 缓存键=(index, embedding 身份)）。
 
-        - index='kb_a,kb_b'：逗号拼接多库（调用方按 mapping dims 分组后进入）。
+        - index='kb_a,kb_b'：逗号拼接多库（调用方按注册行/维度分组后进入）。
+        - emb=注册行（dims 入参被忽略——行维度为真值）；None=legacy（dims+env）。
         """
-        key = (index, dims)
+        key = (index, _emb_key(emb, dims))
         store = self._cache.get(key)
         if store is None:
-            store = self._build_store(index, dims)
+            embeddings, eff_dims = self._client_for(emb, dims)
+            store = self._build_store(index, eff_dims, embeddings)
             self._cache[key] = store
-            logger.info("JIT 构建 ElasticsearchStore: index=%s dims=%s", index, dims)
+            logger.info("JIT 构建 ElasticsearchStore: index=%s emb=%s", index, key[1])
         return store
 
     def get_dims(self, kb_ids: list[str]) -> dict[str, int]:

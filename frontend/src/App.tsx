@@ -21,6 +21,7 @@ import { SessionsListPage } from '@/pages/sessions/SessionsListPage'
 import { ChatPage } from '@/pages/sessions/ChatPage'
 import { CronJobsPage } from '@/pages/cron/CronJobsPage'
 import { ModelsPage } from '@/pages/settings/ModelsPage'
+import { EmbeddingsPage } from '@/pages/settings/EmbeddingsPage'
 import { McpPage } from '@/pages/settings/McpPage'
 import { SkillsPage } from '@/pages/settings/SkillsPage'
 import { KnowledgePage } from '@/pages/settings/KnowledgePage'
@@ -51,6 +52,8 @@ function AppRoot(): ReactNode {
         <Route path="/sessions/:id" element={<ChatPage />} />
         <Route path="/cron" element={<CronJobsPage />} />
         <Route path="/settings/models" element={<ModelsPage />} />
+        {/* 向量模型注册路由随 KB 能力（后端 kb_enabled=false 时 /embeddings 未挂载） */}
+        <Route path="/settings/embeddings" element={<EmbeddingsPage />} />
         <Route path="/settings/mcp" element={<McpPage />} />
         <Route path="/settings/skills" element={<SkillsPage />} />
         <Route path="/settings/knowledge" element={<KnowledgePage />} />

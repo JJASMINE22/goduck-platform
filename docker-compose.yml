@@ -158,6 +158,8 @@ services:
       MCP_ALLOW_LOOPBACK: "true"
       MAX_INVOKE_RETRIES: ${MAX_INVOKE_RETRIES:-2}
       # ---- 知识库（RAG）----
+      # 向量模型注册化：本组 EMBEDDING_* = 启动 seed 默认行取值源 + 未绑定库回落
+      # （主路径 /settings/embeddings 注册，建库绑定；见 .kilo/plans/kb-embedding-model-registry）。
       # TEI 已内置 compose（上方 tei 服务）：默认服务名直连；改用外部嵌入端点时
       # .env 覆盖本值（backend 懒连接嵌入端点，故不设 tei 的 depends_on）。
       ES_URL: http://elasticsearch:9200
@@ -166,6 +168,7 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embeddings-inference}
       EMBEDDING_CHECK_CTX_LENGTH: ${EMBEDDING_CHECK_CTX_LENGTH:-false}
       EMBEDDING_DIMS: ${EMBEDDING_DIMS:-512}
+      EMBEDDING_SEED_NAME: ${EMBEDDING_SEED_NAME:-Qwen3-Embedding-0.6B（TRL 512）}
       EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-24}
       KB_ENABLED: ${KB_ENABLED:-true}
       KB_STORE_MINIO: ${KB_STORE_MINIO:-true}
@@ -250,7 +253,8 @@ services:
   # ============ MCP 网关（goduck 自研）============
   mcp-servers:
     # 知识库检索网关（kb_search 工具，FastMCP http 传输，端点 /mcp/）。
-    # ES/TEI 均懒连接（工具调用时才建链）⇒ 无需 depends_on；无 PG/MinIO 依赖。
+    # ES/TEI/PG 均懒连接（工具调用时才建链）⇒ 无需 depends_on；PG 为只读
+    # （kb → embedding 注册行解析，不可达自动回落 env）。
     # 部署后一次性注册（DB 表驱动，重启自动加载）：/settings/mcp 添加 HTTP server
     #   URL = http://mcp-servers:8088/mcp/（注册名任意，工具即 {name}__kb_search）
     build: ./mcp-servers
@@ -258,7 +262,9 @@ services:
     container_name: goduck-mcp-servers
     environment:
       ES_URL: http://elasticsearch:9200
-      # 与 backend 严格同值（维度对称：入库 backend / 检索本服务，见 mcp-servers/README）
+      # 向量模型注册表（只读解析 kb→embedding；缺失/不可达回落 EMBEDDING_* env）
+      DATABASE_URL: postgresql://${POSTGRES_USER:-goduck}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-langgraph_db}
+      # EMBEDDING_* 为回落路径（注册行缺失/PG 不可达时用；与 backend 同值仅为回落一致性）
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://tei:8082/v1}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-dummy}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embeddings-inference}

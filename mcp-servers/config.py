@@ -22,6 +22,11 @@ def get_env(key: str, default: str = "") -> str:
     return os.environ.get(key, default)
 
 
+# ---- PostgreSQL（只读：kb → embedding 注册行解析，plan kb-embedding-model-registry）----
+# 空 = 注册表关闭（纯 env legacy 路径）；不可达/查询失败自动回落 env（fail-open，
+# 行为=历史版本），不阻断检索主链路。
+DATABASE_URL = get_env("DATABASE_URL", "")
+
 # ---- Elasticsearch（知识库向量检索存储）----
 ES_URL = get_env("ES_URL", "http://localhost:9200")
 ES_API_KEY = get_env("ES_API_KEY", "")

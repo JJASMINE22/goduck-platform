@@ -47,9 +47,13 @@ pip install -r requirements.txt
 
 ## 配置
 
-编辑 `.env`，填入 ES 地址、向量化端点。
-**知识库相关项（ES_URL / EMBEDDING_* / KB_TOP_K）必须与 backend/.env 严格一致**，
-尤其是 `EMBEDDING_DIMS` —— 入库（backend）与检索（本服务）必须维度对称，否则检索失败。
+编辑 `.env`，填入 ES 地址、PG 与向量化端点。
+
+- **`DATABASE_URL`（只读）**：经 `kb → embedding` 注册表解析各库向量模型
+  （端点/维度/凭据与 backend 入库侧同源对称）。未配置 / 不可达时自动回落
+  `EMBEDDING_*` env（行为=历史版本，fail-open）。
+- **`EMBEDDING_*` 为回落路径**：与 backend/.env 同值即可；注册化生效后
+  维度对称由注册表保证，不再是运维纪律。
 
 ## 启动
 

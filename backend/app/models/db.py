@@ -57,6 +57,26 @@ CREATE TABLE IF NOT EXISTS model (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ============================ 向量模型（embedding）============================
+-- 知识库 RAG 嵌入端点注册（独立于 model/LLM，一表一域）。语义字段被 KB
+-- 引用后不可变（service 守卫）：静默换端点/维度会让既有索引向量空间失配。
+CREATE TABLE IF NOT EXISTS embedding (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name              VARCHAR NOT NULL UNIQUE,
+    provider_kind     VARCHAR NOT NULL DEFAULT 'openai_compatible',
+    model_type        TEXT NOT NULL,                  -- 发往端点的 model 名（TEI 忽略；云端须真实型号）
+    api_key           TEXT NOT NULL,                  -- TEI 用 dummy
+    base_url          TEXT NOT NULL,                  -- OpenAI 兼容端点（含 /v1；compose 内 TEI=http://tei:8082/v1）
+    dims              INT,                            -- MRL 截断维度；NULL=模型原生
+    batch_size        INT NOT NULL DEFAULT 24,        -- 单请求文本数（须 ≤ TEI --max-client-batch-size）
+    timeout           INT NOT NULL DEFAULT 90,        -- 单批请求超时（秒）
+    check_ctx_length  BOOLEAN NOT NULL DEFAULT false, -- TEI 必须 false（tiktoken 规避）
+    enabled           BOOLEAN NOT NULL DEFAULT true,
+    creator           VARCHAR NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ============================ 用户与登录（auth）============================
 -- app_user：当前生效事实（pending/rejected 只活在 auth_request，不进本表）。
 -- username=登录锚点（不可变，唯一性按 casefold 比较）；nickname=纯展示名
@@ -226,9 +246,11 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
     name          VARCHAR NOT NULL UNIQUE,
     description   TEXT,
     es_index_name VARCHAR NOT NULL,          -- 'kb_<uuid>'，创建时写定
-    dims          INT,                        -- 库级嵌入维度：创建时可传（默认=全局 EMBEDDING_DIMS），
-                                               -- 是入库/检索嵌入客户端的取值来源（修改=破坏性变更，见
-                                               -- KnowledgeService.update_kb 守卫）
+    dims          INT,                        -- 嵌入维度（显示/漂移检测）：绑定库 = embedding 行同值投影；
+                                                -- 未绑定（迁移期）= 全局 EMBEDDING_DIMS（legacy 路径）
+    embedding_id  UUID,                       -- 绑定向量模型（embedding 表；无 FK，应用层守卫）。
+                                                -- NULL = legacy（dims + env 双读回落，plan
+                                                -- kb-embedding-model-registry Phase 1）
     status        VARCHAR NOT NULL DEFAULT 'active',
     creator       VARCHAR NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -340,6 +362,9 @@ _MIGRATIONS = [
     # 产出当前 chunk 的解析引擎（NULL=legacy/历史行——数据双轨期判别源）。
     "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS doc_version INT NOT NULL DEFAULT 1",
     "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS parser_engine VARCHAR",
+    # 向量模型注册化（plan: kb-embedding-model-registry）：embedding 表见 DDL；
+    # 存量库 embedding_id 回填由启动 seed 流程完成（main lifespan，非 SQL 迁移）。
+    "ALTER TABLE knowledge_base ADD COLUMN IF NOT EXISTS embedding_id UUID",
     "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc TEXT",
     "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc_model TEXT",
     "ALTER TABLE upload ADD COLUMN IF NOT EXISTS vision_desc_at TIMESTAMPTZ",
@@ -1135,7 +1160,7 @@ async def get_uploads_by_ids(
 # 仅状态/元数据 CRUD（PG 状态卡）；chunk 文本/向量检索归 Elasticsearch。
 
 _KB_COLUMNS = (
-    "id, name, description, es_index_name, dims, status, creator, created_at, updated_at"
+    "id, name, description, es_index_name, dims, embedding_id, status, creator, created_at, updated_at"
 )
 # JOIN 场景需限定表别名：kb_document 同样含 id/created_at/updated_at，
 # 直接用 _KB_COLUMNS 会 AmbiguousColumn。结果列名仍为 id/name/...（dict 键不变）。
@@ -1155,6 +1180,7 @@ async def create_kb(
     dims: Optional[int],
     creator: str,
     kb_id: Optional[uuid.UUID] = None,
+    embedding_id: Optional[uuid.UUID] = None,
 ) -> dict:
     """Create a knowledge base state card. es_index_name='kb_<id>' / dims=global
     EMBEDDING_DIMS are written at creation (dims recorded for drift detection only).
@@ -1162,10 +1188,11 @@ async def create_kb(
     kb_id: optional explicit PK. Set so es_index_name = 'kb_<id>' is consistent
     (index name embeds the id; resolving both at the service layer avoids a
     placeholder-then-update round trip).
+    embedding_id: optional vector-model binding (None = legacy dims+env path).
     """
-    cols = "name, description, es_index_name, dims, creator"
-    placeholders = "%s, %s, %s, %s, %s"
-    params: list = [name, description, es_index_name, dims, creator]
+    cols = "name, description, es_index_name, dims, embedding_id, creator"
+    placeholders = "%s, %s, %s, %s, %s, %s"
+    params: list = [name, description, es_index_name, dims, embedding_id, creator]
     if kb_id is not None:
         cols = "id, " + cols
         placeholders = "%s, " + placeholders
@@ -1223,11 +1250,12 @@ async def list_kbs(
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                f"SELECT {_KB_COLUMNS_QUALIFIED}, "
+                f"SELECT {_KB_COLUMNS_QUALIFIED}, e.name AS embedding_name, "
                 f"COUNT(d.id) AS doc_count, COALESCE(SUM(d.chunk_count), 0) AS chunk_count "
                 f"FROM knowledge_base kb LEFT JOIN kb_document d ON d.kb_id = kb.id "
+                f"LEFT JOIN embedding e ON e.id = kb.embedding_id "
                 f"{where} "
-                f"GROUP BY kb.id ORDER BY kb.updated_at DESC"
+                f"GROUP BY kb.id, e.name ORDER BY kb.updated_at DESC"
             )
             return await cur.fetchall()
 
@@ -1238,16 +1266,18 @@ async def update_kb(
     name: str,
     description: Optional[str],
     dims: Optional[int] = None,
+    embedding_id: Optional[uuid.UUID] = None,
 ) -> Optional[dict]:
-    """dims 用 COALESCE：传 None 保持原值（服务层守卫后才会传入新维度）。"""
+    """dims / embedding_id 用 COALESCE：传 None 保持原值（服务层守卫后才传入）。"""
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"UPDATE knowledge_base SET name = %s, "
                 f"description = COALESCE(%s, description), "
-                f"dims = COALESCE(%s, dims), updated_at = now() "
+                f"dims = COALESCE(%s, dims), "
+                f"embedding_id = COALESCE(%s, embedding_id), updated_at = now() "
                 f"WHERE id = %s RETURNING {_KB_COLUMNS}",
-                (name, description, dims, kb_id),
+                (name, description, dims, embedding_id, kb_id),
             )
             return await cur.fetchone()
 
@@ -1606,6 +1636,234 @@ async def list_agents_by_model(pool: AsyncConnectionPool, model_id: uuid.UUID) -
             )
             rows = await cur.fetchall()
     return rows
+
+
+# ============================ Embedding ops ================================
+
+_EMBEDDING_COLUMNS = (
+    "id, name, provider_kind, model_type, base_url, dims, batch_size, "
+    "timeout, check_ctx_length, enabled, creator, created_at, updated_at"
+)
+
+
+async def insert_embedding(
+    pool: AsyncConnectionPool,
+    *,
+    name: str,
+    provider_kind: str,
+    model_type: str,
+    api_key: str,
+    base_url: str,
+    dims: Optional[int],
+    batch_size: int,
+    timeout: int,
+    check_ctx_length: bool,
+    enabled: bool,
+    creator: str,
+) -> dict:
+    """Insert a registered embedding definition. api_key stored at row level.
+
+    UniqueViolation → FileExistsError（并发兜底，对齐 insert_model）。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            try:
+                await cur.execute(
+                    f"INSERT INTO embedding (name, provider_kind, model_type, api_key, "
+                    f"base_url, dims, batch_size, timeout, check_ctx_length, enabled, creator) "
+                    f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    f"RETURNING {_EMBEDDING_COLUMNS}",
+                    (name, provider_kind, model_type, api_key, base_url, dims,
+                     batch_size, timeout, check_ctx_length, enabled, creator),
+                )
+                return await cur.fetchone()
+            except UniqueViolation:
+                raise FileExistsError(name)
+
+
+async def update_embedding(
+    pool: AsyncConnectionPool,
+    embedding_id: uuid.UUID,
+    *,
+    name: str,
+    provider_kind: str,
+    model_type: str,
+    api_key: Optional[str],
+    base_url: str,
+    dims: Optional[int],
+    batch_size: int,
+    timeout: int,
+    check_ctx_length: bool,
+    enabled: bool,
+) -> Optional[dict]:
+    """Update an embedding's mutable fields. id (PK) never changes.
+
+    api_key=None keeps the existing key (rotation semantics, 对齐 update_model)。
+    语义字段（端点/型号/维度）被 KB 引用时的不可变约束由 service 守卫。
+    """
+    set_api_key = "api_key = %s" if api_key is not None else "api_key = embedding.api_key"
+    params = (
+        [name, provider_kind, model_type, base_url, dims, batch_size,
+         timeout, check_ctx_length, enabled]
+        + ([api_key] if api_key is not None else [])
+        + [embedding_id]
+    )
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            try:
+                await cur.execute(
+                    f"UPDATE embedding SET name = %s, provider_kind = %s, model_type = %s, "
+                    f"base_url = %s, dims = %s, batch_size = %s, timeout = %s, "
+                    f"check_ctx_length = %s, enabled = %s, {set_api_key}, "
+                    f"updated_at = now() WHERE id = %s RETURNING {_EMBEDDING_COLUMNS}",
+                    tuple(params),
+                )
+                return await cur.fetchone()
+            except UniqueViolation:
+                raise FileExistsError(name)
+
+
+async def get_embedding(
+    pool: AsyncConnectionPool, embedding_id: uuid.UUID
+) -> Optional[dict]:
+    """Full row incl. api_key (server-side only; update 守卫比对用)."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_EMBEDDING_COLUMNS}, api_key FROM embedding WHERE id = %s",
+                (embedding_id,),
+            )
+            return await cur.fetchone()
+
+
+async def get_embedding_public(
+    pool: AsyncConnectionPool, embedding_id: uuid.UUID
+) -> Optional[dict]:
+    """Row WITHOUT api_key (for API responses)."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_EMBEDDING_COLUMNS} FROM embedding WHERE id = %s",
+                (embedding_id,),
+            )
+            return await cur.fetchone()
+
+
+async def get_embedding_by_name(
+    pool: AsyncConnectionPool, name: str
+) -> Optional[dict]:
+    """Public row (no api_key) by unique name — create/update 冲突预检."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_EMBEDDING_COLUMNS} FROM embedding WHERE name = %s",
+                (name,),
+            )
+            return await cur.fetchone()
+
+
+async def list_embeddings(pool: AsyncConnectionPool) -> list[dict]:
+    """全部注册行（无 api_key，管理面展示）."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_EMBEDDING_COLUMNS} FROM embedding ORDER BY created_at"
+            )
+            return await cur.fetchall()
+
+
+async def list_enabled_embeddings(pool: AsyncConnectionPool) -> list[dict]:
+    """Enabled full rows incl. api_key — EmbeddingStore startup loading."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_EMBEDDING_COLUMNS}, api_key FROM embedding WHERE enabled = true"
+            )
+            return await cur.fetchall()
+
+
+async def delete_embedding(pool: AsyncConnectionPool, embedding_id: uuid.UUID) -> bool:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM embedding WHERE id = %s", (embedding_id,))
+            return cur.rowcount > 0
+
+
+async def list_kbs_by_embedding(
+    pool: AsyncConnectionPool, embedding_id: uuid.UUID
+) -> list[dict]:
+    """KBs bound to an embedding (id + name) — 删除/语义变更阻断守卫."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, name FROM knowledge_base "
+                "WHERE embedding_id = %s ORDER BY name",
+                (embedding_id,),
+            )
+            return await cur.fetchall()
+
+
+async def seed_default_embedding(
+    pool: AsyncConnectionPool,
+    *,
+    name: str,
+    provider_kind: str,
+    model_type: str,
+    api_key: str,
+    base_url: str,
+    dims: Optional[int],
+    batch_size: int,
+    timeout: int,
+    check_ctx_length: bool,
+) -> Optional[dict]:
+    """启动引导默认向量模型行（bootstrap 语义对齐 app_user）。
+
+    幂等策略：
+    - 同名行已存在 → 返回之（值不覆盖：seed 只在无主时建）。
+    - 无同名行，但注册表非空且已无待回填库 → 跳过（None）。防"用户改名
+      接管后，每次重启按 settings 名多造一条孤儿默认行"。
+    - 全新库 / 存在 embedding_id IS NULL 的库 → 创建。
+    行值与 env 同源 ⇒ "默认行 ≡ env 路径"（迁移期行为等价不变式，plan
+    kb-embedding-model-registry §6）。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_EMBEDDING_COLUMNS} FROM embedding WHERE name = %s", (name,)
+            )
+            row = await cur.fetchone()
+            if row is not None:
+                return row
+            await cur.execute(
+                "SELECT (SELECT count(*) FROM embedding) AS emb_n, "
+                "(SELECT count(*) FROM knowledge_base WHERE embedding_id IS NULL) AS unbound_n"
+            )
+            stats = await cur.fetchone()
+            if stats["emb_n"] > 0 and stats["unbound_n"] == 0:
+                return None  # 用户已接管注册表（如改名），不再造行
+            await cur.execute(
+                f"INSERT INTO embedding (name, provider_kind, model_type, api_key, "
+                f"base_url, dims, batch_size, timeout, check_ctx_length, enabled, creator) "
+                f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, true, 'system') "
+                f"RETURNING {_EMBEDDING_COLUMNS}",
+                (name, provider_kind, model_type, api_key, base_url, dims,
+                 batch_size, timeout, check_ctx_length),
+            )
+            return await cur.fetchone()
+
+
+async def backfill_kb_embeddings(
+    pool: AsyncConnectionPool, embedding_id: uuid.UUID
+) -> int:
+    """存量库 embedding_id 回填（NULL → 默认行；幂等）。返回受影响行数。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE knowledge_base SET embedding_id = %s, updated_at = now() "
+                "WHERE embedding_id IS NULL",
+                (embedding_id,),
+            )
+            return cur.rowcount
 
 
 # ============================ Cron ops =====================================

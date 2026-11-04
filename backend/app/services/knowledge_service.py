@@ -8,9 +8,10 @@
   docling（结构单元 IR v1.1 直入 ES，splitter 退役仅预算护栏；分片边车断点
   续跑；pdf 原文件归档 kb-src 产出 doc_uri 证据锚定，docx 直解单元无
   anchor 文本态降级；管线内 RapidOCR 仅扫描页兜底）。
-- 维度 per-KB（kb.dims 为取值来源）：创建可设（默认全局）；变更须 force 确认——
-  ES mapping 维度不可变 ⇒ drop 索引 + 文档状态重置（UPDATE，不删数据，留底保留，
-  用户手动重新解析）。
+- 维度取值（注册化优先，plan kb-embedding-model-registry Phase 1）：kb.embedding_id
+  → embedding 注册行 dims 为主路径；悬空/未绑定回落 kb.dims（legacy env）。
+  换绑/维度变更均走 force 守卫——ES mapping 维度不可变 ⇒ drop 索引 + 文档
+  状态重置（UPDATE，不删数据，留底保留，用户手动重新解析）。
 - 解析手动触发（parse→ingest）：chunk_size/overlap 随解析持久化到 doc 行（生效值），
   reindex 沿用 → 重建可复现；docling 路径忽略滑窗参数（预算护栏 kb_unit_max_chars
   由全局配置供给，双轨语义不串）。
@@ -115,11 +116,30 @@ class KnowledgeService:
         settings: Settings,
         minio: MinioStorage,
         vector_factory: VectorStoreFactory,
+        embedding_store=None,
     ):
         self.pool = pool
         self.settings = settings
         self.minio = minio
         self.vector_factory = vector_factory
+        self.embedding_store = embedding_store
+
+    # ---------------------------- 向量模型解析 -------------------------------
+
+    def _resolve_embedding(self, kb: dict) -> Optional[dict]:
+        """库绑定向量模型（embedding_id → 注册行）；未绑/悬空 → None（legacy 回落）。"""
+        if self.embedding_store is None:
+            return None
+        return self.embedding_store.get_or_none(kb.get("embedding_id"))
+
+    def _checked_embedding(self, embedding_id: uuid.UUID) -> dict:
+        """校验向量模型可用（已注册且 enabled）→ 注册行；不可用 ValueError(400)。"""
+        if self.embedding_store is None:
+            raise ValueError("向量模型注册表未就绪")
+        emb = self.embedding_store.get_or_none(embedding_id)
+        if emb is None:
+            raise ValueError(f"向量模型 {embedding_id} 不可用（未注册/已禁用/构建失败）")
+        return emb
 
     # ============================ KB CRUD ====================================
 
@@ -129,9 +149,14 @@ class KnowledgeService:
         description: Optional[str],
         creator: str,
         dims: Optional[int] = None,
+        embedding_id: Optional[uuid.UUID] = None,
     ) -> dict:
+        """建库。embedding_id 优先（维度随行）；未传回落 legacy dims（缺省全局）。"""
         if await dbmod.get_kb_by_name(self.pool, name) is not None:
             raise FileExistsError(name)  # -> 409
+        if embedding_id is not None:
+            emb = self._checked_embedding(embedding_id)
+            dims = emb["dims"]
         new_id = uuid.uuid4()
         return await dbmod.create_kb(
             self.pool,
@@ -141,6 +166,7 @@ class KnowledgeService:
             dims=dims if dims is not None else self.settings.embedding_dims,
             creator=creator,
             kb_id=new_id,
+            embedding_id=embedding_id,
         )
 
     async def update_kb(
@@ -150,19 +176,24 @@ class KnowledgeService:
         description: Optional[str],
         dims: Optional[int] = None,
         force: bool = False,
+        embedding_id: Optional[uuid.UUID] = None,
     ) -> dict:
-        """更新 KB 元数据；维度变更走守卫（破坏性变更）。
+        """更新 KB 元数据；换绑/维度变更均走破坏性守卫。
 
-        名称排重镜像模型/智能体更新（排除自身）。维度变更时：
+        名称排重镜像模型/智能体更新（排除自身）。换绑（embedding_id 变更）
+        与维度变更同质——向量空间整体作废：
         1. 有文档且未 force → KbDocsExistError（409，前端弹确认）。
         2. 确认变更 → drop_index（mapping 维度不可变，旧向量作废）+
-           reset_kb_documents（仅 UPDATE：全部文档→待解析，原始字节与 PG 行保留，
-           不删除任何数据）+ 落库新 dims。用户随后按新维度逐个重新解析。
+           reset_kb_documents（仅 UPDATE：全部文档→待解析，原始字节与 PG 行
+           保留）+ 落库新绑定/新维度。用户随后逐个重新解析。
         3. 空库 → 直接改（drop_index 幂等，清可能的残留索引）。
 
-        已知边界：若变更时有该库文档正在解析中（in-flight ingest），旧维度客户端
-        可能把 chunk 写入重建后的索引造成维度错位——属管理面并发操作，重新解析
-        该文档即可修复（ingest 幂等删旧）。
+        绑定库的维度以行为准：裸 dims 变更被拒（指引走换绑）；legacy dims
+        路径仅服务未绑定（迁移期悬空）的库。
+
+        已知边界：若变更有该库文档正在解析中（in-flight ingest），旧客户端
+        可能把 chunk 写入重建后的索引造成维度错位——属管理面并发操作，重新
+        解析该文档即可修复（ingest 幂等删旧）。
         """
         existing = await dbmod.get_kb(self.pool, kb_id)
         if existing is None:
@@ -173,24 +204,39 @@ class KnowledgeService:
             if clash is not None:
                 raise FileExistsError(name)  # -> 409
 
-        effective_dims = dims if dims is not None else existing["dims"]
-        dims_changed = effective_dims != existing["dims"]
-        if dims_changed:
+        rebind = None
+        if embedding_id is not None and embedding_id != existing.get("embedding_id"):
+            rebind = self._checked_embedding(embedding_id)  # ValueError -> 400
+
+        bound = self._resolve_embedding(existing)
+        if bound is not None and rebind is None and dims is not None and dims != bound["dims"]:
+            raise ValueError("该库已绑定向量模型，维度以模型为准；更换维度请改用换绑")
+
+        if rebind is not None:
+            effective_dims = rebind["dims"]
+            destructive = True
+        else:
+            effective_dims = dims if dims is not None else existing["dims"]
+            destructive = effective_dims != existing["dims"]
+
+        if destructive:
             docs = await dbmod.list_kb_documents(self.pool, kb_id)
             if docs and not force:
                 raise KbDocsExistError(len(docs))  # -> 409（前端二次确认）
-            # 旧维度向量全部作废：drop 索引（幂等）+ 文档重置为待解析（UPDATE 保留数据）
+            # 旧向量空间整体作废：drop 索引（幂等）+ 文档重置为待解析（UPDATE 保留数据）
             self.vector_factory.drop_index(str(kb_id))
             if docs:
                 reset = await dbmod.reset_kb_documents(self.pool, kb_id)
                 logger.info(
-                    "kb=%s dims %s→%s：索引已重建基底，%d 个文档重置为待解析",
-                    kb_id, existing["dims"], effective_dims, reset,
+                    "kb=%s 向量空间重建（dims %s→%s，rebind=%s），%d 个文档重置为待解析",
+                    kb_id, existing["dims"], effective_dims,
+                    bool(rebind), reset,
                 )
 
         return await dbmod.update_kb(
             self.pool, kb_id, name, description,
-            dims=effective_dims if dims_changed else None,  # 未变更传 None 保持原值
+            dims=effective_dims if destructive else None,  # 未变更传 None 保持原值
+            embedding_id=rebind["id"] if rebind is not None else None,
         )
 
     async def get_kb(self, kb_id: uuid.UUID) -> Optional[dict]:
@@ -332,7 +378,8 @@ class KnowledgeService:
     ) -> None:
         """入库：pending→indexing→indexed|failed（幂等：先删旧 chunk）。
 
-        - 嵌入维度 = kb.dims（随库行走；None=全局默认）→ store/嵌入客户端按维度构建。
+        - 嵌入来源：kb.embedding_id → 注册行（主路径）；悬空/未绑定回落
+          kb.dims（legacy env）→ store/嵌入客户端按其构建。
         - 引擎分派（C1）：``kb_parser_engine=legacy``（默认）走 pymupdf+滑窗
           （现状零改动）；``docling`` 走结构单元直入 ES（splitter 退役，仅预算
           护栏，见 _ingest_docling）。
@@ -350,7 +397,8 @@ class KnowledgeService:
             kb = await dbmod.get_kb(self.pool, kb_id)
             if kb is None:
                 raise KeyError(f"kb {kb_id} vanished during ingest")
-            dims = kb.get("dims")
+            emb = self._resolve_embedding(kb)
+            dims = emb["dims"] if emb is not None else kb.get("dims")
 
             raw = raw_bytes
             if raw is None:
@@ -359,9 +407,9 @@ class KnowledgeService:
                 raw = await self._read_bytes_async(doc["bucket_key"])
 
             if self.settings.kb_parser_engine == "docling":
-                await self._ingest_docling(kb_id, doc_id, doc, dims, raw)
+                await self._ingest_docling(kb_id, doc_id, doc, emb, dims, raw)
             else:
-                await self._ingest_legacy(kb_id, doc_id, doc, dims, raw)
+                await self._ingest_legacy(kb_id, doc_id, doc, emb, dims, raw)
         except Exception as e:
             logger.exception("ingest failed doc=%s kb=%s", doc_id, kb_id)
             await dbmod.update_kb_document_status(
@@ -373,6 +421,7 @@ class KnowledgeService:
         kb_id: uuid.UUID,
         doc_id: uuid.UUID,
         doc: dict,
+        emb: Optional[dict],
         dims: Optional[int],
         raw: bytes,
     ) -> None:
@@ -397,7 +446,7 @@ class KnowledgeService:
             raise ValueError(self._empty_reason(doc["mime"], pages))
 
         await self._write_chunks(
-            kb_id, doc_id, dims, chunks,
+            kb_id, doc_id, emb, dims, chunks,
             lo=5, page_count=doc.get("page_count"),
             parser_engine="legacy",  # 显式回写：防 docling→legacy 重解析后标记悬挂
         )
@@ -410,6 +459,7 @@ class KnowledgeService:
         self,
         kb_id: uuid.UUID,
         doc_id: uuid.UUID,
+        emb: Optional[dict],
         dims: Optional[int],
         chunks: list[Document],
         *,
@@ -424,7 +474,7 @@ class KnowledgeService:
         清残留）。progress 粒度 = 单批（单批耗时随硬件而定）。
         """
         total = chunk_total if chunk_total is not None else len(chunks)
-        store = self.vector_factory.get(str(kb_id), dims)
+        store = self.vector_factory.get(str(kb_id), emb, dims)
         self.vector_factory.delete_by_doc_id(str(kb_id), str(doc_id))
 
         ensured = False
@@ -492,6 +542,7 @@ class KnowledgeService:
         kb_id: uuid.UUID,
         doc_id: uuid.UUID,
         doc: dict,
+        emb: Optional[dict],
         dims: Optional[int],
         raw: bytes,
     ) -> None:
@@ -628,7 +679,7 @@ class KnowledgeService:
             )
 
         await self._write_chunks(
-            kb_id, doc_id, dims, chunks,
+            kb_id, doc_id, emb, dims, chunks,
             lo=51, chunk_total=len(embeddable),
             page_count=page_count or doc.get("page_count"),
             parser_engine="docling",
@@ -762,17 +813,19 @@ class KnowledgeService:
         # 未建索引（上传未解析/空库）→ 无 chunk 无命中，跳过而非报错：
         # 未解析属用户未执行操作，非检索链路故障。
         mapping_dims_by_kb: dict[str, Optional[int]] = {}
+        emb_by_kb: dict[str, Optional[dict]] = {}
         for kb in kbs:
-            md = self.vector_factory.get_dims(str(kb["id"]))
-            mapping_dims_by_kb[str(kb["id"])] = md
-            # 漂移检测：PG 记录 vs ES mapping 真值（任一为 None 则无法比对，跳过）
-            if (
-                md is not None
-                and kb.get("dims") is not None
-                and md != kb["dims"]
-            ):
+            kid = str(kb["id"])
+            md = self.vector_factory.get_dims(kid)
+            mapping_dims_by_kb[kid] = md
+            emb = self._resolve_embedding(kb)
+            emb_by_kb[kid] = emb
+            # 漂移检测：期望维度（注册行优先 / kb.dims 回落）vs ES mapping 真值
+            # （任一为 None 则无法比对，跳过）
+            expected = emb["dims"] if emb is not None else kb.get("dims")
+            if md is not None and expected is not None and md != expected:
                 raise DimensionMismatchError(
-                    f"知识库 '{kb['name']}' 维度 {kb['dims']} 与索引实际维度 "
+                    f"知识库 '{kb['name']}' 维度 {expected} 与索引实际维度 "
                     f"{md} 不一致，请重新解析该库文档"
                 )
 
@@ -780,10 +833,15 @@ class KnowledgeService:
         if not indexable:
             return []
 
-        # 按 mapping 真值分组（查询向量维度必须匹配索引；漂移检测已保证 == kb.dims）
-        groups: dict[Optional[int], list[dict]] = {}
+        # 按向量模型身份分组（注册行）/ mapping 维度分组（legacy）：同组一次
+        # kNN。同 dims 不同端点不可混组——查询向量语义由端点决定（静默错配
+        # 防线，见 vector_store 工厂 docstring）。
+        groups: dict[str, list[dict]] = {}
         for kb in indexable:
-            groups.setdefault(mapping_dims_by_kb[str(kb["id"])], []).append(kb)
+            kid = str(kb["id"])
+            emb = emb_by_kb[kid]
+            gkey = f"e:{emb['id']}" if emb is not None else f"d:{mapping_dims_by_kb[kid]}"
+            groups.setdefault(gkey, []).append(kb)
 
         flt: list[dict] = []
         if doc_ids:
@@ -791,9 +849,12 @@ class KnowledgeService:
 
         k_per_group = max(1, math.ceil(k / len(groups)))
         group_hits: list[list[tuple[Document, float]]] = []
-        for dims, group in groups.items():
+        for group in groups.values():
             index = ",".join(f"kb_{kb['id']}" for kb in group)
-            store = self.vector_factory.get_for_index(index, dims)
+            lead = str(group[0]["id"])
+            store = self.vector_factory.get_for_index(
+                index, emb_by_kb[lead], mapping_dims_by_kb[lead]
+            )
             group_hits.append(
                 store.similarity_search_with_score(query, k=k_per_group, filter=flt or None)
             )

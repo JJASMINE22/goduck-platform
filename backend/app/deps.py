@@ -90,7 +90,9 @@ class AppState:
         # cron scheduler — None when cron_enabled=false (lifespan wires it)
         self.cron_scheduler = None
         # knowledge base (RAG) — None when kb_enabled=false (lazy, 503-gated)
-        # embeddings 由 vector_factory 按 kb.dims 内部构建+缓存，不再单例持有
+        # 向量模型注册表（embedding 表行 + 客户端缓存）；嵌入客户端由
+        # vector_factory / embedding_store 双源构建（注册行优先，legacy env 回落）
+        self.embedding_store = None
         self.vector_factory = None
         self.knowledge_service = None
         self.ingest_pool = None

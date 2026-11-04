@@ -70,10 +70,13 @@ async def create_kb(
     svc = _service(request)
     try:
         row = await svc.create_kb(
-            body.name, body.description, user["nickname"], dims=body.dims
+            body.name, body.description, user["nickname"],
+            dims=body.dims, embedding_id=body.embedding_id,
         )
     except FileExistsError:
         raise HTTPException(status_code=409, detail=f"知识库名 '{body.name}' 已存在")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return row
 
 
@@ -87,12 +90,15 @@ async def update_kb(
     svc = _service(request)
     try:
         row = await svc.update_kb(
-            kb_id, body.name, body.description, dims=body.dims, force=body.force
+            kb_id, body.name, body.description,
+            dims=body.dims, force=body.force, embedding_id=body.embedding_id,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="knowledge base not found")
     except FileExistsError:
         raise HTTPException(status_code=409, detail=f"知识库名 '{body.name}' 已被占用")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except KbDocsExistError as e:
         # 维度变更守卫：前端据此弹二次确认（确认后 force=true 重试）
         raise HTTPException(

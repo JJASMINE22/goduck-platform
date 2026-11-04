@@ -53,7 +53,9 @@ backend/
 │   │   ├── content_composer.py / message_content.py / mime_utils.py
 │   │   │                    #   附件 → HumanMessage.content 组装（多模态）；KB 锚点以用户提示注入前置
 │   │   ├── knowledge_service.py / embedding.py / vector_store.py / ingest_pool.py
-│   │   │                    #   知识库：入库/检索、TEI 向量化、ES 向量库、后台入库池
+│   │   │                    #   知识库：入库/检索、嵌入客户端工厂（注册行/env 双路径）、ES 向量库、后台入库池
+│   │   ├── embedding_service.py / embedding_store.py
+│   │   │                    #   向量模型注册 CRUD（端点实证+引用守卫）+ 行注册表缓存
 │   │   ├── docling_parser.py#   docling 结构化解析 + OCR（KB_PARSER_ENGINE=docling）
 │   │   ├── cron_service.py / cron_scheduler.py  # 定时任务 CRUD + 周期调度 + 失败熔断
 │   │   ├── run_manager.py / run_source.py       # 会话/定时统一回合运行管理
@@ -257,13 +259,23 @@ python -m app.main          # 或 uvicorn app.main:app --reload
 
 | Method | Path | 说明 |
 |--------|------|------|
-| GET/POST | `/knowledge-bases` | 列出 / 创建（name 唯一） |
-| PUT/DELETE | `/knowledge-bases/{id}` | 改名描述 / 删除（级联删文档与 ES 索引） |
+| GET/POST | `/knowledge-bases` | 列出 / 创建（name 唯一；可绑定向量模型 embedding_id，维度随行） |
+| PUT/DELETE | `/knowledge-bases/{id}` | 改名描述 / 换绑/删除（换绑=破坏性变更，有文档须 force；删除级联文档与 ES 索引） |
 | POST | `/knowledge-bases/{id}/documents` | multipart 上传 pdf/docx → 注册 + 后台入库 |
 | GET | `/knowledge-bases/{id}/documents` | 文档列表（状态机 pending/ingesting/ready/failed） |
 | DELETE | `/knowledge-bases/{id}/documents/{doc_id}` | 删除文档（含向量） |
 | POST | `/knowledge-bases/{id}/documents/{doc_id}/reindex` | 重建索引（需 MinIO 留底） |
 | GET | `/knowledge-bases/{id}/search?q=&k=` | 检索（管理面调试） |
+
+### 向量模型 `/embeddings`（kb_enabled 时挂载，写操作管理员专属）
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/embeddings` | 列出注册行（api_key 永不返回） |
+| POST | `/embeddings` | 注册（端点实证：声明 dims ≠ 实测即 400） |
+| PUT | `/embeddings/{id}` | 更新（语义字段被知识库引用时 409 锁定，detail 含 referencing_kbs） |
+| DELETE | `/embeddings/{id}` | 删除（被引用时 409 阻断，先换绑） |
+| POST | `/embeddings/test` | 保存前连通探测（embed 探针 → 实测维度，不落库） |
 
 ### 定时任务 `/cron`
 
