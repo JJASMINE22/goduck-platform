@@ -303,7 +303,7 @@ export function KnowledgePage(): ReactNode {
             extra={
               embOptions.length
                 ? undefined
-                : '暂无已启用的向量模型，将使用全局默认端点（可在「向量模型」页注册）'
+                : '暂无已启用的向量模型，将使用全局默认端点（可在「向量化」页注册）'
             }
           >
             <Select

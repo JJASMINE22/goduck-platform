@@ -24,12 +24,16 @@ const icon = (n: ReactNode) => <span style={{ display: 'inline-flex', verticalAl
 function buildItems(kbEnabled: boolean, isManager: boolean): MenuItem[] {
   const config: MenuItem[] = [
     { key: '/settings/models', icon: icon(<Cpu size={16} />), label: '模型' },
-    { key: '/settings/mcp', icon: icon(<Network size={16} />), label: 'MCP' },
-    { key: '/settings/skills', icon: icon(<BookOpen size={16} />), label: '技能' },
   ]
   if (kbEnabled) {
+    config.push({ key: '/settings/embeddings', icon: icon(<Boxes size={16} />), label: '向量化' })
+  }
+  config.push(
+    { key: '/settings/mcp', icon: icon(<Network size={16} />), label: 'MCP' },
+    { key: '/settings/skills', icon: icon(<BookOpen size={16} />), label: '技能' },
+  )
+  if (kbEnabled) {
     config.push({ key: '/settings/knowledge', icon: icon(<Database size={16} />), label: '知识库' })
-    config.push({ key: '/settings/embeddings', icon: icon(<Boxes size={16} />), label: '向量模型' })
   }
   const groups: MenuItem[] = [
     {

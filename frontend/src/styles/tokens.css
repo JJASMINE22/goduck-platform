@@ -119,13 +119,16 @@
   --drawer-mask: rgba(31, 38, 48, 0.3);
   --kb-well-grad: linear-gradient(180deg, rgba(238, 241, 246, 0.92), rgba(226, 231, 240, 0.92));
 
-  /* —— 玻璃主按钮（顶栏页面主动作：新建会话等）：主色染玻璃
-     亮色保持近实心蓝（白字对比安全），暗色为 Google 暗色风深底 + 亮蓝字 —— */
-  --btn-primary-bg: color-mix(in srgb, var(--color-primary) 78%, var(--glass-bg-strong));
-  --btn-primary-bg-hover: color-mix(in srgb, var(--color-primary) 88%, var(--glass-bg-strong));
-  --btn-primary-fg: #ffffff;
-  --btn-primary-border: color-mix(in srgb, var(--color-primary) 55%, var(--glass-tint));
-  --btn-primary-glow: color-mix(in srgb, var(--color-primary) 26%, transparent);
+  /* —— 主操作按钮（新建/注册/保存等，全局 .ant-btn-primary）：tonal 染色玻璃 ——
+     主色薄染玻璃底 + 主色文字 + 主色细边（Google AI Studio 风 filled-tonal），
+     替代高饱和实心蓝块——明暗主题下都与玻璃卡片语言同频。
+     亮色：字取深一档的 primary-hover（#1765cc）保证 14px 字号 AA 对比（≈4.7:1） */
+  --btn-primary-bg: color-mix(in srgb, var(--color-primary) 13%, var(--glass-bg-strong));
+  --btn-primary-bg-hover: color-mix(in srgb, var(--color-primary) 21%, var(--glass-bg-strong));
+  --btn-primary-fg: var(--color-primary-hover);
+  --btn-primary-border: color-mix(in srgb, var(--color-primary) 28%, var(--glass-tint));
+  --btn-primary-border-hover: color-mix(in srgb, var(--color-primary) 46%, var(--glass-tint));
+  --btn-primary-glow: color-mix(in srgb, var(--color-primary) 15%, transparent);
 }
 
 /* ===== 暗色主题（data-theme="dark" 于 <html> 挂载，themeStore 驱动）=====
@@ -199,10 +202,11 @@
   --drawer-mask: rgba(0, 0, 0, 0.45);
   --kb-well-grad: linear-gradient(180deg, rgba(13, 17, 24, 0.92), rgba(18, 23, 31, 0.92));
 
-  /* 暗色玻璃主按钮：主色薄染暗玻璃 + 亮蓝文字（Material 暗色按钮惯例） */
-  --btn-primary-bg: color-mix(in srgb, var(--color-primary) 24%, var(--glass-bg-strong));
-  --btn-primary-bg-hover: color-mix(in srgb, var(--color-primary) 34%, var(--glass-bg-strong));
-  --btn-primary-fg: #aecbfa;
-  --btn-primary-border: color-mix(in srgb, var(--color-primary) 46%, var(--glass-tint));
-  --btn-primary-glow: color-mix(in srgb, var(--color-primary) 22%, transparent);
+  /* 暗色 tonal：主色薄染暗玻璃 + 亮蓝文字（Material 暗色惯例），替代实心亮蓝块 */
+  --btn-primary-bg: color-mix(in srgb, var(--color-primary) 16%, var(--glass-bg-strong));
+  --btn-primary-bg-hover: color-mix(in srgb, var(--color-primary) 26%, var(--glass-bg-strong));
+  --btn-primary-fg: var(--color-primary);
+  --btn-primary-border: color-mix(in srgb, var(--color-primary) 34%, var(--glass-tint));
+  --btn-primary-border-hover: color-mix(in srgb, var(--color-primary) 52%, var(--glass-tint));
+  --btn-primary-glow: color-mix(in srgb, var(--color-primary) 18%, transparent);
 }

@@ -4721,12 +4721,15 @@ body .ant-select-dropdown .ant-select-item-option-active:not(.ant-select-item-op
   }
 }
 
-/* ===== [标注优化] 顶栏页面主动作主按钮：主色染流体玻璃 =====
-    新建会话/新建智能体等（PageContainer extra → Topbar .app-glass）：
-    替换实心色块为主色染玻璃——半透底 + 取景后景 + rim 高光 + ::before 镜面
-    亮斑 + ::after 悬停流光（.glass-btn 同源三要素），亮色近实心蓝（白字
-    对比安全）、暗色为 Material 暗色风深玻璃底 + 亮蓝字。值走 --btn-primary-* token。 */
-.app-glass .ant-btn-primary {
+/* ===== [主题对齐] 主操作按钮全局 tonal 化（新建/注册/保存等）=====
+    作用面 = 全部 antd 主按钮：顶栏页面主动作（.app-glass Header）、Drawer/Modal
+    底部（保存/创建——portal 渲染挂 body，不在 .app-glass 内，故必须全局选择器）、
+    页面空态按钮、Popconfirm 确认键、聊天 HITL 批准、登录页等，悉数覆盖。
+    配方：主色薄染玻璃底 + 主色文字 + 主色细边（tonal，Google AI Studio 风），
+    替代高饱和实心蓝块；危险按钮（.ant-btn-dangerous）不适用，保持语义红。
+    明暗值走 --btn-primary-* token（tokens.css）；成像同 .glass-btn 三要素
+    （半透底 + 取景后景 + rim 高光 + ::before 镜面亮斑 + ::after 悬停流光）。 */
+.ant-btn-primary:not(.ant-btn-dangerous) {
   position: relative;
   isolation: isolate;
   overflow: hidden;
@@ -4739,10 +4742,10 @@ body .ant-select-dropdown .ant-select-item-option-active:not(.ant-select-item-op
     inset 0 1px 0 var(--glass-rim),
     inset 0 -1px 1px var(--glass-rim-soft),
     0 0 0 1px var(--btn-primary-glow),
-    0 4px 14px var(--btn-primary-glow);
+    0 2px 8px var(--btn-primary-glow);
   transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.12s ease;
 }
-.app-glass .ant-btn-primary::before {
+.ant-btn-primary:not(.ant-btn-dangerous)::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -4750,7 +4753,7 @@ body .ant-select-dropdown .ant-select-item-option-active:not(.ant-select-item-op
   background: radial-gradient(130% 70% at 28% -25%, var(--glass-specular), transparent 55%);
   pointer-events: none;
 }
-.app-glass .ant-btn-primary::after {
+.ant-btn-primary:not(.ant-btn-dangerous)::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -4760,31 +4763,30 @@ body .ant-select-dropdown .ant-select-item-option-active:not(.ant-select-item-op
   transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
 }
-.app-glass .ant-btn-primary:not(.ant-btn-disabled):hover {
+.ant-btn-primary:not(.ant-btn-dangerous):not(.ant-btn-disabled):not(:disabled):hover {
   background: var(--btn-primary-bg-hover) !important;
-  border-color: var(--color-primary);
+  border-color: var(--btn-primary-border-hover);
   box-shadow:
     inset 0 1px 0 var(--glass-rim-bright),
     inset 0 -1px 1px var(--glass-rim-soft),
-    0 0 0 1px color-mix(in srgb, var(--color-primary) 34%, transparent),
-    0 6px 18px color-mix(in srgb, var(--color-primary) 32%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--color-primary) 22%, transparent),
+    0 4px 14px color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
-.app-glass .ant-btn-primary:not(.ant-btn-disabled):hover::after {
+.ant-btn-primary:not(.ant-btn-dangerous):not(.ant-btn-disabled):not(:disabled):hover::after {
   transform: translateX(130%);
 }
-.app-glass .ant-btn-primary:not(.ant-btn-disabled):active {
+.ant-btn-primary:not(.ant-btn-dangerous):not(.ant-btn-disabled):not(:disabled):active {
   transform: scale(0.96);
 }
-.app-glass .ant-btn-primary.ant-btn-disabled {
+.ant-btn-primary:not(.ant-btn-dangerous):disabled,
+.ant-btn-primary.ant-btn-disabled:not(.ant-btn-dangerous) {
   background: var(--glass-bg-faint) !important;
   color: var(--color-text-tertiary) !important;
   border-color: var(--glass-border);
   box-shadow: inset 0 1px 0 var(--glass-rim);
-  backdrop-filter: blur(12px) saturate(1.7);
-  -webkit-backdrop-filter: blur(12px) saturate(1.7);
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .app-glass .ant-btn-primary {
+  .ant-btn-primary:not(.ant-btn-dangerous) {
     background: var(--color-primary) !important;
     color: #fff !important;
   }

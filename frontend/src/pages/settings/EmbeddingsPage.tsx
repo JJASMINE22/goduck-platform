@@ -212,7 +212,7 @@ export function EmbeddingsPage(): ReactNode {
 
   return (
     <PageContainer
-      title="向量模型列表"
+      title="向量化"
       subtitle="注册嵌入端点（TEI / OpenAI 兼容）；知识库按 embedding_id 绑定，维度随行"
       extra={
         isManager ? (
