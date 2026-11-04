@@ -33,7 +33,7 @@ function buildItems(kbEnabled: boolean, isManager: boolean): MenuItem[] {
     { key: '/settings/skills', icon: icon(<BookOpen size={16} />), label: '技能' },
   )
   if (kbEnabled) {
-    config.push({ key: '/settings/knowledge', icon: icon(<Database size={16} />), label: '知识库' })
+    config.push({ key: '/settings/knowledge', icon: icon(<Database size={16} />), label: '知识' })
   }
   const groups: MenuItem[] = [
     {
