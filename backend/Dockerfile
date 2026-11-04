@@ -105,6 +105,22 @@ RUN pip install --index-url "${TORCH_INDEX_URL}" \
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
+# ---- 1b) opencv 运行时系统库（独立层，紧随 pip 层之后）--------------------------
+# docling RapidOCR 链路 → rapidocr/rapidocr-onnxruntime 传递依赖全量 opencv-python，
+# 其 cv2 .so 需要 libxcb/libGL/glib；slim 基底缺失时 import cv2 报
+# "libxcb.so.1: cannot open shared object file"，经 docling 包装成误导性的
+# "RapidOCR is not installed"。单列一层（而非并入上方 2) 的 apt）是为保住
+# torch/requirements 两层重缓存——本层变更只重建其后廉价层。
+# APT_MIRROR：可选 deb.debian.org 替换源（CN 网络传 mirrors.aliyun.com 等；
+# 缺省空 = 官方源，不绑架上游仓库）。经 build args / override 注入。
+ARG APT_MIRROR=
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        libxcb1 libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 # ---- 2) 拷贝应用代码 ----------------------------------------------------------
 COPY app/ ./app/
 COPY agent_confs/ ./agent_confs/

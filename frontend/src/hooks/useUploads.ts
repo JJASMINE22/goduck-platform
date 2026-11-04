@@ -44,6 +44,9 @@ let lastShotCount = 0
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
+/** 单批附件数上限（批量入口：粘贴等；后端接口为单文件/请求，批次限制在前端） */
+const ATTACH_BATCH_MAX = 4
+
 /** 展示名重写：剪贴板图片的泛化名（image.png / 无名）→ 截图-YYYYMMDD-HHmmss，
     同秒多张自增 -2/-3。仅影响展示与入库 filename，不参与服务端类型判定（魔数为准）。 */
 function friendlyName(file: File): string {
@@ -81,6 +84,11 @@ export function useAttachFiles(sessionId: UUID, agentId?: UUID | null) {
     (files: File[]) => {
       const capData = cap.data
       if (!capData?.allow_attachments) return
+      // 单批上限（粘贴/拖拽等批量入口；选择器路径 antd 逐文件触发不受影响）
+      if (files.length > ATTACH_BATCH_MAX) {
+        toastError(`单批最多添加 ${ATTACH_BATCH_MAX} 个附件，已截取前 ${ATTACH_BATCH_MAX} 个`)
+        files = files.slice(0, ATTACH_BATCH_MAX)
+      }
       let skippedImage = 0
       let skippedType = 0
       for (const original of files) {

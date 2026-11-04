@@ -14,7 +14,12 @@
       rim 高光 + 流光）；PDF 纸面井（.kb-ev-well）保持近实底内凹保可读性。
     - 预签名 URL 有时效（1h）：过期重新检索获取，不在此续签。 */
 import * as pdfjsLib from 'pdfjs-dist'
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+// 内联 worker（打进主 bundle 的 blob Worker）：不再发起独立 pdf.worker .mjs
+// 网络请求，免疫边缘 MIME / 缓存投毒 / Worker 脚本请求不携带 basic auth。
+// 每挂载实例化（见加载 effect）：共享 workerPort 在 viewer 关闭 destroy 未
+// 完成时重开/StrictMode 双挂载会撞 "worker is being destroyed" 竞态；独立
+// 实例各销毁各的，且 blob 线程需显式 terminate（pdfjs 只销毁包装不动 port）。
+import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline'
 import { Button, Flex, Modal, Space, Spin, Tag, Tooltip, Typography } from 'antd'
 import {
   ChevronLeft,
@@ -27,8 +32,6 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { KbBbox } from '@/types'
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
 /** 单个可定位锚点（命中本体或其绑定图片资产） */
 export interface EvidenceAnchor {
@@ -73,8 +76,15 @@ export function KbEvidenceViewer({
   // 文档加载（挂载一次；卸载销毁）。setState 全部位于异步回调，无级联渲染。
   useEffect(() => {
     let cancelled = false
+    // 每实例独立 worker（内联 blob）：共享 workerPort 在 destroy 异步未完成时
+    // 重建会命中 PDFWorker.create 的 _pendingDestroy 守卫（StrictMode 双挂载
+    // /快速重开必现）。自持 worker 时 getDocument 不接管销毁（task._worker 为
+    // null），需在 task.destroy 后自毁包装并 terminate blob 线程。
+    const rawWorker = new PdfWorker()
+    const worker = pdfjsLib.PDFWorker.create({ port: rawWorker })
     const task = pdfjsLib.getDocument({
       url: docUrl,
+      worker,
       disableAutoFetch: true, // Range 按需取页，不全量下载
       disableStream: false,
     })
@@ -102,7 +112,10 @@ export function KbEvidenceViewer({
     return () => {
       cancelled = true
       docRef.current = null
-      void task.destroy()
+      void task.destroy().finally(() => {
+        worker.destroy()
+        rawWorker.terminate()
+      })
     }
     // 实例级不可变 props（keyed 挂载）：挂载即加载，无需响应变更
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -273,7 +286,9 @@ export function KbEvidenceViewer({
                 <FileWarning size={28} />
                 <Typography.Text type="danger">PDF 加载失败：{error}</Typography.Text>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  预签名 URL 可能已过期（时效 1h），请重新检索后再定位
+                  {/worker/i.test(error)
+                    ? '页面渲染组件加载异常，请强制刷新（Ctrl+F5）后重试'
+                    : '预签名 URL 可能已过期（时效 1h），请重新检索后再定位'}
                 </Typography.Text>
               </Flex>
             ) : loading ? (

@@ -68,7 +68,7 @@ class KnowledgeUnit:
     kind: str                       # "text" | "table" | "picture"
     text_ctx: str                   # 原文（不拼接 heading_path）
     heading_path: list[str] = field(default_factory=list)
-    unit_index: int = 0             # 文档内全局序号（预算切分后回填，作 chunk_index）
+    unit_index: int = 0             # 分片内序号（parse 按片调用、片内 0..N 回填；入库层跨片全局重编后作 chunk_index）
     page: Optional[int] = None      # 全局页码；docx=None
     page_rotate: Optional[int] = None
     bbox: Optional[dict] = None     # 归一化 {x0,y0,x1,y1}，左上原点 0..1；docx=None

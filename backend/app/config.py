@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadmin"
     minio_bucket: str = "uploads"
     minio_secure: bool = False
+    # 预签名 URL 相对化开关（生产 compose：nginx /minio/ 同源代理存在时置 true，
+    # doc_url 变 /minio/<bucket>/<key>?sig——不外泄内网地址、ddnsto/LAN 通吃）。
+    # 默认 False = SDK 原生绝对 URL（本地 dev 直连 MinIO 的既有行为，无代理依赖）。
+    minio_relative_presign: bool = False
 
     # ---- 附件上传约束 ----
     attachment_max_size_mb: int = 10

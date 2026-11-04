@@ -149,6 +149,12 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       MINIO_BUCKET: ${MINIO_BUCKET:-uploads}
       MINIO_SECURE: "false"
+      # 附件/KB 文档上传上限（MB）：会话附件与知识库文档共用（nginx 边缘
+      # client_max_body_size 须 ≥ 此值）。本地默认 10，生产 .env 按需调大。
+      ATTACHMENT_MAX_SIZE_MB: ${ATTACHMENT_MAX_SIZE_MB:-10}
+      # 预签名 URL 相对化（true = /minio/<bucket>/<key>?sig，配合下方 nginx /minio/
+      # 同源代理；本地 dev 直连 MinIO 保持默认 false 绝对 URL）
+      MINIO_RELATIVE_PRESIGN: ${MINIO_RELATIVE_PRESIGN:-true}
       MCP_ALLOW_LOOPBACK: "true"
       MAX_INVOKE_RETRIES: ${MAX_INVOKE_RETRIES:-2}
       # ---- 知识库（RAG）----

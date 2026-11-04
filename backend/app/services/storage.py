@@ -72,14 +72,27 @@ class MinioStorage:
 
     def presign_get(self, bucket_key: str, expires_seconds: int = 3600) -> str:
         """对象 GET 预签名 URL（doc_uri → 前端 PDF.js 按需拉取原始 PDF；
-        HTTP Range 由 MinIO 原生支持，viewer 侧 disableAutoFetch 按页取流）。"""
-        from datetime import timedelta
+        HTTP Range 由 MinIO 原生支持，viewer 侧 disableAutoFetch 按页取流）。
 
-        return self.client.presigned_get_object(
+        由 MINIO_RELATIVE_PRESIGN 开关决定形态：
+        - false（默认，本地 dev）：SDK 原生绝对 URL——浏览器直连 MinIO（如
+          localhost:9000），无代理依赖；
+        - true（生产 compose）：同源相对路径 /minio/<bucket>/<key>?sig——浏览器
+          经 nginx /minio/ 代理回源（代理保持签名时的 Host 头，SigV4 校验不受
+          影响）。相对化三得：内网地址不外泄、LAN/ddnsto 域名通吃、天然过
+          basic auth 门禁。"""
+        from datetime import timedelta
+        from urllib.parse import urlsplit
+
+        url = self.client.presigned_get_object(
             self.bucket,
             bucket_key,
             expires=timedelta(seconds=max(60, expires_seconds)),
         )
+        if not getattr(self.settings, "minio_relative_presign", False):
+            return url
+        parts = urlsplit(url)
+        return f"/minio{parts.path}?{parts.query}"
 
 
 def build_minio_storage(settings: Settings) -> MinioStorage:
