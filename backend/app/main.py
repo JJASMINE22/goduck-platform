@@ -116,6 +116,7 @@ async def lifespan(app: FastAPI):
 
     # 8. Knowledge base (RAG) — 仅 kb_enabled=true 时装配（入库/管理写路径）
     if settings.kb_enabled:
+        from app.models import db as dbmod
         from app.services.ingest_pool import IngestPool
         from app.services.knowledge_service import KnowledgeService
         from app.services.vector_store import VectorStoreFactory
@@ -127,6 +128,13 @@ async def lifespan(app: FastAPI):
             minio=st.minio_storage, vector_factory=st.vector_factory,
         )
         st.ingest_pool = IngestPool(st.knowledge_service, settings.kb_ingestion_concurrency)
+        # 启动恢复：上个进程周期内中断的入库（重启/崩溃）会把文档永久留在
+        # 'indexing'（任务已随进程消失）→ 归一 failed，用户可重新解析。
+        stale = await dbmod.fail_stale_indexing_documents(
+            st.pool, "服务重启导致解析中断，请重新解析"
+        )
+        if stale:
+            logger.warning("recovered %d stale indexing document(s) to failed", stale)
         logger.info("knowledge base enabled (vector_factory/ingest_pool ready)")
     else:
         logger.info("knowledge base disabled (kb_enabled=false)")

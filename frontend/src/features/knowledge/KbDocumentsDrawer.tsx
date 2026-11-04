@@ -51,6 +51,8 @@ import type { KbDocumentOut, KbSearchResult, KnowledgeBaseOut, UUID } from '@/ty
 
 const ACCEPT = '.pdf,.docx'
 const ACCEPT_RE = /\.(pdf|docx)$/i
+/** 单批上传文件数上限（选择/拖拽共用；后端接口为单文件/请求，批次限制在前端） */
+const KB_UPLOAD_BATCH_MAX = 4
 /** 全局默认切块参数（与后端 kb_chunk_size/kb_chunk_overlap 一致，仅作占位提示） */
 const DEFAULT_CHUNK_SIZE = 800
 const DEFAULT_CHUNK_OVERLAP = 120
@@ -124,12 +126,17 @@ export function KbDocumentsDrawer({
   const pendingDocs = (data ?? []).filter((d) => d.status === 'pending')
   const parsedDocs = (data ?? []).filter((d) => d.status !== 'pending')
 
-  /** 顺序上传多文件：并发上传会挤占入库池（kb_ingestion_concurrency），且失败定位困难 */
+  /** 顺序上传多文件：并发上传会挤占入库池（kb_ingestion_concurrency），且失败定位困难。
+   *  单批最多 4 个（选择/拖拽共用此门）；后端接口为单文件/请求，批次限制在前端。 */
   const uploadFiles = async (files: FileList | File[]) => {
     const list = Array.from(files)
     const ok = list.filter(isAcceptable)
     const rejected = list.length - ok.length
     if (rejected > 0) toastError(`已跳过 ${rejected} 个非 pdf/docx 文件`)
+    if (ok.length > KB_UPLOAD_BATCH_MAX) {
+      toastError(`单批最多上传 ${KB_UPLOAD_BATCH_MAX} 个文档，已截取前 ${KB_UPLOAD_BATCH_MAX} 个`)
+      ok.length = KB_UPLOAD_BATCH_MAX
+    }
     if (!ok.length) return
     for (const f of ok) {
       try {
@@ -416,7 +423,7 @@ export function KbDocumentsDrawer({
               </p>
               <p style={{ margin: '6px 0 2px' }}>拖拽 PDF / DOCX 到此，或点击选择</p>
               <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-                支持多文件；仅 pdf/docx，上传后在下方「待解析文件」中为各文件设置切块参数并解析
+                支持多文件（单批最多 {KB_UPLOAD_BATCH_MAX} 个）；仅 pdf/docx，上传后在下方「待解析文件」中为各文件设置切块参数并解析
               </p>
               <input
                 ref={fileInputRef}
@@ -493,9 +500,11 @@ export function KbDocumentsDrawer({
               <InputNumber
                 min={1}
                 max={50}
+                precision={0}
                 value={topK}
                 onChange={(v) => setTopK(typeof v === 'number' ? v : 5)}
-                style={{ width: 90 }}
+                controls={false}
+                style={{ width: 130 }}
                 addonBefore="TopK"
               />
               <Button

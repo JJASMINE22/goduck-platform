@@ -1405,6 +1405,22 @@ async def reset_kb_documents(
             return cur.rowcount
 
 
+async def fail_stale_indexing_documents(
+    pool: AsyncConnectionPool, error: str
+) -> int:
+    """启动恢复：入库任务纯内存（asyncio task），进程重启后 'indexing' 状态
+    永久悬挂（无任务在跑、前端禁用重新解析入口）。归一为 failed 并注明原因，
+    用户可重新解析（ingest 幂等删旧 chunk）。返回受影响行数。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE kb_document SET status = 'failed', error = %s, "
+                "updated_at = now() WHERE status = 'indexing'",
+                (error,),
+            )
+            return cur.rowcount
+
+
 async def delete_kb_document(pool: AsyncConnectionPool, doc_id: uuid.UUID) -> bool:
     """Delete a document row. ES chunk removal is the caller's responsibility."""
     async with pool.connection() as conn:

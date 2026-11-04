@@ -209,7 +209,6 @@ class KnowledgeService:
         docs = await dbmod.list_kb_documents(self.pool, kb_id)
         for d in docs:
             if d.get("bucket_key"):
-                self.minio.remove_object(self._sidecar_key(d["bucket_key"]))
                 self.minio.remove_prefix(f"{d['bucket_key']}.shards/")
                 self.minio.remove_prefix(f"kb-src/{d['id']}/")
                 self.minio.remove_object(d["bucket_key"])
@@ -280,7 +279,6 @@ class KnowledgeService:
         # ES→MinIO→PG：ES/MinIO 尽力而为，PG 为存在性真相
         self.vector_factory.delete_by_doc_id(str(kb_id), str(doc_id))
         if doc.get("bucket_key"):
-            self.minio.remove_object(self._sidecar_key(doc["bucket_key"]))
             self.minio.remove_prefix(f"{doc['bucket_key']}.shards/")
             self.minio.remove_prefix(f"kb-src/{doc_id}/")
             self.minio.remove_object(doc["bucket_key"])
@@ -438,6 +436,15 @@ class KnowledgeService:
         batch_size = max(1, self.settings.embedding_batch_size)
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start:start + batch_size]
+            # 批间存在性检查：文档被并发删除（删除先清 ES，随后在途批次仍会
+            # 写入）→ 立即中止，防孤儿 chunk 悬挂 ES（终态回写对已删行是
+            # no-op，无害）。
+            if await dbmod.get_kb_document(self.pool, doc_id) is None:
+                logger.warning(
+                    "doc=%s deleted during ingest; abort remaining %d chunk(s)",
+                    doc_id, len(chunks) - start,
+                )
+                return
             # _id 必须取 chunk 自带 chunk_index，而非列表位置：docling 的
             # unit_index 在预算切分后重编号（图片/空单元被滤除致位置与序号
             # 错位），而 anchor_cards 按 {doc_id}_{chunk_index} 确定性查询。
@@ -557,6 +564,14 @@ class KnowledgeService:
                 progress=_shard_progress(i + 1, n_shards),
             )
             units.extend(units_i)
+
+        # 跨片全局重编 unit_index：parse() 按分片独立调用，片内编号恒 0..N——
+        # 若不重编，ES 确定性 _id {doc_id}_{chunk_index} 将跨片同名互踩（后写
+        # 分片覆盖先写分片，71110 块塌缩为最大分片单元数、仅文档尾部存活：
+        # 2026-11-03 HALCON 库"怎么搜都在 3000+ 页"根因）。docx 单片路径编号
+        # 不变；边车缓存的片内序号在此统一重编，缓存无需失效。
+        for gi, u in enumerate(units):
+            u.unit_index = gi
 
         embeddable = [
             u for u in units if u.kind in ("text", "table") and u.text_ctx.strip()

@@ -290,8 +290,10 @@ export function KnowledgePage(): ReactNode {
         </Form>
       </Drawer>
 
-      {/* 文档管理抽屉：上传/列表/检索/重建索引 */}
-      <KbDocumentsDrawer kb={docKb} open={!!docKb} onClose={() => setDocKb(null)} />
+      {/* 文档管理抽屉：上传/列表/检索/重建索引。key=kb.id：切换知识库时整体
+          重挂载，检索调试的 query/results/viewer 状态随库切换清空，杜绝 A 库
+          检索结果残留到 B 库 */}
+      <KbDocumentsDrawer key={docKb?.id ?? 'none'} kb={docKb} open={!!docKb} onClose={() => setDocKb(null)} />
     </PageContainer>
   )
 }
