@@ -42,6 +42,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx2
 from langchain_typesafe import (
     Choice,
     ChoiceAnswer,
@@ -187,7 +188,15 @@ class JevClient:
     （问人回落），与 judge 路径的 fail-closed 语义一致。
     """
 
-    def __init__(self, *, base_url: str, api_key: str, model: str, timeout_s: float):
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout_s: float,
+        proxy_url: str = "",
+    ):
         self._model = model
         self._classifier: TypeSafeClassifier | None = None
         self._classifier_kwargs: dict[str, Any] = {
@@ -196,6 +205,12 @@ class JevClient:
             "base_url": base_url.rstrip("/"),
             "timeout": timeout_s,
         }
+        # Jev 专用代理（空=直连）：仅注入本 client 的 httpx2 客户端，与进程级
+        # HTTP(S)_PROXY 完全解耦——其余出网流量（LLM/ES/MinIO）行为不变。
+        # 供应商按出口 IP 地域封锁（HTTP 451），国内部署经海外代理出口可达。
+        self._proxy_url = (proxy_url or "").strip()
+        # 注入式 client 由本类创建、本类负责关闭（官方库不接管注入 client 生命周期）
+        self._owned_clients: list[Any] = []
 
     @property
     def model(self) -> str:
@@ -204,6 +219,21 @@ class JevClient:
     def _get_classifier(self) -> TypeSafeClassifier:
         if self._classifier is None:
             try:
+                if self._proxy_url:
+                    # 官方库契约：注入 client 原样使用且 timeout 不再生效，超时须
+                    # 自配；trust_env=False 使代理行为完全由本配置项决定（不读
+                    # 进程级代理环境变量，两套语义不串线）。
+                    timeout = self._classifier_kwargs["timeout"]
+                    self._classifier_kwargs["client"] = httpx2.Client(
+                        proxy=self._proxy_url, timeout=timeout, trust_env=False,
+                    )
+                    self._classifier_kwargs["async_client"] = httpx2.AsyncClient(
+                        proxy=self._proxy_url, timeout=timeout, trust_env=False,
+                    )
+                    self._owned_clients = [
+                        self._classifier_kwargs["client"],
+                        self._classifier_kwargs["async_client"],
+                    ]
                 self._classifier = TypeSafeClassifier(**self._classifier_kwargs)
             except Exception as e:  # 构造失败=当次不可用，绝不炸图
                 raise JevUnavailable(f"TypeSafe 客户端构建失败: {type(e).__name__}: {e}") from e
@@ -262,10 +292,16 @@ class JevClient:
         )
 
     def close(self) -> None:
-        # 只关同步 client；async client 从未发请求、不持连接，无需清理。
+        # 关闭自建 client（直连模式=官方库自建 sync client；代理模式=本类注入的
+        # sync+async 代理 client 对）。官方库不接管注入 client 的生命周期，由本类
+        # 收尾；close 幂等，双重关闭无害。async client 连接池惰性建立、进程生命
+        # 周期内复用，随进程退出回收。
         with contextlib.suppress(Exception):
             if self._classifier is not None and self._classifier.client is not None:
                 self._classifier.client.close()
+        for c in self._owned_clients:
+            with contextlib.suppress(Exception):
+                c.close()
 
 
 def _strip_nuls(value: Any) -> Any:

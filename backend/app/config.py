@@ -228,6 +228,16 @@ class Settings(BaseSettings):
         ge=200,
         description="state 渲染截断上限（字符，含近期命令历史；API 上限 64k）。",
     )
+    jev_proxy_url: str = Field(
+        default="",
+        description=(
+            "Jev 专用 HTTP 代理（如 http://proxy:7890；空=直连）。仅注入 Jev 调用的"
+            " httpx2 client，不设进程级 HTTP(S)_PROXY——LLM/ES/MinIO 等其余出网流量"
+            "不受影响。供应商按出口 IP 做地域封锁（HTTP 451），国内部署经海外代理"
+            "出口可达；经代理时注意同步放宽 jev_timeout_seconds / jev_kb_timeout_seconds"
+            "（代理链路 RTT 约为直连的 2~3 倍）。"
+        ),
+    )
 
     # ---- Jev Rubric 门控（grader 分诊；plan: jev-rubric-grader-gate）----
     # 两态 grader(llm|jev) 的平台侧总控：jev 不可用时节点配置 grader=jev 也

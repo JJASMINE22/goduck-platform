@@ -284,6 +284,7 @@ def build_shell_guard(
         api_key=settings.typesafe_api_key,
         model=settings.jev_model,
         timeout_s=settings.jev_timeout_seconds,
+        proxy_url=getattr(settings, "jev_proxy_url", ""),
     )
     mode = settings.jev_mode
     threshold = settings.jev_safe_threshold
@@ -627,6 +628,7 @@ def build_rubric_judge(
         api_key=settings.typesafe_api_key,
         model=settings.jev_model,
         timeout_s=settings.jev_timeout_seconds,
+        proxy_url=getattr(settings, "jev_proxy_url", ""),
     )
     # 阈值三级解析的最后一跳：行级 ← 节点级（render_jev_criteria 已消费）←
     # 平台级默认（此处烘焙）。crit_meta 为浅拷贝，不污染调用方。

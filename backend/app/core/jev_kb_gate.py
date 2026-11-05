@@ -664,6 +664,7 @@ def build_jev_kb_gate(
             api_key=settings.typesafe_api_key,
             model=settings.jev_model,
             timeout_s=settings.jev_kb_timeout_seconds,
+            proxy_url=getattr(settings, "jev_proxy_url", ""),
         ),
         audit_submit,
         agent_id,
