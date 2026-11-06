@@ -837,7 +837,7 @@ pre,
 }
 
 /* 内联 SVG 图表卡（SvgFigure）——与 mermaid 块同语言，正文换点阵画布底
-   （archify 式 dot-grid），点击放大（Drawer） */
+   （archify 式 dot-grid），点击放大（中央 ZoomStage） */
 .md-svg {
   border: 1px solid var(--color-border);
   border-radius: 8px;
@@ -870,9 +870,12 @@ pre,
   outline: 2px solid var(--color-primary);
   outline-offset: -2px;
 }
-.md-svg__body--zoom {
-  cursor: default;
-  min-height: 200px;
+/* mermaid 正文可点击放大（拖拽平移时 is-panning 的 grabbing 覆盖之） */
+.md-mermaid__body {
+  cursor: zoom-in;
+}
+.md-img img {
+  cursor: zoom-in;
 }
 /* 净化失败降级：源码展示（不吞内容，可复制排查） */
 .md-svg__fallback {
@@ -885,6 +888,104 @@ pre,
   max-height: 240px;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ===== 中央放大查看层（ZoomStage：mermaid / SVG 围栏 / 图像共用）=====
+   全屏遮罩 + 内容 transform（translate+scale，origin 0 0），打开即适配居中；
+   滚轮以光标为锚缩放、拖拽平移、双击/按钮复位。层级需压过 antd 弹层（1000）。 */
+.zoom-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+}
+.zoom-stage__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 17, 23, 0.66);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+/* 内容卡：绝对定位于 0,0，位置/缩放全由内联 transform 控制 */
+.zoom-stage__content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  padding: 12px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  will-change: transform;
+}
+.zoom-stage__content:active {
+  cursor: grabbing;
+}
+/* 块状图表（svg/mermaid）：基准宽 min(92vw,1600px)，高按 viewBox 纵横比自动 */
+.zoom-stage__content--block {
+  display: block;
+  width: min(92vw, 1600px);
+}
+/* viewBox 存在才可安全等比拉伸；!important 压过 mermaid 写在元素上的
+   inline max-width/width（聊天卡里的定宽不该带进放大层） */
+.zoom-stage__content svg[viewBox] {
+  width: 100%;
+  height: auto;
+  max-width: none !important;
+}
+.zoom-stage__content img {
+  display: block;
+  max-width: min(92vw, 1600px);
+  max-height: 78vh;
+  border-radius: 6px;
+}
+/* 底部悬浮工具条：缩小 | 百分比 | 放大 | 适配 | 关闭 */
+.zoom-stage__toolbar {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 7px;
+  background: rgba(22, 27, 34, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.zoom-stage__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.zoom-stage__btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+.zoom-stage__btn--fit {
+  width: 28px;
+  height: 28px;
+}
+.zoom-stage__pct {
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.75);
 }
 .md-img {
   position: relative;
@@ -4046,6 +4147,14 @@ body .ant-drawer .ant-drawer-mask {
 .ws-view__tree-body .ant-tree .ant-tree-title {
   display: inline-flex;
   align-items: center;
+}
+/* 选中/悬停高亮紧贴内容宽度：blockNode 默认 flex:auto 会把高亮条整行拉满，
+   超长高亮穿透半透明预览浮层、干扰预览展示；改为 fit-content 后高亮只包住
+   图标+名称+体积+徽标，长文件名仍经 max-width:100% 走省略号截断 */
+.ws-view__tree-body .ant-tree.ant-tree-block-node .ant-tree-node-content-wrapper {
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: 100%;
 }
 /* 折叠箭头容器（antd 对 .ant-tree-switcher-icon 内的 svg 施加收起旋转） */
 .ws-view__switcher {

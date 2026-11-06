@@ -18,8 +18,9 @@ import 'katex/dist/katex.min.css'
 import { renderMermaidInto, validateMermaid } from '@/lib/mermaid'
 import { ensureCanvasBackground } from './svgNormalize'
 import { SvgFigure } from './SvgFigure'
+import { ZoomStage } from './ZoomStage'
 import { MdStreamingContext } from './mdStreaming'
-import { panHandlers } from './dragPan'
+import { panHandlers, panState } from './dragPan'
 import { useThemeStore } from '@/store/themeStore'
 
 /** LLM 常把公式写作 \(..\)/\[..\]，remark-math 只认 $..$/$$..$$。
@@ -99,6 +100,9 @@ function MermaidBlock({ code }: { code: string }): ReactNode {
   const ref = useRef<HTMLDivElement>(null)
   const [copied, setCopied] = useState(false)
   const [rendered, setRendered] = useState(false)
+  // 放大内容：打开瞬间快照已渲 innerHTML（含 mermaid 内联样式，主题色已烘焙），
+  // 不重跑渲染管线；null = 关闭
+  const [zoomHtml, setZoomHtml] = useState<string | null>(null)
   const streaming = useContext(MdStreamingContext)
   const theme = useThemeStore((s) => s.theme)
   const lastRenderRef = useRef<{ code: string; theme: string } | null>(null)
@@ -139,6 +143,10 @@ function MermaidBlock({ code }: { code: string }): ReactNode {
     const xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone)
     triggerDownload(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }), 'mermaid.svg')
   }
+  // 打开放大层：快照当前已渲图表（未渲完成时无 svg 可取，不打开）
+  const onZoom = () => {
+    if (ref.current?.querySelector('svg')) setZoomHtml(ref.current.innerHTML)
+  }
   return (
     <div className="md-mermaid">
       <div className="md-mermaid__bar">
@@ -148,6 +156,9 @@ function MermaidBlock({ code }: { code: string }): ReactNode {
         </button>
         <button type="button" className="md-codeblock__btn" onClick={onDownloadSvg}>
           下载 SVG
+        </button>
+        <button type="button" className="md-codeblock__btn" onClick={onZoom} disabled={!rendered}>
+          放大
         </button>
       </div>
       {/* 首帧成功前不挂画布（空 body 占位条）；占位与画布互斥，innerHTML 直写不与
@@ -160,13 +171,23 @@ function MermaidBlock({ code }: { code: string }): ReactNode {
         className="md-mermaid__body"
         style={rendered ? undefined : { display: 'none' }}
         {...panHandlers}
+        onClick={() => {
+          // 拖拽平移的收尾 click 不触发放大（同 SvgFigure）
+          if (panState.panning) return
+          onZoom()
+        }}
       />
+      <ZoomStage open={zoomHtml != null} onClose={() => setZoomHtml(null)} block>
+        <div dangerouslySetInnerHTML={{ __html: zoomHtml ?? '' }} />
+      </ZoomStage>
     </div>
   )
 }
 
-/** 图像：渲染 + 悬浮「下载」按钮（同源/data URL 直接下载；跨源需后端代理，故 best-effort）。 */
+/** 图像：渲染 + 悬浮「下载」按钮（同源/data URL 直接下载；跨源需后端代理，故 best-effort）。
+    点击图像 → 中央放大查看（滚轮缩放/拖拽平移，与 mermaid/SVG 同一查看层）。 */
 function MarkdownImage({ src, alt }: { src?: string; alt?: string }): ReactNode {
+  const [zoom, setZoom] = useState(false)
   const onDownload = async () => {
     if (!src) return
     try {
@@ -182,10 +203,13 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }): ReactNode 
   }
   return (
     <span className="md-img">
-      <img src={src} alt={alt} />
+      <img src={src} alt={alt} onClick={() => src && setZoom(true)} />
       <button type="button" className="md-img__dl" onClick={onDownload} title="下载图像">
         下载
       </button>
+      <ZoomStage open={zoom} onClose={() => setZoom(false)}>
+        <img src={src} alt={alt} />
+      </ZoomStage>
     </span>
   )
 }

@@ -191,7 +191,7 @@ export function SessionsListPage(): ReactNode {
         confirmLoading={createSession.isPending}
         destroyOnClose
       >
-        <Form<{ agent_id?: string; title?: string }> form={form} layout="vertical">
+        <Form<{ agent_id?: string; title?: string }> form={form} layout="vertical" onFinish={handleCreate}>
           <Form.Item
             name="agent_id"
             label="智能体（可选）"
@@ -207,6 +207,9 @@ export function SessionsListPage(): ReactNode {
           <Form.Item name="title" label="标题（可选）">
             <Input placeholder="如：需求评审助手对话" />
           </Form.Item>
+          {/* 回车即「创建并进入」：隐藏 submit 按钮让表单内回车触发 onFinish
+              （下拉展开时 rc-select 会拦截回车用于选项，不会误提交） */}
+          <Button htmlType="submit" style={{ display: 'none' }} />
         </Form>
       </Modal>
     </PageContainer>

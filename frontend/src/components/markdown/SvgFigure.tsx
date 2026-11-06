@@ -6,12 +6,12 @@
    工具栏与 MermaidBlock 同语言（复制源码 / 下载 SVG / 放大）。
    下载：克隆 svg + 内嵌「变量已解析为具体色值」的作用域样式（svgScope.css ?raw），
    独立文件在任意浏览器打开同样带色。 */
-import { Drawer } from 'antd'
 import DOMPurify from 'dompurify'
 import { memo, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ensureCanvasBackground, normalizeSvgColors } from './svgNormalize'
 import { panHandlers, panState } from './dragPan'
 import { MdStreamingContext } from './mdStreaming'
+import { ZoomStage } from './ZoomStage'
 import './svgScope.css'
 import scopeCssRaw from './svgScope.css?raw'
 
@@ -160,18 +160,10 @@ export const SvgFigure = memo(function SvgFigure({ code }: { code: string }): Re
         }}
         dangerouslySetInnerHTML={{ __html: prepared }}
       />
-      <Drawer
-        open={zoom}
-        onClose={() => setZoom(false)}
-        title="SVG 图表"
-        width={760}
-        styles={{ body: { padding: 12 } }}
-      >
-        <div
-          className="md-svg__body md-svg__body--zoom svg-scope"
-          dangerouslySetInnerHTML={{ __html: prepared }}
-        />
-      </Drawer>
+      {/* 中央放大查看层：滚轮缩放/拖拽平移，打开即适配窗口（比气泡更大，而非更小） */}
+      <ZoomStage open={zoom} onClose={() => setZoom(false)} block>
+        <div dangerouslySetInnerHTML={{ __html: prepared }} />
+      </ZoomStage>
     </div>
   )
 })
