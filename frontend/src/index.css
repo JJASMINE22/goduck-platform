@@ -4372,6 +4372,24 @@ body .ant-drawer .ant-drawer-mask {
   overflow: auto;
   padding: 12px 16px;
 }
+/* html 沙箱渲染：body 去内边距不滚动，iframe 铺满并自带滚动条 */
+.ws-preview__body--flush {
+  padding: 0;
+  overflow: hidden;
+}
+.ws-preview__html {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.ws-preview__frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
 .ws-preview__fallback {
   display: flex;
   flex-direction: column;

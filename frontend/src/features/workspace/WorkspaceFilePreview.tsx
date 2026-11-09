@@ -1,12 +1,14 @@
 /* 工作区文件预览 —— 按类型分派（plan §3.2-3）。
    - text/markdown → /file 取文本；md 走 Markdown 渲染，其余包代码块高亮
+   - html → /file 取文本，沙箱 iframe（srcDoc）直接渲染，渲染/源码可切换；
+     sandbox 不含 allow-same-origin → 不透明源，页面脚本无法触碰应用 cookie/存储
    - image → <img>（下载直链）
    - pdf → <iframe>（下载直链，浏览器原生）
    - office(docx/xlsx/pptx/csv…) → /preview 取 markitdown Markdown 渲染；503 降级
    - binary/未知/失败 → 降级卡片（元信息 + 下载）
    任何预览失败都回退卡片，杜绝破图/空白。 */
-import { Alert, Button, Skeleton, Space, Tooltip, Typography } from 'antd'
-import { type ReactNode } from 'react'
+import { Alert, Button, Segmented, Skeleton, Space, Tooltip, Typography } from 'antd'
+import { type ReactNode, useState } from 'react'
 import { Download, FileText, X } from 'lucide-react'
 import { Markdown } from '@/components/markdown/Markdown'
 import { useWorkspaceFile, useWorkspacePreview } from '@/hooks/useWorkspace'
@@ -23,6 +25,7 @@ function DownloadBar({
   name,
   size,
   modifiedAt,
+  extra,
   onClose,
 }: {
   sessionId: UUID
@@ -30,6 +33,7 @@ function DownloadBar({
   name: string
   size?: number
   modifiedAt?: string | null
+  extra?: ReactNode
   onClose?: () => void
 }) {
   return (
@@ -41,6 +45,7 @@ function DownloadBar({
         {modifiedAt ? <Text type="secondary" style={{ fontSize: 12 }}>{modifiedAt.slice(0, 19).replace('T', ' ')}</Text> : null}
       </Space>
       <Space size={4}>
+        {extra}
         <Button
           size="small"
           icon={<Download size={13} />}
@@ -110,19 +115,29 @@ export function WorkspaceFilePreview({
 }): ReactNode {
   const kind = classifyFile(name)
   const downloadHref = workspaceApi.downloadUrl(sessionId, path)
+  const [htmlView, setHtmlView] = useState<'render' | 'source'>('render')
 
   // —— 文本类：取 /file ——
-  const fileQ = useWorkspaceFile(sessionId, kind === 'text' || kind === 'markdown' ? path : null)
+  const fileQ = useWorkspaceFile(
+    sessionId,
+    kind === 'text' || kind === 'markdown' || kind === 'html' ? path : null,
+  )
   // —— office 类：取 /preview（markitdown）——
   const previewQ = useWorkspacePreview(sessionId, kind === 'office' ? path : null)
 
   const meta = { size: fileQ.data?.size, modifiedAt: fileQ.data?.modified_at }
 
-  // 通用顶部下载条 + body
-  const wrap = (body: ReactNode, size?: number, modifiedAt?: string | null): ReactNode => (
+  // 通用顶部下载条 + body（flush=true：body 去内边距不滚动，由 iframe 自行滚动）
+  const wrap = (
+    body: ReactNode,
+    size?: number,
+    modifiedAt?: string | null,
+    flush = false,
+    extra?: ReactNode,
+  ): ReactNode => (
     <div className="ws-preview">
-      <DownloadBar sessionId={sessionId} path={path} name={name} size={size} modifiedAt={modifiedAt} onClose={onClose} />
-      <div className="ws-preview__body">{body}</div>
+      <DownloadBar sessionId={sessionId} path={path} name={name} size={size} modifiedAt={modifiedAt} extra={extra} onClose={onClose} />
+      <div className={flush ? 'ws-preview__body ws-preview__body--flush' : 'ws-preview__body'}>{body}</div>
     </div>
   )
 
@@ -133,6 +148,71 @@ export function WorkspaceFilePreview({
   if (kind === 'pdf') {
     return wrap(
       <iframe src={downloadHref} title={name} style={{ width: '100%', height: '100%', border: 0 }} />,
+    )
+  }
+
+  if (kind === 'html') {
+    if (fileQ.isLoading) return wrap(<Skeleton active paragraph={{ rows: 8 }} />)
+    if (fileQ.isError) {
+      return <FallbackCard sessionId={sessionId} path={path} name={name} reason={errMsg(fileQ.error)} onClose={onClose} />
+    }
+    const data = fileQ.data
+    if (!data || !data.is_text || !data.content) {
+      return (
+        <FallbackCard
+          sessionId={sessionId}
+          path={path}
+          name={name}
+          size={data?.size}
+          modifiedAt={data?.modified_at}
+          reason="该文件为二进制，无法在线预览"
+          onClose={onClose}
+        />
+      )
+    }
+    const truncMsg = data.truncated
+      ? '文件超过预览上限已截断，渲染/源码不完整，请下载查看完整内容'
+      : null
+    const toggle = (
+      <Segmented
+        size="small"
+        value={htmlView}
+        onChange={(v) => setHtmlView(v as 'render' | 'source')}
+        options={[
+          { label: '渲染', value: 'render' },
+          { label: '源码', value: 'source' },
+        ]}
+      />
+    )
+    if (htmlView === 'render') {
+      return wrap(
+        <div className="ws-preview__html">
+          {truncMsg ? <Alert type="warning" showIcon message={truncMsg} style={{ flexShrink: 0 }} /> : null}
+          {/* 沙箱渲染：不含 allow-same-origin → 不透明源，脚本不能读应用
+              cookie/存储；CDN 外链（echarts 等）仍可加载。切换文件由外层
+              key 重挂载，重渲染即重执行脚本。 */}
+          <iframe
+            className="ws-preview__frame"
+            sandbox="allow-scripts allow-popups allow-forms allow-modals"
+            srcDoc={data.content}
+            title={name}
+          />
+        </div>,
+        data.size,
+        data.modified_at,
+        true,
+        toggle,
+      )
+    }
+    return wrap(
+      <>
+        <Markdown>{`\`\`\`html\n${data.content}\n\`\`\``}</Markdown>
+        {truncMsg ? <Alert type="warning" showIcon message={truncMsg} style={{ margin: '8px 0' }} /> : null}
+      </>,
+      data.size,
+      data.modified_at,
+      false,
+      toggle,
     )
   }
 

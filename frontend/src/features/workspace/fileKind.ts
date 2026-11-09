@@ -1,8 +1,9 @@
 /* 工作区文件预览分类 —— 按扩展名决定前端预览分派策略（plan §3.2-3）。
    分类仅驱动"怎么取/怎么渲染"；能否预览的最终裁决在后端（/file 返回 is_text、
-   /preview 返回 markdown 或 503/415）。任何预览失败都回退到降级卡片（不留空白）。 */
+   /preview 返回 markdown 或 503/415）。任何预览失败都回退到降级卡片（不留空白）。
+   html/htm 单列：/file 取文本 → 前端沙箱 iframe 渲染（渲染/源码切换）。 */
 
-export type WorkspaceFileKind = 'text' | 'markdown' | 'image' | 'pdf' | 'office' | 'binary'
+export type WorkspaceFileKind = 'text' | 'markdown' | 'image' | 'pdf' | 'office' | 'html' | 'binary'
 
 const TEXT_EXTS = new Set([
   'txt', 'log', 'ini', 'cfg', 'conf', 'toml', 'env',
@@ -10,12 +11,15 @@ const TEXT_EXTS = new Set([
   'py', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
   'go', 'rs', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cc', 'cs', 'rb', 'php',
   'sh', 'bash', 'zsh', 'ps1', 'bat', 'cmd',
-  'sql', 'html', 'htm', 'css', 'scss', 'less', 'vue', 'svelte',
+  'sql', 'css', 'scss', 'less', 'vue', 'svelte',
   'dart', 'swift', 'scala', 'clj', 'lua', 'r', 'pl',
   'dockerfile', 'gitignore', 'makefile',
 ])
 
 const MARKDOWN_EXTS = new Set(['md', 'markdown', 'mdx'])
+
+// html/htm 单列：走沙箱 iframe 渲染（渲染/源码可切换），不作为普通文本。
+const HTML_EXTS = new Set(['html', 'htm'])
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico'])
 
@@ -37,6 +41,7 @@ export function classifyFile(filename: string): WorkspaceFileKind {
   if (MARKDOWN_EXTS.has(ext)) return 'markdown'
   // pdf 单列：浏览器原生 iframe 渲染最佳，不走 markitdown。
   if (ext === 'pdf') return 'pdf'
+  if (HTML_EXTS.has(ext)) return 'html'
   if (IMAGE_EXTS.has(ext)) return 'image'
   // 其余 office 类型（docx/xlsx/pptx/csv 等）走 markitdown 预览。
   if (OFFICE_EXTS.has(ext)) return 'office'
