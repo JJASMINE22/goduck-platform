@@ -29,7 +29,8 @@ export interface RubricConfig {
 /**
  * 后端 AgentConfig（schema_utils.py）—— 配置树，递归 subagents。
  * 主代理: is_main=true, name/description 为 null, 可设 memory/allow_attachments/allow_knowledge
- * 子代理: is_main 省略/false, 必须设 name/description, 禁 memory/allow_attachments/allow_knowledge (workspace/allow_shell 主子均可)
+ * 子代理: is_main 省略/false, 必须设 name/description, 禁 memory/allow_attachments/allow_knowledge
+ *          (workspace/allow_shell 仅 compiled 子代理可设；dicted 叶子随主代理生效，剥离为 false)
  */
 export interface AgentConfig {
   name?: string | null
@@ -38,7 +39,7 @@ export interface AgentConfig {
   tool_names?: string[] // MCP 命名空间工具，源 GET /mcp/tools
   skills?: string[] | null // 形如 "/skills/<name>/"
   memory?: boolean // 偏好记忆开关，仅主代理（路径后端固定）
-  workspace?: boolean // 工作区开关，主代理与子代理均可设（路径后端固定，写入即落盘）
+  workspace?: boolean // 工作区开关，主代理与 compiled 子代理可设（路径后端固定，写入即落盘）；dicted 叶子随主代理生效，配置被后端校验层剥离为 false
   interrupt_on?: Record<string, boolean> | null
   is_main?: boolean
   is_dicted?: boolean
@@ -47,8 +48,8 @@ export interface AgentConfig {
   rubric?: RubricConfig | null
   allow_attachments?: boolean
   allow_knowledge?: boolean // 会话内知识库（RAG）开关，仅主代理
-  allow_shell?: boolean // 本地 shell 执行（execute 工具）开关，主代理与子代理均可设（与 workspace 同构，per-node）
-  shell_guard?: boolean // Jev shell 守卫开关（仅 allow_shell=true 且后端 jev_enabled 时生效；白名单直通 + 灰区概率门控）
+  allow_shell?: boolean // 本地 shell 执行（execute 工具）开关，主代理与 compiled 子代理可设（per-node）；dicted 叶子随主代理生效，配置被后端校验层剥离为 false
+  shell_guard?: boolean // Jev shell 守卫开关（仅 allow_shell=true 且后端 jev_enabled 时生效；白名单直通 + 灰区概率门控）；dicted 叶子共享父 backend，不生效（剥离为 false）
   /** 用途声明（仅根节点可设，随 config_json 持久化，纯元数据）。'cron'=定时任务智能体，全树禁 allow_shell */
   usage?: 'chat' | 'cron'
   task_planning?: boolean // 任务规划（TodoListMiddleware / write_todos）开关，per-node 不继承，主/子代理均可设

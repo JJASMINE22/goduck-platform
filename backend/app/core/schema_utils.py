@@ -4,12 +4,15 @@ The AgentConfig tree is the single source of truth frozen into agent.config_json
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 class JevCriterion(BaseModel):
@@ -119,8 +122,10 @@ class AgentConfig(BaseModel):
         default=False,
         description="是否启用工作区。True 时挂载 /workspace/ 路由到 "
         "LOCAL_ROOT/workspace（目录路径由后端固定，前端只开关）。"
-        "主代理与子代理均可开启：开启后该节点获得独立磁盘后端，与主代理共用同一磁盘"
-        "目录，写入即落盘、跨代理可见。旧配置的非空 str 自动迁移为 True。",
+        "主代理与 compiled 子代理可开启：开启后该节点获得独立磁盘后端，与主代理共用同一磁盘"
+        "目录，写入即落盘、跨代理可见。dicted 子代理共享主代理 backend（随父生效），"
+        "本开关不参与构建，配置了会被校验层剥离为 False。"
+        "旧配置的非空 str 自动迁移为 True。",
     )
     interrupt_on: Optional[Dict[str, bool]] = Field(
         default=None,
@@ -204,6 +209,34 @@ class AgentConfig(BaseModel):
         if isinstance(v, list):
             return len(v) > 0
         return bool(v)
+
+    @model_validator(mode="after")
+    def validate_dicted_backend_attrs(self) -> AgentConfig:
+        """dicted 叶子的后端三键（workspace/allow_shell/shell_guard）剥离。
+
+        构建路径上 dicted 分支零读取这三个键（backend 由主代理 cfg 统一构建，
+        dicted 子代理经 FilesystemMiddleware(backend=父backend) 随父生效），
+        配置了只是"看起来可配"的惰性假象。此处静默置 False + warning
+        （fail-visible，与 usage=cron 的构建期剥离同构）而非硬拒绝——硬拒绝会把
+        存量惰性配置（如 DB 直写的 writer allow_shell+shell_guard 空转对）卡死在
+        保存环节，而其运行时行为本就无差。
+
+        顺序约束：必须先于 validate_topology 的 shell_guard→allow_shell 依赖校验
+        执行（pydantic 同 mode 多 validator 按定义序运行），否则"dicted 且
+        shell_guard=true 且 allow_shell=false"的存量脏形态会先撞依赖校验而无法净化。
+        """
+        if self.is_dicted and not self.is_main:
+            stripped = [k for k in ("workspace", "allow_shell", "shell_guard") if getattr(self, k)]
+            if stripped:
+                self.workspace = False
+                self.allow_shell = False
+                self.shell_guard = False
+                logger.warning(
+                    "dicted 子代理 %r 的后端属性 %s 随主代理生效（节点配置不参与构建），已剥离为 False",
+                    self.name,
+                    stripped,
+                )
+        return self
 
     @model_validator(mode="after")
     def validate_topology(self) -> AgentConfig:

@@ -39,6 +39,19 @@ class AgentService:
         except Exception as e:
             return False, _flatten_errors(e)
 
+    def sanitized_config(self, config: dict) -> dict:
+        """校验并以净化后的规范形态返回 config（异常 → ValueError，router 映射 400）。
+
+        parse_config 的 model_validator 会就地剥离无效声明（如 dicted 叶子的
+        workspace/allow_shell/shell_guard → False），to_dict() 输出即落库形态：
+        保存即净化入库，存量惰性配置在下次保存/导入时自动收敛，无需数据迁移。
+        to_dict() 同时丢弃 None/空集合键与模型外杂键，与构建/导出路径的序列化同源。
+        """
+        try:
+            return parse_config(config).to_dict()
+        except Exception as e:
+            raise ValueError("; ".join(_flatten_errors(e)))
+
     def render_mermaid(self, config: dict) -> Optional[str]:
         """Build delegation-tree mermaid text from a config dict (best-effort)."""
         try:
@@ -70,9 +83,7 @@ class AgentService:
         vision_model_id: Optional[uuid.UUID] = None,
         kind: str = "chat",
     ) -> dict:
-        valid, errs = self.validate_config(config)
-        if not valid:
-            raise ValueError("; ".join(errs))  # router maps ValueError -> 400
+        config = self.sanitized_config(config)
         if await dbmod.get_agent_by_name(self.pool, name) is not None:
             raise FileExistsError(name)  # router maps -> 409
         return await dbmod.create_agent(
@@ -90,9 +101,7 @@ class AgentService:
         name: Optional[str] = None,
         vision_model_id: Optional[uuid.UUID] = None,
     ) -> dict:
-        valid, errs = self.validate_config(config)
-        if not valid:
-            raise ValueError("; ".join(errs))
+        config = self.sanitized_config(config)
         existing = await dbmod.get_agent(self.pool, agent_id)
         if existing is None:
             raise KeyError(f"agent {agent_id} not found")

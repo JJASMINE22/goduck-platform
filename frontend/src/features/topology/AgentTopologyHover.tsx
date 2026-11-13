@@ -190,11 +190,14 @@ function NodeDetail({ node }: { node: TopologyNode }): ReactNode {
   const title = node.role === 'main' ? '主代理' : node.name || '未命名子代理'
   const boolCaps = [
     caps?.memory && '记忆',
-    caps?.workspace && '工作区',
-    caps?.shell && 'Shell',
+    // dicted 叶子后端随主代理生效：节点自身开关（校验层已剥离）不代表真实能力，
+    // 以继承语义展示，避免"off 但实际可写 /workspace/、可跑 execute"的误读
+    !node.is_dicted && caps?.workspace && '工作区',
+    !node.is_dicted && caps?.shell && 'Shell',
     caps?.rubric && 'Rubric',
     caps?.task_planning && '规划',
     node.is_dicted && 'dicted',
+    node.is_dicted && '后端随主代理',
   ].filter((v): v is string => !!v)
   const hasAny = tools.length || skills.length || hitl.length || boolCaps.length
   return (
