@@ -1,5 +1,6 @@
 /* 向量模型管理页 —— 注册表增删改查 + 保存前 /test 连通探测（实测维度）。
    api_key 列表永不返回；编辑时留空 = 保留旧 key。
+   端点（base_url）列仅管理员可见：普通用户只读预览不暴露端点地址。
    语义字段（端点/型号/维度）被知识库引用 → 后端 409 含 referencing_kbs，
    弹窗提示先换绑。镜像 ModelsPage。 */
 import { App as AntApp, Button, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Select, Switch, Table, Tag, Tooltip } from 'antd'
@@ -176,14 +177,19 @@ export function EmbeddingsPage(): ReactNode {
       width: 80,
       render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>禁用</Tag>),
     },
-    {
-      title: '端点',
-      dataIndex: 'base_url',
-      key: 'base_url',
-      align: 'left',
-      ellipsis: true,
-      render: (v: string) => <code style={{ fontSize: 12 }}>{v}</code>,
-    },
+    // 端点地址为管理员专属信息（普通用户只读预览不含此列，与 ModelsPage 同款门控）
+    ...(isManager
+      ? [
+          {
+            title: '端点',
+            dataIndex: 'base_url',
+            key: 'base_url',
+            align: 'left' as const,
+            ellipsis: true,
+            render: (v: string) => <code style={{ fontSize: 12 }}>{v}</code>,
+          },
+        ]
+      : []),
     {
       title: '更新时间',
       dataIndex: 'updated_at',

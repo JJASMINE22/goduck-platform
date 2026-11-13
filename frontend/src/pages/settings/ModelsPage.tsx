@@ -1,5 +1,6 @@
 /* 模型管理页（DESIGN §10.6）—— 注册表的增删改查 + 保存前 /test 连通探测。
    api_key 列表永不返回；编辑时留空 = 保留旧 key（轮换密钥）。
+   端点（base_url）列仅管理员可见：普通用户只读预览不暴露端点地址。
    删除被引用模型 → 后端 409 含 referencing_agents，弹窗提示先解绑。 */
 import { App as AntApp, Button, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Select, Switch, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -193,15 +194,24 @@ export function ModelsPage(): ReactNode {
       width: 80,
       render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>禁用</Tag>),
     },
-    {
-      title: '端点',
-      dataIndex: 'base_url',
-      key: 'base_url',
-      align: 'left',
-      ellipsis: true,
-      render: (v: string | null) =>
-        v ? <code style={{ fontSize: 12 }}>{v}</code> : <span style={{ color: 'var(--color-text-tertiary)' }}>原生 OpenAI</span>,
-    },
+    // 端点地址为管理员专属信息（普通用户只读预览不含此列，与"操作"列同款门控）
+    ...(isManager
+      ? [
+          {
+            title: '端点',
+            dataIndex: 'base_url',
+            key: 'base_url',
+            align: 'left' as const,
+            ellipsis: true,
+            render: (v: string | null) =>
+              v ? (
+                <code style={{ fontSize: 12 }}>{v}</code>
+              ) : (
+                <span style={{ color: 'var(--color-text-tertiary)' }}>原生 OpenAI</span>
+              ),
+          },
+        ]
+      : []),
     {
       title: '更新时间',
       dataIndex: 'updated_at',
