@@ -45,7 +45,7 @@ let lastShotCount = 0
 const pad = (n: number) => String(n).padStart(2, '0')
 
 /** 单批附件数上限（批量入口：粘贴等；后端接口为单文件/请求，批次限制在前端） */
-const ATTACH_BATCH_MAX = 4
+const ATTACH_BATCH_MAX = 8
 
 /** 展示名重写：剪贴板图片的泛化名（image.png / 无名）→ 截图-YYYYMMDD-HHmmss，
     同秒多张自增 -2/-3。仅影响展示与入库 filename，不参与服务端类型判定（魔数为准）。 */

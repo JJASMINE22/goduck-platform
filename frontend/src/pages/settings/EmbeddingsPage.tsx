@@ -167,14 +167,16 @@ export function EmbeddingsPage(): ReactNode {
       title: '维度',
       dataIndex: 'dims',
       key: 'dims',
-      width: 90,
+      width: 100,
+      align: 'center',
       render: (v?: number | null) => (v != null ? <Tag color="geekblue">{v}</Tag> : '原生'),
     },
     {
       title: '状态',
       dataIndex: 'enabled',
       key: 'enabled',
-      width: 80,
+      width: 90,
+      align: 'center',
       render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>禁用</Tag>),
     },
     // 端点地址为管理员专属信息（普通用户只读预览不含此列，与 ModelsPage 同款门控）

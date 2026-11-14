@@ -42,6 +42,17 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}M`
 }
 
+/** 时间戳短格式：同年 MM-DD HH:mm，跨年回退 YYYY-MM-DD（后端 st_mtime 本地时间无
+    时区偏移，直接截取即所见；与预览浮层 DownloadBar 全格式同源口径）。 */
+function formatTime(iso: string): string {
+  const [date, time] = iso.split('T')
+  if (!date) return iso
+  if (date.slice(0, 4) === String(new Date().getFullYear())) {
+    return time ? `${date.slice(5)} ${time.slice(0, 5)}` : date.slice(5)
+  }
+  return date
+}
+
 /** 变更徽标（树内紧凑变体）：edit=+N −M（省略 0 项）；create=绿点；delete=红点（名称另行淡化）。 */
 function ChangeBadge({ change }: { change: MergedFileChange }): ReactNode {
   if (change.action === 'create') {
@@ -78,6 +89,9 @@ function NodeTitle({
         <span className="ws-node__name">{node.name}</span>
         {!node.is_dir && node.size != null ? (
           <span className="ws-node__size">{formatBytes(node.size)}</span>
+        ) : null}
+        {!node.is_dir && node.modified_at ? (
+          <span className="ws-node__time">{formatTime(node.modified_at)}</span>
         ) : null}
         {badge ? <ChangeBadge change={badge} /> : null}
       </span>

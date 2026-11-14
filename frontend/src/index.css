@@ -4219,6 +4219,15 @@ body .ant-drawer .ant-drawer-mask {
   color: var(--color-text-tertiary);
   flex-shrink: 0;
 }
+/* 修改时间：与 __size 同语言（三级灰 11px + tabular-nums）；不收缩不折行
+   （格式含空格，折行防御与 diff-badge 同款——超出时仅名称出省略号） */
+.ws-node__time {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .ws-node__actions {
   display: inline-flex;
   align-items: center;

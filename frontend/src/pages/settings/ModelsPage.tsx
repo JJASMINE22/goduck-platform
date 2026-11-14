@@ -170,14 +170,16 @@ export function ModelsPage(): ReactNode {
       title: '视觉',
       dataIndex: 'supports_vision',
       key: 'supports_vision',
-      width: 80,
+      width: 90,
+      align: 'center',
       render: (v: boolean) => (v ? <Tag color="blue">支持</Tag> : <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>),
     },
     {
       title: '思考',
       dataIndex: 'enable_thinking',
       key: 'enable_thinking',
-      width: 90,
+      width: 100,
+      align: 'center',
       render: (v: boolean | null) =>
         v === true ? (
           <Tag color="purple">开</Tag>
@@ -191,7 +193,8 @@ export function ModelsPage(): ReactNode {
       title: '状态',
       dataIndex: 'enabled',
       key: 'enabled',
-      width: 80,
+      width: 90,
+      align: 'center',
       render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>禁用</Tag>),
     },
     // 端点地址为管理员专属信息（普通用户只读预览不含此列，与"操作"列同款门控）
