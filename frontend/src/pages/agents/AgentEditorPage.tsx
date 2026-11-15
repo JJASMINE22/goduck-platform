@@ -1,11 +1,14 @@
 /* 智能体编辑器（画布版）—— 三栏：模块面板 | 节点画布 | 节点详情面板。
    草稿由 agentEditorStore（归一化 nodes）持有（准则 F8）。保存前 toConfigTree(nodes) 序列化为
    AgentConfig 树：新建 POST /agents；更新 PUT（二次确认级联删会话）。后端契约不变。
-   实时校验走 POST /agents/validate（防抖 600ms，准则 F6）。 */
+   实时校验走 POST /agents/validate（防抖 600ms，准则 F6）。
+   窄视口（≤1100px，平板竖屏/窄窗口）：三栏改「画布独占 + 双抽屉」——模块面板经
+   顶栏「模块」钮唤起（点击模板即建节点，建后抽屉不自动关，可连续添加），
+   详情面板在选中节点时自动拉开；宽屏三栏形态不变（宽度拖拽保留）。 */
 import { App as AntApp, Button, Drawer, Empty, Input, List, Popover, Select, Space, Tag } from 'antd'
 import { type ReactNode, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, History, RotateCcw, Save } from 'lucide-react'
+import { ArrowLeft, Boxes, History, RotateCcw, Save } from 'lucide-react'
 import {
   useAgent,
   useAgentHistory,
@@ -16,6 +19,7 @@ import {
 } from '@/hooks/useAgents'
 import { useModels, useVisionModels } from '@/hooks/useModels'
 import { useDragResize } from '@/hooks/useDragResize'
+import { BREAKPOINTS, useMediaQuery } from '@/hooks/useMediaQuery'
 import { useAgentEditorStore } from '@/store/agentEditorStore'
 import { usePageHeaderStore } from '@/store/pageHeaderStore'
 import { toConfigTree } from '@/features/agent-editor/graphModel'
@@ -45,6 +49,7 @@ export function AgentEditorPage(): ReactNode {
 
   const nodes = useAgentEditorStore((s) => s.nodes)
   const agentIdInStore = useAgentEditorStore((s) => s.agentId)
+  const selectedNodeId = useAgentEditorStore((s) => s.selectedNodeId)
   const name = useAgentEditorStore((s) => s.name)
   const description = useAgentEditorStore((s) => s.description)
   const modelId = useAgentEditorStore((s) => s.modelId)
@@ -65,6 +70,10 @@ export function AgentEditorPage(): ReactNode {
   const setValidation = useAgentEditorStore((s) => s.setValidation)
 
   const [histOpen, setHistOpen] = useState(false)
+  // —— 窄视口（≤1100px）：三栏改「画布独占 + 双抽屉」——
+  // 抽屉开合态自持在下方 PaletteTrigger / DetailDrawer 子组件内（随条件渲染
+  // 卸载销毁，断点往返无残留重开）；本组件只保留断点判断
+  const isNarrow = useMediaQuery(BREAKPOINTS.narrow)
   // 主代理（根节点）附件开关：视觉下挂的渲染与保存共同前置
   //（三门均先查 allow_attachments，未开启时下挂永不可达）
   const rootAllowAttachments = !!nodes?.find((n) => n.parentId === null)?.allow_attachments
@@ -228,6 +237,8 @@ export function AgentEditorPage(): ReactNode {
       ),
       extra: (
         <Space>
+          {/* 窄屏模块面板收进抽屉：入口上提 Header（画布独占全宽） */}
+          {isNarrow ? <PaletteTrigger /> : null}
           {!isCreate ? (
             <Button
               icon={<History size={14} />}
@@ -383,30 +394,39 @@ export function AgentEditorPage(): ReactNode {
           {validationTag}
         </div>
 
-        {/* 三区：去卡壳靠背景对比分区；详情宽度可拖拽（覆盖式手柄），双击重置 */}
+        {/* 三区：去卡壳靠背景对比分区；详情宽度可拖拽（覆盖式手柄），双击重置。
+            窄屏（≤1100px）：模块面板/详情面板退场为抽屉，画布独占全宽 */}
         <div className="editor-workspace__main">
-          <NodePalette />
+          {isNarrow ? null : <NodePalette />}
           <AgentCanvas />
-          <div
-            style={{
-              width: detailWidth,
-              flexShrink: 0,
-              position: 'relative',
-              minWidth: 0,
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
+          {isNarrow ? null : (
             <div
-              className="panel-resizer panel-resizer--overlay"
-              onMouseDown={onDetailResizeStart}
-              onDoubleClick={resetDetailWidth}
-              title="拖拽调整详情面板宽度（双击重置）"
-            />
-            <NodeDetailPanel />
-          </div>
+              style={{
+                width: detailWidth,
+                flexShrink: 0,
+                position: 'relative',
+                minWidth: 0,
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <div
+                className="panel-resizer panel-resizer--overlay"
+                onPointerDown={onDetailResizeStart}
+                onDoubleClick={resetDetailWidth}
+                title="拖拽调整详情面板宽度（双击重置）"
+              />
+              <NodeDetailPanel />
+            </div>
+          )}
         </div>
       </div>
+
+      {/* 窄屏：节点详情抽屉——key=选中节点（换选重开）；开合态自持（断点往返
+          或换选即重挂销毁，无残留重开），关闭后对本选区保持关闭 */}
+      {isNarrow ? (
+        <DetailDrawer key={selectedNodeId ?? 'none'} hasSelection={!!selectedNodeId} />
+      ) : null}
 
       {/* 配置历史 / 还原 */}
       <Drawer title="配置历史（可还原）" open={histOpen} onClose={() => setHistOpen(false)} width={440}>
@@ -440,5 +460,40 @@ export function AgentEditorPage(): ReactNode {
         )}
       </Drawer>
     </div>
+  )
+}
+
+/** 窄屏模块面板入口：按钮（渲染进 Header extra 行内）+ 抽屉（Portal 到 body）。
+    开合态自持——断点离开窄屏即卸载销毁，无残留重开。点击模板即建节点，
+    建后抽屉不自动关，可连续添加。 */
+function PaletteTrigger(): ReactNode {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <Button icon={<Boxes size={14} />} onClick={() => setOpen(true)}>
+        模块
+      </Button>
+      <Drawer title="添加模块" placement="left" width={300} open={open} onClose={() => setOpen(false)}>
+        <NodePalette />
+      </Drawer>
+    </>
+  )
+}
+
+/** 窄屏节点详情抽屉：hasSelection 派生开合（选中即开，见父级 key=选中节点——
+    换选重挂即重开）；用户关闭后对本选区保持关闭，重选其它节点自动重开。
+    关抽屉不清画布选中——高亮保留，回切宽屏时内联面板无缝续接。 */
+function DetailDrawer({ hasSelection }: { hasSelection: boolean }): ReactNode {
+  const [closed, setClosed] = useState(false)
+  return (
+    <Drawer
+      title="节点详情"
+      placement="right"
+      width={400}
+      open={hasSelection && !closed}
+      onClose={() => setClosed(true)}
+    >
+      <NodeDetailPanel />
+    </Drawer>
   )
 }

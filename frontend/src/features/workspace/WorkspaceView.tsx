@@ -294,7 +294,7 @@ export function WorkspaceView({
           <div
             className="panel-resizer ws-view__resizer"
             style={{ right: previewWidth - 5 }}
-            onMouseDown={onPreviewResizeStart}
+            onPointerDown={onPreviewResizeStart}
             onDoubleClick={resetPreviewWidth}
             title="拖拽调整预览宽度（双击重置）"
           />

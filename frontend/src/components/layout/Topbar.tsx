@@ -1,5 +1,7 @@
 /* 顶栏 —— 页面标题区（由各页面经 pageHeaderStore 上提注册）+ 后端健康指示灯。
-    用户身份在侧边栏底部（见 UserMenu），顶栏不再承载用户区。 */
+    用户身份在侧边栏底部（见 UserMenu），顶栏不再承载用户区。
+    紧凑屏（≤768px）：menuSlot 槽位渲染导航入口（AppShell 注入 CompactNav 的
+    汉堡钮 + 抽屉，自持开合态）；健康文字随断点隐去只留指示灯（index.css）。 */
 import { Tooltip } from 'antd'
 import type { ReactNode } from 'react'
 import { useHealth } from '@/hooks/useHealth'
@@ -14,16 +16,19 @@ function HealthBadge(): ReactNode {
     <Tooltip title={text}>
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
         <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block' }} />
-        <span style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}>{text}</span>
+        <span className="topbar-status__health-text" style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}>
+          {text}
+        </span>
       </span>
     </Tooltip>
   )
 }
 
-export function Topbar(): ReactNode {
+export function Topbar({ menuSlot }: { menuSlot?: ReactNode }): ReactNode {
   const header = usePageHeaderStore((s) => s.header)
   return (
     <span className="topbar">
+      {menuSlot ?? null}
       {header ? (
         <>
           {/* 页面主题：标题 + 副标题（长副标题省略号截断），占据左侧弹性空间 */}

@@ -385,7 +385,7 @@ export function KbDocumentsDrawer({
       {/* 左边缘拖拽调宽手柄：默认隐形，悬停 / 拖拽时浮现 grip；双击重置为默认宽度 */}
       <div
         className="drawer-resizer"
-        onMouseDown={onResizeStart}
+        onPointerDown={onResizeStart}
         onDoubleClick={reset}
         title="拖拽调整宽度（双击重置）"
       >

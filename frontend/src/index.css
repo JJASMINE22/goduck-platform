@@ -15,10 +15,22 @@ body,
   padding: 0;
 }
 
+/* 移动端浏览器工具栏收放时 100%（=vh 快照）会失准：动态视口高 dvh 随之
+   收缩，整条 flex 高度链（.ant-app → AppShell height:100%）才能解析到定高 */
+@supports (height: 100dvh) {
+  html,
+  body,
+  #root {
+    height: 100dvh;
+  }
+}
+
 body {
   font-family: var(--font-sans);
   background-color: var(--color-bg);
   color: var(--color-text);
+  /* 窄触屏上禁用整页过滚动（下拉刷新/回弹）：滚动收敛到各内容容器内 */
+  overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -482,6 +494,10 @@ pre,
 .chat-composer__bar {
   margin-top: auto;
   padding: 4px 10px 8px;
+  /* 允许折行：智能体选择器 + 图标钮 + 发送钮在窄容器放不下时自动两行
+     （宽屏永不触发，无副作用），行距收 4px 保持紧凑 */
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 /* 智能体选择器（会话-智能体解耦）：融入玻璃 composer 的无边框小号下拉 */
 .chat-composer__agent-select {
@@ -2319,6 +2335,8 @@ body .topo-popover-root .ant-popover-arrow::before {
   position: relative;
   align-self: stretch;
   z-index: 1;
+  /* 触屏拖拽（pointer events）需禁用浏览器手势，否则拖动被滚动抢占 */
+  touch-action: none;
 }
 .panel-resizer::before {
   content: '';
@@ -2394,6 +2412,8 @@ body .topo-popover-root .ant-popover-arrow::before {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 触屏拖拽（pointer events）需禁用浏览器手势，否则拖动被滚动抢占 */
+  touch-action: none;
 }
 .drawer-resizer__grip {
   width: 3px;
@@ -4977,3 +4997,137 @@ body .ant-select-dropdown .ant-select-item-option-active:not(.ant-select-item-op
 .user-menu-row:hover {
   background: var(--color-primary-bg);
 }
+
+/* ===== 窄视口自适应（竖屏 / 窄窗口）=====
+   断点与 hooks/useMediaQuery.ts 的 BREAKPOINTS 同源同步：
+   - ≤1100px（narrow，平板竖屏/窄桌面）：侧栏自动折叠为图标轨（AppShell JS 驱动）、
+     智能体编辑器改「画布 + 模块/详情抽屉」形态（AgentEditorPage JS 驱动）；
+     本节 CSS 只承担纯展示降级。
+   - ≤768px（compact，手机竖屏）：侧栏改抽屉（AppShell）、间距收紧、表格横滚、
+     输入 16px 防 iOS 聚焦缩放。
+   触屏（hover:none）与断点正交：消息回撤、文件树行操作等 hover 显形 affordance
+   在无悬停环境常显，否则触屏用户永远够不到。 */
+
+/* 外壳间距基线：AppShell 的 padding/gap 上提为类规则（内联样式无法被断点
+   覆写），紧凑断点在下方收紧 */
+.app-shell {
+  padding: 10px;
+  gap: 10px;
+}
+.app-main {
+  gap: 10px;
+}
+
+/* 紧凑屏侧栏抽屉：近实底（两主题同源 token，透出被遮内容会干扰菜单阅读），
+   右缘细分隔线延续模块卡边界语言；body 零内边距让 Sidebar 自管排版 */
+.app-drawer-sider .ant-drawer-content {
+  background: var(--glass-solid);
+  border-inline-end: 1px solid var(--color-border-soft);
+}
+.app-drawer-sider .ant-drawer-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 紧凑屏 Topbar 汉堡钮（唤起侧栏抽屉） */
+.topbar-menu {
+  flex-shrink: 0;
+}
+/* 抽屉内的模块面板：宽度跟随抽屉体（200px 为编辑器三栏形态定宽，
+   AgentEditorPage 窄屏把面板收进抽屉时不应保留） */
+.ant-drawer .node-palette {
+  width: auto;
+}
+
+/* —— 紧凑视口（≤768px）—— */
+@media (max-width: 768px) {
+  /* 外壳收紧：画布间隙 10 → 6，让内容区吃满窄视口 */
+  .app-shell {
+    padding: 6px;
+    gap: 6px;
+  }
+  .app-main {
+    gap: 6px;
+  }
+  /* 顶栏：紧凑间距 + 标题可截断（标题链 min-width:0 已就位，此处放开收缩） */
+  .topbar {
+    padding: 0 10px;
+    gap: 10px;
+  }
+  .topbar-page {
+    gap: 6px;
+  }
+  .topbar-page__title {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .topbar-status__health-text {
+    display: none;
+  }
+  /* 内容卡边距收紧 */
+  .page-body {
+    padding: 12px 12px;
+  }
+  /* 列表表格：列不挤压，整表按内容宽横向滚动（antd 未设 scroll.x 的表格
+     默认 100% 硬挤——改为 max-content + min-width 保底铺满窄屏） */
+  .page-body .ant-table-wrapper .ant-table {
+    overflow-x: auto;
+  }
+  .page-body .ant-table-wrapper table {
+    width: max-content;
+    min-width: 100%;
+  }
+  /* 会话阅读列 / composer：收紧水平留白（720 居中窄列在窄容器自动铺满） */
+  .chat-panel__column {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .chat-panel__composer {
+    padding: 8px 10px 12px;
+  }
+  /* 跳底钮地板 58px 会让出已隐藏的导航轨空间；窄容器轨本就 <900 隐藏，
+     收回至 18px 贴右缘 */
+  .jump-bottom-btn {
+    right: 18px;
+  }
+  /* 触屏聚焦缩放规避：iOS Safari 聚焦 <16px 输入框会放大整页 */
+  .chat-composer__input.ant-input,
+  .chat-composer__rubric-input.ant-input {
+    font-size: 16px;
+  }
+  /* 工作区预览浮层：窄屏改近全幅遮挡（拖拽手柄隐藏，宽度不再内联联动的
+     桌面值——CSS 覆盖为 auto，左右各留 8px 呼吸） */
+  .ws-view__resizer {
+    display: none;
+  }
+  .ws-view__preview--float {
+    width: auto !important;
+    left: 8px;
+    top: 8px;
+    bottom: 8px;
+    right: 8px;
+  }
+}
+
+/* —— 窄视口（≤1100px，含上述 compact）：仅收紧编辑器字段条留白 —— */
+@media (max-width: 1100px) {
+  .editor-workspace__fields {
+    padding: 8px 10px;
+  }
+}
+
+/* —— 触屏（与断点正交）：hover 显形 affordance 常显 —— */
+@media (hover: none) {
+  /* 消息回合操作条（回撤/停止并回撤）：无悬停环境常显，否则触屏够不到 */
+  .msg-turn__action {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  /* 工作区文件树行操作（下载/删除）同因 */
+  .ws-node__actions {
+    opacity: 1;
+  }
+}
+

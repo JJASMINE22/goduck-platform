@@ -64,7 +64,16 @@ function selectedKey(pathname: string): string[] {
   return [top]
 }
 
-export function Sidebar({ collapsed = false, onToggle }: { collapsed?: boolean; onToggle?: () => void }): ReactNode {
+export function Sidebar({
+  collapsed = false,
+  onToggle,
+  onNavigate,
+}: {
+  collapsed?: boolean
+  onToggle?: () => void
+  /** 导航后回调：紧凑屏抽屉形态下点击菜单项即关抽屉 */
+  onNavigate?: () => void
+}): ReactNode {
   const navigate = useNavigate()
   const location = useLocation()
   const { kb_enabled } = useCapabilities()
@@ -73,7 +82,10 @@ export function Sidebar({ collapsed = false, onToggle }: { collapsed?: boolean; 
   // 知识库菜单项随能力增减；未就绪时 kb_enabled=false → 不渲染（避免点到 404）
   const items = useMemo(() => buildItems(kb_enabled, isManager), [kb_enabled, isManager])
 
-  const onClick: MenuProps['onClick'] = ({ key }) => navigate(key)
+  const onClick: MenuProps['onClick'] = ({ key }) => {
+    navigate(key)
+    onNavigate?.()
+  }
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -105,17 +117,21 @@ export function Sidebar({ collapsed = false, onToggle }: { collapsed?: boolean; 
             transition: 'max-height .2s ease',
           }}
         />
-        <button
-          type="button"
-          className="sider-toggle"
-          onClick={onToggle}
-          title={collapsed ? '展开侧边栏' : '收起侧边栏'}
-          aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
-          aria-expanded={!collapsed}
-          style={collapsed ? undefined : { position: 'absolute', right: 12, bottom: 11 }}
-        >
-          {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={16} />}
-        </button>
+        {/* 折叠钮仅常驻侧栏形态渲染（onToggle 由 AppShell 传入）；抽屉形态
+            （onToggle 缺省）不渲染——抽屉有自身的关闭路径（遮罩/导航即关） */}
+        {onToggle ? (
+          <button
+            type="button"
+            className="sider-toggle"
+            onClick={onToggle}
+            title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+            aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+            aria-expanded={!collapsed}
+            style={collapsed ? undefined : { position: 'absolute', right: 12, bottom: 11 }}
+          >
+            {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={16} />}
+          </button>
+        ) : null}
       </div>
       {/* 菜单区自身滚动：菜单项再多也不撑出卡片级滚动条（卡片整体不滚动）。
           inlineCollapsed 随折叠钮联动：折叠后图标化 + Tooltip，分组标签隐去 */}

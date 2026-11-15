@@ -4,7 +4,7 @@
    滚动位置不丢；离开页面时回合由服务端续跑（run 解耦），重进经观察流补帧。
    消息流居中阅读列 + 输入框可拖拽改高。 */
 import { Alert, App as AntApp, Button, Flex, Segmented, Space, Tag, Typography } from 'antd'
-import { type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ChevronDown, FolderOpen, MessageSquare, Trash2 } from 'lucide-react'
@@ -17,6 +17,7 @@ import { useCapabilities } from '@/hooks/useCapabilities'
 import { useWorkspaceCapability } from '@/hooks/useWorkspace'
 import { queryKeys } from '@/hooks/queryKeys'
 import { useShellCapability } from '@/hooks/useShell'
+import { BREAKPOINTS, useMediaQuery } from '@/hooks/useMediaQuery'
 import { useChatStore } from '@/store/chatStore'
 import { usePageHeaderStore } from '@/store/pageHeaderStore'
 import { MessageList } from '@/features/chat/MessageList'
@@ -161,6 +162,9 @@ export function ChatPage(): ReactNode {
   const allowWorkspace = wsCapQ.data?.allow_workspace === true
   const shellCapQ = useShellCapability(sessionId || null, selectedAgentId)
   const allowShell = shellCapQ.data?.allow_shell === true
+  // 紧凑视口（手机竖屏）：页头瘦身——返回/归档图标化、次要 Tag 收纳
+  //（标题仍由 Topbar 截断兜底）。effect 逐渲染重注册，compact 翻转即时生效
+  const compact = useMediaQuery(BREAKPOINTS.compact)
   const setHeader = usePageHeaderStore((s) => s.setHeader)
   // —— 页内双视图（会话 | 工作区）——
   // display 切换而非卸载：切到工作区时聊天组件保持挂载，流式生成不中断。
@@ -238,14 +242,16 @@ export function ChatPage(): ReactNode {
     applyComposerHRef.current?.()
   }, [dockCollapsed])
 
-  const onInputResizeDown = (e: ReactMouseEvent) => {
+  const onInputResizeDown = (e: ReactPointerEvent) => {
+    // 仅主键/触点起拽（pointer events：鼠标/触屏统一）
+    if (e.button !== 0) return
     e.preventDefault()
     const el = e.currentTarget as HTMLElement
     const startY = e.clientY
     // 基线对齐加高后的 composer 默认高度（minRows 3 ≈ 140px），首次拖拽不起跳
     const startH = inputHeight ?? 140
     let moved = false
-    const onMove = (ev: MouseEvent) => {
+    const onMove = (ev: PointerEvent) => {
       moved = true
       setInputHeight(clamp(88, 380, startH + (startY - ev.clientY)))
     }
@@ -253,8 +259,9 @@ export function ChatPage(): ReactNode {
       el.removeAttribute('data-resizing')
       document.body.style.userSelect = ''
       document.body.style.cursor = ''
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+      document.removeEventListener('pointercancel', onUp)
       // 收起态下"无位移单击拖拽条" = 展开发送框（sliver 的显式唤起手势）
       if (!moved && dockCollapsedRef.current) {
         setDockState((cur) => (cur.sessionId === sessionId ? { ...cur, collapsed: false } : cur))
@@ -263,8 +270,9 @@ export function ChatPage(): ReactNode {
     el.setAttribute('data-resizing', '')
     document.body.style.userSelect = 'none'
     document.body.style.cursor = 'row-resize'
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
+    document.addEventListener('pointercancel', onUp)
   }
 
   // —— 玻璃 dock 高度 → --composer-h ——
@@ -704,14 +712,19 @@ export function ChatPage(): ReactNode {
     setHeader({
       title: (
         <Space>
-          <Button icon={<ArrowLeft size={14} />} onClick={() => navigate(isCron ? '/cron' : '/sessions')}>
-            返回
+          <Button
+            icon={<ArrowLeft size={14} />}
+            onClick={() => navigate(isCron ? '/cron' : '/sessions')}
+            aria-label="返回"
+          >
+            {compact ? null : '返回'}
           </Button>
           <Typography.Text strong>{session?.title || `会话 ${sessionId.slice(0, 8)}`}</Typography.Text>
-          {session?.agent_name ? <Tag color="purple">{session.agent_name}</Tag> : null}
+          {/* 次要身份 Tag（智能体名/Shell）在紧凑屏让位给状态信息 */}
+          {!compact && session?.agent_name ? <Tag color="purple">{session.agent_name}</Tag> : null}
           {isCron ? <Tag color="geekblue">定时任务·只读</Tag> : null}
           {isCron && cronRunning ? <Tag color="processing">任务运行中</Tag> : null}
-          {allowShell ? <Tag color="magenta">Shell</Tag> : null}
+          {!compact && allowShell ? <Tag color="magenta">Shell</Tag> : null}
           {stream.status === 'streaming' ? <Tag color="processing">生成中</Tag> : null}
           {stream.status === 'interrupted' ? <Tag color="orange">待审批</Tag> : null}
           {/* 会话级 token 用量（含缓存命中）：元信息层，流中实时跳动，Tooltip 见明细。
@@ -745,6 +758,7 @@ export function ChatPage(): ReactNode {
             <Button
               danger
               icon={<Trash2 size={14} />}
+              aria-label="归档会话"
               onClick={() => {
                 if (!session) return
                 modal.confirm({
@@ -757,7 +771,7 @@ export function ChatPage(): ReactNode {
                 })
               }}
             >
-              归档
+              {compact ? null : '归档'}
             </Button>
           ) : null}
         </Space>
@@ -884,7 +898,7 @@ export function ChatPage(): ReactNode {
                       （与 DragTextarea 抓手同语言）；单击收起态=展开，双击=高度复位 */}
                   <div
                     className="composer-resize"
-                    onMouseDown={onInputResizeDown}
+                    onPointerDown={onInputResizeDown}
                     onDoubleClick={() => setInputHeight(null)}
                     title="拖拽调整输入区高度（双击复位）"
                   >

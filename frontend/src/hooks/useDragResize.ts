@@ -1,15 +1,17 @@
 /* 面板拖拽调宽/调高 —— 无第三方依赖，四方向语义统一（替代各页面内联拖拽逻辑）。
-   edge 指拖拽手柄所在的边（即面板被拖动的那条边），决定方向与光标：
-   - 'left'  ：右侧面板的左缘手柄，向左拖变宽（delta = startX - clientX）
-   - 'right' ：左侧面板的右缘手柄，向右拖变宽（delta = clientX - startX）
-   - 'top'   ：底部面板的上缘手柄，向上拖变高（delta = startY - clientY）
-   - 'bottom'：顶部面板的下缘手柄，向下拖变高（delta = clientY - startY）
-   拖拽期间禁用文本选中、设全局 resize 光标，并在手柄上标记 data-resizing
-   （CSS 据此在拖拽全程高亮，不依赖鼠标仍悬停在手柄上）。
-   尺寸 clamp 到 [min, max]，避免拖出可视区；可选 storageKey 持久化到
-   localStorage，跨刷新保留用户偏好。 */
+    edge 指拖拽手柄所在的边（即面板被拖动的那条边），决定方向与光标：
+    - 'left'  ：右侧面板的左缘手柄，向左拖变宽（delta = startX - clientX）
+    - 'right' ：左侧面板的右缘手柄，向右拖变宽（delta = clientX - startX）
+    - 'top'   ：底部面板的上缘手柄，向上拖变高（delta = startY - clientY）
+    - 'bottom'：顶部面板的下缘手柄，向下拖变高（delta = clientY - startY）
+    统一走 Pointer Events（鼠标/触屏/笔一把梭）：触屏可用需手柄元素 CSS 配
+    touch-action:none（.panel-resizer 等已配）。
+    拖拽期间禁用文本选中、设全局 resize 光标，并在手柄上标记 data-resizing
+    （CSS 据此在拖拽全程高亮，不依赖指针仍悬停在手柄上）。
+    尺寸 clamp 到 [min, max]，避免拖出可视区；可选 storageKey 持久化到
+    localStorage，跨刷新保留用户偏好。 */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MouseEvent as ReactMouseEvent } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 
 export type ResizeEdge = 'left' | 'right' | 'top' | 'bottom'
 
@@ -30,7 +32,7 @@ function clamp(v: number, min: number, max: number): number {
 }
 
 /** 手柄方向语义：向"远离面板锚定边"的方向拖动 → 尺寸增大 */
-function edgeDelta(edge: ResizeEdge, startX: number, startY: number, ev: MouseEvent): number {
+function edgeDelta(edge: ResizeEdge, startX: number, startY: number, ev: PointerEvent): number {
   const dx = ev.clientX - startX
   const dy = ev.clientY - startY
   switch (edge) {
@@ -74,7 +76,7 @@ export function useDragResize(opts: UseDragResizeOptions = {}) {
   )
 
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       if (!drag.current) return
       apply(drag.current.startSize + edgeDelta(edge, drag.current.startX, drag.current.startY, e))
     }
@@ -86,17 +88,21 @@ export function useDragResize(opts: UseDragResizeOptions = {}) {
       document.body.style.userSelect = ''
       document.body.style.cursor = ''
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
     return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
     }
   }, [edge, apply])
 
-  /** 绑定到拖拽手柄的 onMouseDown。捕获起始坐标、当前尺寸与手柄元素。 */
+  /** 绑定到拖拽手柄的 onPointerDown。捕获起始坐标、当前尺寸与手柄元素；
+      仅响应主键/触点（button 0），忽略右键等辅助输入。 */
   const onResizeStart = useCallback(
-    (e: ReactMouseEvent) => {
+    (e: ReactPointerEvent) => {
+      if (e.button !== 0) return
       e.preventDefault()
       const el = e.currentTarget as HTMLElement
       drag.current = { startX: e.clientX, startY: e.clientY, startSize: size, el }
@@ -113,3 +119,4 @@ export function useDragResize(opts: UseDragResizeOptions = {}) {
   /** 暴露钳制写入：供外部在上限变化（如容器变窄）时同步收敛已存尺寸。 */
   return { size, onResizeStart, reset, apply }
 }
+

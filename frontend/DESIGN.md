@@ -443,7 +443,16 @@ async function streamMessage(sessionId, body, handlers) {
     中止按钮实心停止符（`Square fill`）统一同源成像配方。
 - **间距/圆角**：统一 token，禁止散落魔法数字。
 - **字体**：系统字体栈 + 等宽字体（代码/工具参数）。
-- **响应式**：一期以桌面端为主（个人工作台），但布局用 flex/grid，避免固定像素断点。
+- **响应式（自适应，无模式开关）**：桌面为主的工作台 + 竖屏/窄窗口自适应并存。断点
+  （与 `hooks/useMediaQuery.ts` 的 `BREAKPOINTS` 同源）：**≤1100px（narrow）** 侧栏自动折叠
+  为图标轨（回到宽屏恢复展开）、智能体编辑器三栏改「画布独占 + 模块/详情抽屉」；
+  **≤768px（compact）** 侧栏整体改左缘抽屉（Topbar 汉堡钮唤起）、间距收紧、列表表格
+  横向滚动、输入 16px 防 iOS 聚焦缩放。分工：**内容区分级优先容器查询**（如 TurnRail，
+  免疫侧栏开合），仅组件树必须切换处（侧栏/编辑器抽屉化）经 `useMediaQuery` 换树，
+  纯展示降级一律走 CSS（`index.css`「窄视口自适应」段）。触屏适配与断点正交
+  （`@media (hover: none)`：hover 显形 affordance 常显；拖拽手柄统一 Pointer Events
+  + `touch-action: none`）。竖屏布局是正确性问题（横版布局在窄视口即错），交给断点
+  自动触发，不做用户开关——手动控件仅保留既有的侧栏折叠与主题切换。
 
 ---
 
