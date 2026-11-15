@@ -714,8 +714,9 @@ export function ChatPage(): ReactNode {
           {allowShell ? <Tag color="magenta">Shell</Tag> : null}
           {stream.status === 'streaming' ? <Tag color="processing">生成中</Tag> : null}
           {stream.status === 'interrupted' ? <Tag color="orange">待审批</Tag> : null}
-          {/* 会话级 token 用量（含缓存命中）：元信息层，流中实时跳动，Tooltip 见明细 */}
-          <UsageBadge />
+          {/* 会话级 token 用量（含缓存命中）：元信息层，流中实时跳动，Tooltip 见明细。
+              定时任务会话不展示：每轮线程重置（无历史上下文），跨轮累计值无参考意义 */}
+          {isCron ? null : <UsageBadge />}
           {archived ? <Tag color="default">已归档（只读）</Tag> : null}
         </Space>
       ),
