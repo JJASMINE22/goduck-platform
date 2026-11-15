@@ -1,7 +1,7 @@
 # goduck-platform 一体化部署（单文件，直观易改）。
 #
-# 目标主机：Linux + 32G 内存 + RTX 3080 10G。GPU 已内置声明（backend 的
-# docling/torch 峰值 ~3-4G 显存 + tei ~1.5-2G，共占单卡），一条命令拉起全部：
+# GPU 支持已内置声明（backend 的 docling/torch 峰值 ~3-4G 显存 + tei ~1.5-2G，
+# 共占单卡；参考配置 Linux + 32G 内存 + RTX 3080 10G 实测），一条命令拉起全部：
 #   docker compose up -d --build
 # 浏览器访问：      http://<服务器IP>   （nginx 唯一对外入口 :80）
 # 凭据自定义：      同目录建 .env 覆盖 ${VAR:-默认值}
@@ -13,7 +13,7 @@
 #   段 + .env 置 KB_DOCLING_DEVICE=auto、TEI_IMAGE=cpu-1.9。
 #
 # 架构：所有服务共享 compose 默认网络，按"服务名"互访（无需显式 networks）。
-#       仅 nginx 发布 :80（唯一入口，内网穿透也只转发它）；backend/frontend 不对
+#       仅 nginx 发布 :80（唯一入口）；backend/frontend 不对
 #       宿主发布，经 nginx 转发；postgres/minio/es/tei 的 ports 均绑定 127.0.0.1
 #       （仅本机调试，LAN 不可见）——缺省即生产安全，无需删改。
 
@@ -59,7 +59,7 @@ services:
     environment:
       discovery.type: single-node
       xpack.security.enabled: "false"          # dev：关闭安全
-      ES_JAVA_OPTS: "-Xms2g -Xmx2g"            # 32G 主机：堆 2g（KB 检索/入库宽裕）；按机器调整
+      ES_JAVA_OPTS: "-Xms2g -Xmx2g"            # 堆 2g（KB 检索/入库宽裕）；按机器调整
     ports:
       - "127.0.0.1:${ES_PORT:-9200}:9200"            # 仅本机调试（127.0.0.1 绑定，LAN 不可见）
     volumes:
@@ -159,7 +159,7 @@ services:
       MAX_INVOKE_RETRIES: ${MAX_INVOKE_RETRIES:-2}
       # ---- 知识库（RAG）----
       # 向量模型注册化：本组 EMBEDDING_* = 启动 seed 默认行取值源 + 未绑定库回落
-      # （主路径 /settings/embeddings 注册，建库绑定；见 .kilo/plans/kb-embedding-model-registry）。
+      # （主路径 /settings/embeddings 注册，建库绑定）。
       # TEI 已内置 compose（上方 tei 服务）：默认服务名直连；改用外部嵌入端点时
       # .env 覆盖本值（backend 懒连接嵌入端点，故不设 tei 的 depends_on）。
       ES_URL: http://elasticsearch:9200
@@ -213,7 +213,7 @@ services:
       JEV_KB_RERANK_ENABLED: ${JEV_KB_RERANK_ENABLED:-false}
       # Jev 专用 HTTP 代理（如 http://proxy:7890；空=直连）。仅注入 Jev 调用的
       # httpx client，不影响 LLM/ES/MinIO 等其余出网流量。供应商按出口 IP 地域
-      # 封锁（451），国内部署经 mihomo 等海外代理出口可达；经代理时建议同步
+      # 封锁（451），国内部署经海外代理出口可达；经代理时建议同步
       # 调大 JEV_TIMEOUT_SECONDS / JEV_KB_TIMEOUT_SECONDS（代理 RTT 约为直连 2~3 倍）。
       JEV_PROXY_URL: ${JEV_PROXY_URL:-}
       # 超时预算：经 JEV_PROXY_URL 代理时建议调大（代理 RTT 约为直连 2~3 倍）。
@@ -302,7 +302,7 @@ services:
       # 已 gitignore）；文件缺失时 nginx 起不来——预期防呆，防裸奔上线。
       - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
     ports:
-      - "${EDGE_PORT:-80}:80"              # 唯一对外端口（内网穿透只转发它）
+      - "${EDGE_PORT:-80}:80"              # 唯一对外端口
     depends_on:
       - backend
       - frontend

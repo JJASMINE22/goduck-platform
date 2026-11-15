@@ -79,8 +79,8 @@ class MinioStorage:
           localhost:9000），无代理依赖；
         - true（生产 compose）：同源相对路径 /minio/<bucket>/<key>?sig——浏览器
           经 nginx /minio/ 代理回源（代理保持签名时的 Host 头，SigV4 校验不受
-          影响）。相对化三得：内网地址不外泄、LAN/ddnsto 域名通吃、天然过
-          basic auth 门禁。"""
+          影响）。相对化三得：内网地址不外泄、任意访问域名（LAN / 反代域名）下
+          均同源可用、天然过边缘 basic auth 门禁。"""
         from datetime import timedelta
         from urllib.parse import urlsplit
 

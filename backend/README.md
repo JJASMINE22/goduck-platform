@@ -2,7 +2,7 @@
   <img src="../logo.png" alt="goduck-platform" width="260">
 </p>
 
-<p align="center">backend —— 个人智能体搭建 / 迭代 / 会话工具的后端服务，基于 <b>FastAPI + deepagents + LangGraph + MCP</b></p>
+<p align="center">backend —— Personal Agent 平台的后端服务，基于 <b>FastAPI + deepagents + LangGraph + MCP</b></p>
 
 > 完整本地 / 容器启动指引见[根 README](../README.md#quickstart)，本文聚焦后端内部设计与 API。
 
@@ -28,6 +28,7 @@ backend/
 │   ├── seed.py              # CLI：YAML 模板 → 灌入智能体
 │   │
 │   ├── api/                 # 【API 层】FastAPI 路由 + 边界校验
+│   │   ├── auth.py          #   /auth             登录认证：登录/登出/注册审批/资料自助 + 管理端
 │   │   ├── agents.py        #   /agents           智能体 CRUD + 校验 + 拓扑预览 + 历史还原 + 导出
 │   │   ├── sessions.py      #   /sessions         会话 CRUD + 历史
 │   │   ├── stream.py        #   /sessions/*       SSE 流式对话 + HITL resume + 附件/KB/shell 能力查询
@@ -38,12 +39,14 @@ backend/
 │   │   ├── mcp.py           #   /mcp              MCP server 注册 + 工具列表 + 健康检查
 │   │   ├── skills.py        #   /skills           技能上传/列/删
 │   │   ├── knowledge.py     #   /knowledge-bases  知识库 CRUD + 文档入库 + 检索（kb_enabled 时挂载）
+│   │   ├── embeddings.py    #   /embeddings       向量模型注册 CRUD（kb_enabled 时挂载）
 │   │   └── cron.py          #   /cron             定时任务 CRUD + 立即触发 + 运行历史
 │   │
 │   ├── services/            # 【Service 层】业务逻辑（不做边界类型重复校验）
 │   │   ├── agent_service.py #   校验/CRUD/mermaid 渲染
 │   │   ├── agent_registry.py#   按 agent_id 缓存编译图（LRU+TTL）
 │   │   ├── session_service.py#  会话生命周期 + checkpointer 历史
+│   │   ├── auth_service.py  #   登录认证：会话令牌/注册审批/用户管理
 │   │   ├── model_service.py / model_store.py     # 模型 CRUD + 缓存 chat 客户端（key 轮换即时生效）
 │   │   ├── mcp_lifecycle.py #   数据驱动 MCP 连接池 + 工具名命名空间
 │   │   ├── stream_adapter.py#   astream → SSE 事件
@@ -78,7 +81,7 @@ backend/
 │   │
 │   ├── streaming/events.py  # SSE 事件契约（后端与前端共同的事件模型）
 │   ├── models/              # 【Persistence 层】
-│   │   ├── db.py            #   psycopg3 直连：8 张业务表 DDL + CRUD
+│   │   ├── db.py            #   psycopg3 直连：15 张业务表 DDL + CRUD
 │   │   └── schemas.py       #   pydantic 请求/响应模型（边界校验）
 │   ├── tools/rubric_tools.py#   rubric grader 内部取证工具（仅挂 RubricMiddleware）
 │   └── mcps/                #   内置 UnifiedGateway 网关 + mcp_services/ + stdio_guard 守卫
@@ -99,23 +102,31 @@ backend/
 
 ## 数据模型
 
-业务表（8 张，psycopg3 直连，与 LangGraph 原生表共享同一连接池，启动时幂等建表）：
+业务表（15 张，psycopg3 直连，与 LangGraph 原生表共享同一连接池，启动时幂等建表）：
 
 | 表 | 作用 | 关键约束 |
 |---|---|---|
 | `model` | 注册模型（OpenAI 兼容客户端族 + api_key + base_url + 采样参数）。agent 经 `model_id` 引用。 | `name` 唯一；key 永不回显；被引用时禁止删除 |
+| `embedding` | 向量模型注册行（端点/维度/凭据），知识库建库时绑定。 | `name` 唯一；被引用时语义字段锁定 |
+| `app_user` | 平台用户（用户名/昵称/角色/密码哈希/锁定计数）。 | `username` 唯一（casefold 比较） |
+| `auth_request` | 注册申请（pending → approved/rejected，管理员审批）。 | 被拒记录可删以释放用户名 |
+| `auth_session` | 登录会话令牌（服务端会话行）。 | 登出/改密/停用即删行吊销 |
 | `agent` | 智能体当前 active 配置（单行可变）。`id` 全程稳定不变，更新即 in-place 覆写 `config_json`。 | `name` 唯一；`status` ∈ draft/active/archived |
 | `agent_config_history` | 配置历史快照（append-only 审计 + 手动还原来源）。更新时不删，仅追加。 | `agent_id` 无 FK：agent 删除后快照保留为审计线索 |
 | `session` | 会话。`last_agent_id` 记录最近使用的智能体（send 时写入，非绑定）；`thread_id` 是 LangGraph checkpointer 的键。 | `thread_id` 唯一；`last_agent_id` ON DELETE SET NULL（会话比 agent 长寿）；索引 `user_id` |
 | `mcp_server` | MCP 服务注册（stdio/http）。`name` 作为工具名前缀。 | `name` 唯一；`config_json` 存 `{command,args,env}` 或 `{url,headers}` |
 | `upload` | 附件元数据（字节在 MinIO）。 | 关联 session/user |
+| `cron_job` | 定时任务（绑定智能体 + prompt + 周期，落库即生效）。 | — |
+| `cron_run` | 定时任务运行历史（状态/产出，熔断依据）。 | — |
 | `knowledge_base` | 知识库（ES 索引 `kb_<id>` + 可选 MinIO 原文留底）。 | `name` 唯一 |
 | `kb_document` | 知识库文档（状态机 pending/ingesting/ready/failed + 分块数/页数）。 | 级联随 KB 删除 |
+| `jev_decision` | JEV 判决审计（shadow/enforce 全量落表）。 | 供阈值标定与后验分析 |
 
 两类"历史"区分（会话-智能体解耦后）：**会话历史（session + LangGraph checkpoints）
 = 与智能体更新/删除解耦，全程保留**；**配置历史（agent_config_history）= 保留可还原**。
 
-> LangGraph 原生表（`checkpoints` / `checkpoint_writes` / `checkpoint_blobs` / store）
+> LangGraph 原生表（`checkpoints` / `checkpoint_writes` / `checkpoint_blobs` / `store`，
+> 另有 `checkpoint_migrations` / `store_migrations` 迁移记录表）
 > 由 `AsyncPostgresSaver.setup()` / `AsyncPostgresStore.setup()` 创建，仅随 session
 > purge 清理（不再随智能体更新/删除清理）。
 
@@ -132,6 +143,8 @@ backend/
   保证续跑在中断的那张图上）。删除 agent：chat 会话存活（last SET NULL，
   进入后选择新智能体即可继续/回撤），cron 专用会话归档保留产出。
   重启加载所有 `active` 智能体重建 registry。
+- **登录体系**：业务端点身份一律由 cookie 会话令牌推导（客户端不再传 user_id）；
+  `BOOTSTRAP_USERS` 引导首个 manager，注册经审批；登出/改密/停用即时吊销会话。
 - **数据驱动运行时**：模型（`model` 表）与 MCP server（`mcp_server` 表）全部经 API 注册、
   存 DB、重启自动加载；模型变更即时刷新 ModelStore 并使 agent 缓存失效（无需重启）。
 - **能力开关**：`kb_enabled=false` 时不 import RAG 重依赖、不挂 knowledge 路由；
@@ -174,6 +187,22 @@ python -m app.main          # 或 uvicorn app.main:app --reload
 接口按模块分组。SSE 流终止事件固定为 `done` / `interrupt` / `error`，前端可据此判定最终状态。
 容器部署时经 nginx 剥 `/api` 前缀（即 `/api/agents` → `/agents`）。
 
+### 登录认证 `/auth`
+
+| Method | Path | 说明 |
+|--------|------|------|
+| POST | `/auth/login` | 登录（httpOnly cookie 会话令牌；失败锁定与防枚举文案） |
+| POST | `/auth/logout` | 登出（删会话行即时吊销） |
+| GET | `/auth/me` | 当前用户信息 |
+| POST | `/auth/register` | 注册申请（pending，管理员审批后可登录） |
+| PUT | `/auth/profile` | 改昵称（用户名不可改） |
+| POST | `/auth/password` | 自助改密（成功吊销全部会话） |
+| GET | `/auth/requests` | [管理] 注册申请列表（`?status=pending/approved/rejected`） |
+| POST | `/auth/requests/{id}/approve` / `.../reject` | [管理] 审批 / 拒绝申请 |
+| DELETE | `/auth/requests/{id}` | [管理] 删除被拒申请（释放用户名占位） |
+| GET | `/auth/users` | [管理] 用户列表 |
+| POST | `/auth/users/{id}/state` / `.../unlock` / `.../password` | [管理] 停启用 / 解锁 / 重置密码 |
+
 ### 智能体管理 `/agents`
 
 | Method | Path | 说明 |
@@ -194,7 +223,7 @@ python -m app.main          # 或 uvicorn app.main:app --reload
 | Method | Path | 说明 |
 |--------|------|------|
 | POST | `/sessions` | 创建会话（agent_id 可选：缺省 = 空会话，进入后选择） |
-| GET | `/sessions?user_id=` | 列出用户会话（含最近使用 agent_name） |
+| GET | `/sessions` | 列出当前用户会话（身份由登录态推导；含最近使用 agent_name） |
 | GET | `/sessions/{id}` | 会话详情 |
 | DELETE | `/sessions/{id}` | 归档会话 |
 | GET | `/sessions/{id}/history` | checkpointer 历史消息 |

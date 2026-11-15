@@ -13,13 +13,15 @@
 
 | 模块 | 路由 | 说明 |
 |---|---|---|
-| 智能体列表 / 编辑器 | `/agents`、`/agents/:id` | AgentConfig 树形编辑、实时校验、Mermaid 委派拓扑预览、配置历史与一键还原 |
+| 登录与用户管理 | `/login`、`/profile`、`/admin` | 登录 / 注册申请（待审批）、个人中心（改昵称 / 改密）；manager 侧注册审批与用户管理 |
+| 智能体列表 / 编辑器 | `/agents`、`/agents/:id` | AgentConfig 树形编辑、实时校验、Mermaid 委派拓扑预览、配置历史与一键还原（编辑限 manager） |
 | 会话列表 / 聊天 | `/sessions`、`/sessions/:id` | SSE 流式聊天 + HITL（审批 / 编辑 / 拒绝 / 追加回复）+ TODO 计划面板 + 回合时间线（TurnRail）+ 文件变更徽标 |
 | 附件 | 会话输入框 | 图片 / 文档上传 chip，能力驱动（`attachment-capability` 决定可见性与接受类型） |
 | 知识库锚定 | 会话输入框 | 输入框左侧选择知识库，agent 先检索后作答 |
 | 语音输入 | 会话输入框 | 长按麦克风说话，实时转写回填输入框，松开自动发送（`voice_enabled` 时显示） |
 | 工作区面板 | 会话页右侧 | 用户隔离文件树、文本 / office Markdown 预览、下载、删除 |
 | 模型管理 | `/settings/models` | 注册 / 编辑 / 删除 OpenAI 兼容模型，保存前测试连通性（`api_key` 永不回显） |
+| 定时任务 | `/cron` | 绑定智能体的周期任务：运行历史、立即触发、失败熔断 |
 | MCP 管理 | `/settings/mcp` | MCP server 注册 / 启停、工具列表与健康检查 |
 | 技能管理 | `/settings/skills` | multipart 上传 / 删除技能 |
 | 知识库管理 | `/settings/knowledge` | 建库、pdf/docx 上传入库（状态机跟踪）、删除、重建索引、调试检索 |
@@ -59,7 +61,8 @@ npm run preview     # 预览生产构建
 src/
 ├── api/            # API 客户端封装（client.ts 统一请求 + 各域接口：
 │                   #   agents / sessions / stream / models / mcp / skills /
-│                   #   uploads / knowledge / workspace / voice / health / shell）
+│                   #   uploads / knowledge / embeddings / workspace / voice /
+│                   #   cron / auth / health / shell）
 ├── components/     # 通用组件（layout / feedback）
 ├── features/       # 功能模块
 │   ├── agent-editor/   # AgentConfig 树形编辑器
@@ -68,7 +71,8 @@ src/
 │   ├── knowledge/      # 知识库管理（建库 / 文档入库状态 / 检索调试）
 │   ├── topology/       # Mermaid / dagre-react 拓扑渲染
 │   └── workspace/      # 工作区文件树 + 预览（WorkspaceView / WorkspaceFilePreview）
-├── pages/          # 页面（agents / sessions / settings{models·mcp·skills·knowledge}）
+├── pages/          # 页面（auth{login} / agents / sessions / cron /
+│                   #   settings{models·embeddings·mcp·skills·knowledge} / profile / admin）
 ├── store/          # zustand 状态（agentEditor 草稿 / chatStore 会话态）
 ├── hooks/          # TanStack Query hooks（useModels / useAgents / useStreamChat /
 │                   #   useVoiceInput / useCapabilities ...）

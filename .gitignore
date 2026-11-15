@@ -9,6 +9,12 @@
 nginx/.htpasswd
 # 个人远程部署方案笔记（内网穿透等，不随仓库分发）
 /REMOTE_ACCESS.md
+# 个人 AI 编码助手工作说明与本地工作文件（含私有部署信息，不入库）
+AGENTS.md
+/backend/build_patent_agent_config.py
+/backend/new_patent_agent.json
+/deepagents-context-compression-mechanism.svg
+/mcp-servers/tmp/
 
 # ===================== 容器 bind mount 数据根（docker-compose VOLUMES_ROOT）=====================
 # 运行时数据 + 模型权重（backend 数据 / docling 模型 / TEI 模型），体积大且含用户内容

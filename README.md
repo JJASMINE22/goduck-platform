@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>个人智能体搭建 / 编排 / 会话平台</b> —— 基于 deepagents + LangGraph + MCP 的全栈开源项目
+  <b>搭建属于你 / 团队的 Personal Agent</b> —— 基于 deepagents + LangGraph + MCP 的全栈开源平台
 </p>
 
 <p align="center">
@@ -38,6 +38,7 @@
   - [JEV 智能审批](#cap-jev)
 - [目录结构](#structure)
 - [代码质量](#quality)
+- [Roadmap](#roadmap)
 - [常见问题 FAQ](#faq)
 - [详细文档](#docs)
 - [许可](#license) / [鸣谢](#ack)
@@ -68,6 +69,7 @@
 
 | 能力 | 说明 | 入口 |
 |---|---|---|
+| 用户体系 | 平台自带登录：注册审批、角色（manager / user）、会话令牌即时吊销、多用户工作区隔离 | 登录页 · 个人中心 · 管理页 |
 | 模型管理 | OpenAI 兼容多供应商注册（OpenAI / DeepSeek / Qwen / 本地），连通性测试、密钥轮换 | `/settings/models` |
 | MCP 工具 | stdio / http MCP server 运行时注册，工具按 `{server}__{tool}` 命名空间化，健康检查 | `/settings/mcp` |
 | 技能池 | 跨智能体共享的 `/skills/` 目录，multipart 上传，即传即用 | `/settings/skills` |
@@ -87,7 +89,7 @@
 Nginx 边缘网关（容器部署唯一对外入口 :80；本地开发由 Vite proxy 承担）
   ├── /          → Frontend（React 19 SPA，nginx 静态服务）
   └── /api/*     → Backend（FastAPI + LangGraph + deepagents）
-                    ├── PostgreSQL 16     业务表(8张) + LangGraph checkpoints / store
+                    ├── PostgreSQL 16     业务表(15张) + LangGraph checkpoints / store
                     ├── MinIO             附件与知识库原文字节持久层
                     ├── Elasticsearch     知识库向量 / 全文检索
                     ├── TEI（compose 内置） 向量化（OpenAI 兼容 /v1/embeddings）
@@ -99,7 +101,7 @@ Nginx 边缘网关（容器部署唯一对外入口 :80；本地开发由 Vite p
 
 - **数据驱动**：模型（LLM + API Key）与 MCP server 均存于 DB 表，经 API 运行时注册，**不在环境变量里**；重启自动加载。
 - **能力开关**：`/health` 下发 `capabilities`，前端据此驱动菜单与入口可见性——未启用的能力整个 UI 无痕隐藏。
-- **智能体无版本化**：`id` 全程稳定；更新 = 原地覆写配置 + 追加历史快照 + 级联删旧会话。
+- **智能体无版本化**：`id` 全程稳定；更新 = 原地覆写配置 + 追加历史快照；删除智能体不会连带会话（见核心亮点）。
 
 <a id="tech-stack"></a>
 
@@ -123,9 +125,11 @@ Nginx 边缘网关（容器部署唯一对外入口 :80；本地开发由 Vite p
 适用于服务器 / NAS / 内网环境长期运行。前置要求：**Docker + Docker Compose v2**。
 
 ```bash
-# 1) 生成边缘网关登录凭据（nginx basic auth，必做一次；平台自身无登录体系，
-#    这是唯一门禁。文件已 gitignore，缺失时 nginx 起不来属预期防呆）
+# 1) 凭据与账号（必做一次）
+#    nginx basic auth：边缘门禁（文件已 gitignore，缺失时 nginx 起不来属预期防呆）
 printf 'admin:$(openssl passwd -apr1 "你的强密码")\n' > nginx/.htpasswd
+#    平台登录：引导首个管理员（BOOTSTRAP_USERS，create-if-absent，详见 .env.example）
+printf 'BOOTSTRAP_USERS=admin:管理员:manager:你的强密码\n' > .env
 
 # 2) 准备宿主机数据目录 + 预下嵌入模型（TEI 以本地路径加载，运行期零下载）
 mkdir -p volumes/backend volumes/docling volumes/tei
@@ -138,7 +142,7 @@ docker run --rm -e HF_ENDPOINT=https://hf-mirror.com -v "$PWD/volumes/tei:/out" 
 #   或魔搭直下：pip -q install modelscope && modelscope download \
 #     --model Qwen/Qwen3-Embedding-0.6B --local_dir /out/Qwen3-Embedding-0.6B）
 
-# 3)（可选）根目录创建 .env 覆盖默认值（含数据根 VOLUMES_ROOT，默认 ./volumes）
+# 3)（可选）在 .env 追加覆盖项（数据根 VOLUMES_ROOT 等，默认 ./volumes）
 vi .env
 
 # 4) 构建并启动全部 8 个服务（postgres / minio / elasticsearch / tei / backend / mcp-servers / frontend / nginx）
@@ -152,12 +156,12 @@ docker compose logs -f backend
 
 | 访问目标 | 地址 |
 |---|---|
-| **平台入口（唯一对外）** | `http://<服务器IP>/`（端口由 `EDGE_PORT` 控制，默认 80；登录 = nginx/.htpasswd 凭据） |
+| **平台入口（唯一对外）** | `http://<服务器IP>/`（端口由 `EDGE_PORT` 控制，默认 80；双层登录 = nginx basic auth 边缘门禁 → 平台账号，`BOOTSTRAP_USERS` 引导） |
 | 后端 API 文档 | `http://<服务器IP>/api/docs` |
 | MinIO 控制台（调试） | `http://127.0.0.1:9001`（仅本机/SSH 隧道；`minioadmin / minioadmin123`） |
 | Elasticsearch（调试） | `http://127.0.0.1:9200`（仅本机/SSH 隧道） |
 
-> - 仅 nginx 对外发布端口；backend / frontend 走内部网络；postgres / minio / es / tei 的调试端口已全部绑定 `127.0.0.1`（LAN 不可见），缺省即生产安全，无需删改。如需对外/远程暴露，由部署方自行选择网关方案（nginx basic auth 为站点唯一门禁）。
+> - 仅 nginx 对外发布端口；backend / frontend 走内部网络；postgres / minio / es / tei 的调试端口已全部绑定 `127.0.0.1`（LAN 不可见），缺省即生产安全，无需删改。如需对外/远程暴露，由部署方自行选择网关方案（nginx basic auth 为边缘门禁，平台内另有登录体系）。
 > - 数据持久化：pg / minio / es 用命名卷；**backend 数据、docling 模型、TEI 模型用宿主机 bind mount**（默认 `./volumes/`，`.env` 的 `VOLUMES_ROOT` 可整体挪位，已 gitignore），重打镜像 / 重建容器不丢，且模型预下后重启不再联网下载。
 > - 嵌入服务（TEI）已内置 compose：默认模型 `Qwen/Qwen3-Embedding-0.6B`，首次启动联网拉模型入卷（一次性），此后离线可用；改用外部 OpenAI 兼容端点：`.env` 覆盖 `EMBEDDING_BASE_URL` 并 `docker compose stop tei`（详见[能力开关 · 知识库](#cap-kb)）。
 > - 不需要知识库？设 `KB_ENABLED=false`，可不依赖 TEI / ES。
@@ -180,7 +184,7 @@ docker compose down -v                  # 停止并清空命名卷（volumes/ �
 <details>
 <summary><b>GPU 加速 docling 解析 + TEI 嵌入（默认内置；NVIDIA，RTX 3080 实测配套）</b></summary>
 
-目标主机（Linux + 32G 内存 + RTX 3080 10G）的 GPU 能力已内置 docker-compose.yml，
+GPU 支持（NVIDIA；RTX 3080 10G 实测）已内置 docker-compose.yml，
 无需 override 文件。镜像已预装 CUDA 版 torch（`torch 2.6.0+cu124`，见
 `backend/Dockerfile` "0)" 层），docling 的 layout / TableFormer 模型自动走 GPU
 （RapidOCR 仍为 CPU，仅扫描页触发）；TEI 直接以 `cuda-1.9` 镜像运行走 GPU 嵌入
@@ -244,6 +248,7 @@ python -m app.main          # 或 uvicorn app.main:app --reload
 ```
 
 > - 所有业务表 + LangGraph 原生表由后端启动时自动建表，无需手动迁移。
+> - 业务接口均需登录态：本地开发同样经 `BOOTSTRAP_USERS` 引导账号（见 `backend/.env.example`）。
 > - 可选能力（知识库 / 语音 / JEV）的开启条件见[能力开关](#capabilities)。
 
 #### 3. 启动前端
@@ -281,7 +286,7 @@ python -m app.seed agent_confs/default.yaml --name "Default Gateway" --creator a
 
 ## 首次使用向导
 
-界面配置存在依赖顺序，按 ①→④ 操作：
+界面配置存在依赖顺序，登录平台后（管理员由 `BOOTSTRAP_USERS` 引导，新用户注册需管理员审批）按 ①→④ 操作：
 
 ```text
 ① 注册模型 ──▶ ② 创建智能体 ──▶ ③（可选）MCP / 技能 / 知识库 ──▶ ④ 开始会话
@@ -563,10 +568,10 @@ JEV_MODE=shadow                   # 先 shadow 观察审计，标定阈值后再
 goduck-platform/
 ├── backend/                  # FastAPI + LangGraph 后端（详见 backend/README.md）
 │   ├── app/
-│   │   ├── api/              # 路由：agents·sessions·stream·models·mcp·skills·uploads·knowledge·workspace·voice·cron
-│   │   ├── services/         # 业务：模型·会话·MCP·存储·RAG(向量化/向量库/入库池)·STT·JEV 客户端…
+│   │   ├── api/              # 路由：auth·agents·sessions·stream·models·mcp·skills·uploads·knowledge·embeddings·workspace·voice·cron
+│   │   ├── services/         # 业务：认证·模型·会话·MCP·存储·RAG(向量化/向量库/入库池)·STT·JEV 客户端…
 │   │   ├── core/             # deepagents 内核（图构建 / 用户隔离文件·shell 后端 / HITL / JEV 门控 / 变更追踪）
-│   │   ├── models/           # 持久化：8 张业务表 DDL+CRUD + pydantic 边界模型
+│   │   ├── models/           # 持久化：15 张业务表 DDL+CRUD + pydantic 边界模型
 │   │   ├── streaming/        # SSE 事件契约
 │   │   └── mcps/             # 内置 UnifiedGateway MCP 网关
 │   ├── agent_confs/          # 种子智能体 YAML
@@ -578,7 +583,7 @@ goduck-platform/
 │   └── Dockerfile            # 多阶段构建 → nginx 静态服务
 ├── mcp-servers/              # 本地 MCP 网关集群：附件解析(image/docx) + kb_search 检索
 ├── nginx/                    # 边缘反代配置（SSE 关缓冲 + WebSocket 透传）
-├── docker-compose.yml        # 一键全栈编排（6 服务）
+├── docker-compose.yml        # 一键全栈编排（8 服务）
 ├── LICENSE                   # MIT 许可证
 ├── logo.png                  # 项目图标（README 引用）
 └── README.md
@@ -598,6 +603,14 @@ cd frontend
 npm run typecheck             # tsc 类型检查
 npm run lint                  # eslint
 ```
+
+<a id="roadmap"></a>
+
+## Roadmap
+
+- [ ] **知识调用双通道**：构建自定义 Middleware，引入 Jev | Laya 判决，赋予智能体**被动**调用知识的能力与自动化调用门控；与现行**主动**方案（会话锚定 + 提示注入，agent 自主调用 `kb_search`）并存
+- [ ] **智能体级知识范围**：AgentConfig 支持配置智能体可访问的知识库集合（现为会话级锚定）
+- [ ] **模型端点扩展**：兼容更多本地 / 第三方模型商的服务端点（现为 OpenAI 兼容端点注册制）
 
 <a id="faq"></a>
 
