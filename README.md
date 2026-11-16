@@ -7,7 +7,8 @@
 </p>
 
 <p align="center">
-  <b>简体中文</b> | <a href="README.en.md">English</a>
+  <img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-2EA44F?style=for-the-badge" alt="简体中文">
+  <a href="README.en.md"><img src="https://img.shields.io/badge/English-555555?style=for-the-badge" alt="English"></a>
 </p>
 
 <p align="center">
