@@ -1,14 +1,14 @@
+<p align="left">
+  <a href="https://github.com/JJASMINE22/goduck-platform"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-555555?style=for-the-badge" alt="简体中文"></a>
+  <img src="https://img.shields.io/badge/English-2EA44F?style=for-the-badge" alt="English">
+</p>
+
 <p align="center">
   <img src="logo.png" alt="goduck-platform" width="440">
 </p>
 
 <p align="center">
   <b>Build a Personal Agent for you / your team</b> — a full-stack open-source platform based on deepagents + LangGraph + MCP
-</p>
-
-<p align="center">
-  <a href="README.md"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-555555?style=for-the-badge" alt="简体中文"></a>
-  <img src="https://img.shields.io/badge/English-2EA44F?style=for-the-badge" alt="English">
 </p>
 
 <p align="center">
