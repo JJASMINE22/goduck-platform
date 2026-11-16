@@ -4,9 +4,11 @@
       历史灌入与实时流共用同一 store，刷新后自动重建；锚点与 label 同源同快照，不会错位。
    - 点击经 data-turn-anchor 锚点平滑滚动（锚点挂在 MessageList 的用户回合容器上）；
       跳转后 scroll 容器判定离底、自动追底停止——复用 ChatPage 既有 pinnedRef 机制。
-   - 三级形态由容器查询驱动（.chat-panel 为容器，见 index.css）：
-      宽面板 = 完整 label / 中宽 = 仅圆点（悬停仍有预览）/ 窄面板 = 整轨隐藏；
-      阅读列同步在右侧让位，轨道永不与气泡及回撤操作条重叠。
+   - 形态由容器查询驱动（.chat-panel 为容器，见 index.css），显隐单一真相源在 CSS：
+      宽面板 = 完整 label / 中宽 = 仅圆点（悬停仍有预览）/ 窄面板（<900px）=
+      整轨隐藏，导航入口转为右缘浮钮（.turn-rail-dock）+ 回合导航抽屉——
+      完整列表触屏可用，与轨道共用同一 turns 数据，双形态零漂移。
+      宽面板阅读列同步在右侧让位，轨道永不与气泡及回撤操作条重叠。
    - 超长折叠：回合数超过 VISIBLE_LIMIT 时默认只渲染最近一段，更早的折进顶部
       「展开」钮（空心底区分真实锚点；窄轨档 title 提示兜底）——轨道高度有界，
       Popover 触发器不随会话长度无限堆积；展开态下轨道自身可滚（悬停显细
@@ -14,8 +16,9 @@
    - ≥1 落定回合即渲染：末轮进行中（streaming/interrupted）暂不入轨——发送瞬间
       轨道不弹入、逐 token 不触发条目/预览抖动；回合结束（done/error）或历史
       灌入后自然出现（准则 F3：终态事件驱动）。 */
-import { Popover } from 'antd'
+import { Drawer, Popover } from 'antd'
 import { type ReactNode, type RefObject, useMemo, useState } from 'react'
+import { History } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
 import type { ChatMessage } from '@/store/chatStore'
 
@@ -92,6 +95,12 @@ export function TurnRail({ scrollRef }: { scrollRef: RefObject<HTMLDivElement | 
   /** 被折掉的前缀回合数：预览/aria 的「第 N 轮」按全量序数计，折叠不改编号 */
   const hiddenCount = turns.length - visibleTurns.length
 
+  // —— 窄面板档（<900px 容器）：浮钮 + 抽屉形态 ——
+  // 该档轨道由 CSS 隐藏，右缘浮钮（.turn-rail-dock）点开回合导航抽屉。抽屉内
+  // 不做折叠（自身可滚，直接渲染全量 turns）；父组件 key={sessionId} 跨会话
+  // 重挂，开合态随之复位。
+  const [drawerOpen, setDrawerOpen] = useState(false)
+
   if (turns.length < MIN_TURNS) return null
 
   const jump = (anchorId: string) => {
@@ -100,50 +109,92 @@ export function TurnRail({ scrollRef }: { scrollRef: RefObject<HTMLDivElement | 
   }
 
   return (
-    <nav className="turn-rail" aria-label="回合导航">
-      {foldable ? (
-        <button
-          type="button"
-          className="turn-rail__item turn-rail__more"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-          title={expanded ? '收起导航' : `展开更早的 ${hiddenCount} 轮`}
-        >
-          <span className="turn-rail__dot turn-rail__dot--more" />
-          <span className="turn-rail__label">{expanded ? '收起' : `… 更早 ${hiddenCount} 轮`}</span>
-        </button>
-      ) : null}
-      {visibleTurns.map((t, i) => (
-        <Popover
-          key={t.anchorId}
-          trigger="hover"
-          placement="left"
-          arrow={false}
-          mouseEnterDelay={0.2}
-          mouseLeaveDelay={0.1}
-          overlayClassName="turn-rail__popover"
-          overlayStyle={{ maxWidth: 340 }}
-          content={
-            <div className="turn-rail__preview">
-              <div className="turn-rail__preview-seq">第 {hiddenCount + i + 1} 轮</div>
-              <div className="turn-rail__preview-query">{t.queryText}</div>
-              {t.replyPreview ? (
-                <div className="turn-rail__preview-reply">{t.replyPreview}</div>
-              ) : null}
-            </div>
-          }
-        >
+    <>
+      <nav className="turn-rail" aria-label="回合导航">
+        {foldable ? (
           <button
             type="button"
-            className="turn-rail__item"
-            onClick={() => jump(t.anchorId)}
-            aria-label={`跳转到第 ${hiddenCount + i + 1} 轮`}
+            className="turn-rail__item turn-rail__more"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            title={expanded ? '收起导航' : `展开更早的 ${hiddenCount} 轮`}
           >
-            <span className="turn-rail__dot" />
-            <span className="turn-rail__label">{t.label}</span>
+            <span className="turn-rail__dot turn-rail__dot--more" />
+            <span className="turn-rail__label">{expanded ? '收起' : `… 更早 ${hiddenCount} 轮`}</span>
           </button>
-        </Popover>
-      ))}
-    </nav>
+        ) : null}
+        {visibleTurns.map((t, i) => (
+          <Popover
+            key={t.anchorId}
+            trigger="hover"
+            placement="left"
+            arrow={false}
+            mouseEnterDelay={0.2}
+            mouseLeaveDelay={0.1}
+            overlayClassName="turn-rail__popover"
+            overlayStyle={{ maxWidth: 340 }}
+            content={
+              <div className="turn-rail__preview">
+                <div className="turn-rail__preview-seq">第 {hiddenCount + i + 1} 轮</div>
+                <div className="turn-rail__preview-query">{t.queryText}</div>
+                {t.replyPreview ? (
+                  <div className="turn-rail__preview-reply">{t.replyPreview}</div>
+                ) : null}
+              </div>
+            }
+          >
+            <button
+              type="button"
+              className="turn-rail__item"
+              onClick={() => jump(t.anchorId)}
+              aria-label={`跳转到第 ${hiddenCount + i + 1} 轮`}
+            >
+              <span className="turn-rail__dot" />
+              <span className="turn-rail__label">{t.label}</span>
+            </button>
+          </Popover>
+        ))}
+      </nav>
+
+      {/* 窄面板档浮钮：与轨道经容器查询互斥显隐（默认 display:none，<900 容器
+          档显形，见 index.css）；常驻右缘、跳底钮正上方，点击唤起下方抽屉 */}
+      <button
+        type="button"
+        className="turn-rail-dock"
+        onClick={() => setDrawerOpen(true)}
+        aria-label="打开回合导航"
+        title="回合导航"
+      >
+        <History size={17} />
+      </button>
+
+      {/* 回合导航抽屉：窄面板（含触屏）的完整导航形态；无折叠（抽屉自身可滚），
+          点击条目跳转锚点并随手关闭（平滑滚动在抽屉收起动画背后照常进行） */}
+      <Drawer
+        className="turn-drawer"
+        placement="right"
+        width={320}
+        title="回合导航"
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+      >
+        {turns.map((t, i) => (
+          <button
+            key={t.anchorId}
+            type="button"
+            className="turn-drawer__item"
+            onClick={() => {
+              jump(t.anchorId)
+              setDrawerOpen(false)
+            }}
+            aria-label={`跳转到第 ${i + 1} 轮`}
+          >
+            <span className="turn-drawer__seq">第 {i + 1} 轮</span>
+            <span className="turn-drawer__query">{t.queryText}</span>
+            {t.replyPreview ? <span className="turn-drawer__reply">{t.replyPreview}</span> : null}
+          </button>
+        ))}
+      </Drawer>
+    </>
   )
 }

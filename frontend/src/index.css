@@ -2670,6 +2670,72 @@ body .topo-popover-root .ant-popover-arrow::before {
   }
 }
 
+/* ===== 窄面板档导航浮钮（.turn-rail-dock，TurnRail.tsx）=====
+    轨道 <900px 容器档隐藏后的替代入口：常驻右缘玻璃圆钮（有落定回合即随
+    TurnRail 渲染），点击唤起回合导航抽屉。显隐与轨道同源容器查询——默认
+    display:none，仅 <900 档显形（见下方 TurnRail 分级段），双形态互为表里。
+    - 位置：跳底钮正上方竖向堆叠（同 right:18px；bottom = 跳底钮偏移 16 +
+      钮高 34 + 间距 8 = +58px），--composer-h 归零的只读会话自动贴底；
+    - 成像同 .jump-bottom-btn 三要素玻璃（半透薄底 + 取景后景 + inset rim
+      高光 + 顶部镜面亮斑），悬停点亮主色，与轨道/跳底钮同一交互语义。 */
+.turn-rail-dock {
+  position: absolute;
+  right: 18px;
+  bottom: calc(var(--composer-h, 148px) + 58px);
+  z-index: 4;
+  display: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--glass-border);
+  border-radius: 50%;
+  background: var(--glass-bg-faint);
+  backdrop-filter: blur(12px) saturate(1.7);
+  -webkit-backdrop-filter: blur(12px) saturate(1.7);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim),
+    inset 0 -1px 1px var(--glass-rim-soft),
+    0 1px 2px rgba(60, 64, 67, 0.1),
+    0 6px 16px rgba(60, 64, 67, 0.07);
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    bottom 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* 顶部镜面亮斑（与 .jump-bottom-btn::before 同款受光面高光） */
+.turn-rail-dock::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(130% 70% at 28% -25%, var(--glass-specular), transparent 55%);
+  pointer-events: none;
+}
+.turn-rail-dock:hover,
+.turn-rail-dock:focus-visible {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--glass-border));
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim),
+    inset 0 -1px 1px var(--glass-rim-soft),
+    0 2px 6px color-mix(in srgb, var(--color-primary) 18%, transparent),
+    0 8px 20px rgba(60, 64, 67, 0.1);
+  outline: none;
+}
+.turn-rail-dock:active {
+  transform: scale(0.94);
+}
+/* 不支持 backdrop-filter 的环境：实底回退（同 .jump-bottom-btn 策略） */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .turn-rail-dock {
+    background: var(--color-bg-elevated);
+  }
+}
+
 /* ===== 会话时间线非气泡卡：流体玻璃（Liquid Glass）=====
     代理气泡保持白底（长文可读性；用户气泡已在基础区玻璃化），其余卡片统一
     流体玻璃语言（与 .glass-btn / .usage-badge 同源成像三要素）：
@@ -3027,10 +3093,12 @@ body .topo-popover-root .ant-popover-arrow::before {
 /* ===== 回合导航轨（TurnRail）=====
    每轮对话一个 label：悬停 Popover 预览（portal 到 body，不受 panel overflow 裁剪）、
    点击平滑滚动到 data-turn-anchor 锚点。
-   三级形态（容器查询，窄→宽）：
-   - <900px   整轨隐藏（移动/分屏窄面板，气泡优先）
-   - 900–1399 仅圆点（14px 轨，悬停仍有预览）
-   - ≥1400    完整 label（160px 轨）
+    形态分级（容器查询，窄→宽）：
+    - <900px   整轨隐藏（移动/分屏窄面板，气泡优先）——导航入口转为右缘浮钮
+               （.turn-rail-dock）+ 回合导航抽屉（.turn-drawer，TurnRail.tsx）；
+               阅读列同档放宽（气泡 94% 上限 + 留白收紧，见下方 <900 档块）
+    - 900–1399 仅圆点（14px 轨，悬停仍有预览）
+    - ≥1400    完整 label（160px 轨）
    阅读列在各档同步右侧让位，轨道永不与气泡/回撤操作条重叠（显示合理性的硬保证）。
    超长会话两道防线（TurnRail.tsx / 此处滚动条）：
    - 折叠：回合数超过 VISIBLE_LIMIT（24）时默认只渲染最近一段，更早的折进
@@ -3183,10 +3251,30 @@ body .topo-popover-root .ant-popover-arrow::before {
   scroll-margin-top: 12px;
 }
 /* —— 分级（窄 → 宽）—— */
-/* <900px：整轨隐藏，阅读列恢复默认 padding */
+/* <900px：窄面板档（气泡优先）——轨道隐藏，导航转为浮钮 + 抽屉（见上方
+   .turn-rail-dock / 下方 .turn-drawer）；阅读列同档放宽：气泡上限 80%→94%
+   （宽屏的 80% 上限服务于居中阅读列，窄面板下纯让宽给正文）、水平留白
+   16→10、跳底钮贴右缘（58px 地板是为圆点档轨道让位，本档轨道已隐藏）。
+   本块全部规则仅在面板 <900px 时生效，≥900 各档零影响（宽屏显示不变）。 */
 @container (max-width: 899px) {
   .turn-rail {
     display: none;
+  }
+  .turn-rail-dock {
+    display: grid;
+  }
+  .msg-turn {
+    max-width: min(94%, 1080px);
+  }
+  .chat-panel__column {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .chat-panel__composer {
+    padding: 8px 10px 12px;
+  }
+  .jump-bottom-btn {
+    right: 18px;
   }
 }
 /* ≥900px：圆点档 —— 轨道底部抬升到玻璃 dock 上缘之上，末位圆点不被磨砂面板盖住。
@@ -3215,6 +3303,63 @@ body .topo-popover-root .ant-popover-arrow::before {
     padding-right: 178px;
     --rail-w: 162px;
   }
+}
+
+/* —— 回合导航抽屉（.turn-drawer，.turn-rail-dock 唤起；TurnRail.tsx）——
+    窄面板档（<900px，含触屏）的完整导航形态：全量回合列表（不做折叠，
+    抽屉自身可滚），条目 = 序号 + query 主文 + 回复摘要两行截断；原生 button
+    可聚焦，hover/聚焦提亮与轨道条目同一交互语义。宽度 320px（TSX 传入），
+    手机竖屏 86vw 封顶在 CSS。 */
+.turn-drawer .ant-drawer-content-wrapper {
+  max-width: 86vw;
+}
+.turn-drawer .ant-drawer-body {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.turn-drawer__item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.turn-drawer__item:hover,
+.turn-drawer__item:focus-visible {
+  background: var(--color-bg);
+  outline: none;
+}
+.turn-drawer__seq {
+  display: block;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-tertiary);
+}
+.turn-drawer__query {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--color-text);
+  word-break: break-word;
+}
+.turn-drawer__reply {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-text-secondary);
+  word-break: break-word;
 }
 
 /* ===== 顶栏页面标题区（Topbar 内渲染 pageHeaderStore 注册的内容）===== */
@@ -5079,19 +5224,9 @@ body .ant-select-dropdown .ant-select-item-option-active:not(.ant-select-item-op
     width: max-content;
     min-width: 100%;
   }
-  /* 会话阅读列 / composer：收紧水平留白（720 居中窄列在窄容器自动铺满） */
-  .chat-panel__column {
-    padding-left: 10px;
-    padding-right: 10px;
-  }
-  .chat-panel__composer {
-    padding: 8px 10px 12px;
-  }
-  /* 跳底钮地板 58px 会让出已隐藏的导航轨空间；窄容器轨本就 <900 隐藏，
-     收回至 18px 贴右缘 */
-  .jump-bottom-btn {
-    right: 18px;
-  }
+  /* 会话面板窄形态收紧（阅读列/composer 留白、跳底钮贴右缘）已上移至
+      .chat-panel 容器查询 <900 档（TurnRail 分级段）：判定源统一为面板宽度，
+      桌面分屏窄窗口同档受益；compact 视口（面板必 <900）自动覆盖，不再重复 */
   /* 触屏聚焦缩放规避：iOS Safari 聚焦 <16px 输入框会放大整页 */
   .chat-composer__input.ant-input,
   .chat-composer__rubric-input.ant-input {
