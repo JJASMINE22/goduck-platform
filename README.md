@@ -7,6 +7,10 @@
 </p>
 
 <p align="center">
+  <b>简体中文</b> | <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React 19">
