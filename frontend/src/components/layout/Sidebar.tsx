@@ -89,15 +89,17 @@ export function Sidebar({
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* 品牌带 76px：展开态 logo 底对齐居中（原位不动），折叠钮绝对定位于右缘，
-          与 logo 同处一条视觉带；折叠态 logo 缩小、折叠钮移至其正下方居中。
+      {/* 品牌带 76px：驻留展开态 logo 底对齐居中（原位不动），折叠钮绝对定位于
+          右缘，与 logo 同处一条视觉带；折叠态 logo 缩小、折叠钮移至其正下方居中；
+          抽屉形态（onToggle 缺省、无折叠钮）垂直居中——底对齐是为折叠钮而在的，
+          抽屉里贴底放置只会让 logo 偏坠于 76px 品牌带下部（竖屏实测）。
           高度计入布局而非 margin 溢出——曾用 marginTop 补偿导致卡片滚动条 */}
       <div
         style={{
           height: 76,
           display: 'flex',
           flexDirection: collapsed ? 'column' : 'row',
-          alignItems: collapsed ? 'center' : 'flex-end',
+          alignItems: !onToggle || collapsed ? 'center' : 'flex-end',
           justifyContent: 'center',
           gap: collapsed ? 4 : 0,
           padding: collapsed ? '6px 0' : '0 20px',
