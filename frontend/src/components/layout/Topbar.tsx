@@ -1,27 +1,30 @@
 /* 顶栏 —— 页面标题区（由各页面经 pageHeaderStore 上提注册）+ 后端健康指示灯。
     用户身份在侧边栏底部（见 UserMenu），顶栏不再承载用户区。
     紧凑屏（≤768px）：menuSlot 槽位渲染导航入口（AppShell 注入 CompactNav 的
-    汉堡钮 + 抽屉，自持开合态）；健康文字随断点隐去只留指示灯（index.css）。 */
+    汉堡钮 + 抽屉，自持开合态）；健康文字随断点隐去只留指示灯（index.css），
+    Tooltip 同步退场——指示灯贴近视口右缘，悬浮气泡会溢出右缘截断（竖屏实测），
+    状态语义由灯色单独承载（绿=在线/黄=检测中/红=离线）。 */
 import { Tooltip } from 'antd'
 import type { ReactNode } from 'react'
 import { useHealth } from '@/hooks/useHealth'
+import { BREAKPOINTS, useMediaQuery } from '@/hooks/useMediaQuery'
 import { usePageHeaderStore } from '@/store/pageHeaderStore'
 
 function HealthBadge(): ReactNode {
   const { data, isLoading, isError } = useHealth()
+  const isCompact = useMediaQuery(BREAKPOINTS.compact)
   const ok = !isError && data?.status === 'ok'
   const color = isLoading ? 'var(--color-warning)' : ok ? 'var(--color-success)' : 'var(--color-danger)'
   const text = isLoading ? '检测中' : ok ? '后端在线' : '后端离线'
-  return (
-    <Tooltip title={text}>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block' }} />
-        <span className="topbar-status__health-text" style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}>
-          {text}
-        </span>
+  const badge = (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block' }} />
+      <span className="topbar-status__health-text" style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}>
+        {text}
       </span>
-    </Tooltip>
+    </span>
   )
+  return isCompact ? badge : <Tooltip title={text}>{badge}</Tooltip>
 }
 
 export function Topbar({ menuSlot }: { menuSlot?: ReactNode }): ReactNode {
