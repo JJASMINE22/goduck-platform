@@ -6,7 +6,7 @@
     品牌带右侧为侧栏折叠钮（<=|=> 样式，折叠后移至 Logo 正下方）；分组与
     底部工具区不再用分割线，靠留白区隔（保持卡片一体感）。
     底部为用户区（当前用户芯片 + 菜单 Popover）：身份常驻导航末端。 */
-import { Bot, BookOpen, Boxes, CalendarClock, Cpu, Database, MessagesSquare, Network, PanelLeftClose, PanelLeftOpen, ShieldCheck } from 'lucide-react'
+import { Bot, BookOpen, Boxes, CalendarClock, Cpu, Database, MessagesSquare, Network, PanelLeftClose, PanelLeftOpen, ShieldCheck, X } from 'lucide-react'
 import { Menu } from 'antd'
 import type { MenuProps } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -68,11 +68,14 @@ export function Sidebar({
   collapsed = false,
   onToggle,
   onNavigate,
+  onCloseDrawer,
 }: {
   collapsed?: boolean
   onToggle?: () => void
   /** 导航后回调：紧凑屏抽屉形态下点击菜单项即关抽屉 */
   onNavigate?: () => void
+  /** 抽屉形态关闭钮回调（CompactNav 传入）——渲染于品牌带左缘 */
+  onCloseDrawer?: () => void
 }): ReactNode {
   const navigate = useNavigate()
   const location = useLocation()
@@ -91,8 +94,9 @@ export function Sidebar({
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* 品牌带 76px：驻留展开态 logo 底对齐居中（原位不动），折叠钮绝对定位于
           右缘，与 logo 同处一条视觉带；折叠态 logo 缩小、折叠钮移至其正下方居中；
-          抽屉形态（onToggle 缺省、无折叠钮）垂直居中——底对齐是为折叠钮而在的，
-          抽屉里贴底放置只会让 logo 偏坠于 76px 品牌带下部（竖屏实测）。
+          抽屉形态（onToggle 缺省、无折叠钮）垂直居中，关闭钮（✕）绝对定位于左缘
+          与居中 logo 同轴——底对齐是为折叠钮而在的设计，抽屉里贴底放置只会让
+          logo 偏坠于 76px 品牌带下部（竖屏实测）。
           高度计入布局而非 margin 溢出——曾用 marginTop 补偿导致卡片滚动条 */}
       <div
         style={{
@@ -119,8 +123,22 @@ export function Sidebar({
             transition: 'max-height .2s ease',
           }}
         />
+        {/* 抽屉形态关闭钮：品牌带左缘垂直居中（与折叠钮同一 .sider-toggle 玻璃
+            圆钮语言）。抽屉已去 antd 自带头部（同色连片问题），此为唯一显式关闭路径 */}
+        {onCloseDrawer ? (
+          <button
+            type="button"
+            className="sider-toggle"
+            onClick={onCloseDrawer}
+            title="关闭导航"
+            aria-label="关闭导航"
+            style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }}
+          >
+            <X size={16} />
+          </button>
+        ) : null}
         {/* 折叠钮仅常驻侧栏形态渲染（onToggle 由 AppShell 传入）；抽屉形态
-            （onToggle 缺省）不渲染——抽屉有自身的关闭路径（遮罩/导航即关） */}
+            （onToggle 缺省）不渲染——抽屉关闭走品牌带左缘的 ✕（onCloseDrawer） */}
         {onToggle ? (
           <button
             type="button"

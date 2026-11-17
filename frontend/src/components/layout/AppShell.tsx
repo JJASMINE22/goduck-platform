@@ -24,7 +24,10 @@ const { Sider, Header, Content } = Layout
 
 /** 紧凑屏导航：汉堡钮（经 Topbar menuSlot 渲染进顶栏行内）+ 侧栏抽屉（Portal
     到 body，不受 Header overflow:hidden 裁切）。开合态自持——断点离开 compact
-    时本组件随条件渲染卸载，抽屉状态随之销毁，回到紧凑屏不会残留重开。 */
+    时本组件随条件渲染卸载，抽屉状态随之销毁，回到紧凑屏不会残留重开。
+    抽屉不渲染 antd 自带头部（closable=false 且无 title 即无 header）：浅色主题下
+    头部条与品牌带同色连片，视觉多出一条上带致 logo 显得偏坠；关闭钮（✕）改由
+    Sidebar 品牌带左缘承载（onCloseDrawer 传入）。 */
 function CompactNav(): ReactNode {
   const [open, setOpen] = useState(false)
   return (
@@ -43,9 +46,10 @@ function CompactNav(): ReactNode {
         width={288}
         open={open}
         onClose={() => setOpen(false)}
+        closable={false}
         styles={{ body: { padding: 0 } }}
       >
-        <Sidebar onNavigate={() => setOpen(false)} />
+        <Sidebar onNavigate={() => setOpen(false)} onCloseDrawer={() => setOpen(false)} />
       </Drawer>
     </>
   )

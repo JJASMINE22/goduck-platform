@@ -3562,7 +3562,8 @@ body .topo-popover-root .ant-popover-arrow::before {
 
 /* 侧栏折叠钮（品牌带内，替代 antd 底部默认触发器——触发器已随 collapsible 移除）：
     玻璃圆钮与主题切换折叠态圆钮（.theme-toggle--icon）同语言：薄玻璃底 + rim 高光，
-    悬停趋主色。展开态绝对定位于品牌带右缘，折叠态缩为 28px 居中于 Logo 下方 */
+    悬停趋主色。展开态绝对定位于品牌带右缘，折叠态缩为 28px 居中于 Logo 下方；
+    紧凑屏抽屉形态复用为品牌带左缘关闭钮（✕，Sidebar 注入） */
 .sider-toggle {
   display: inline-flex;
   align-items: center;
