@@ -26,7 +26,7 @@ ARG NODE_MAJOR=20
 # 预热：空格分隔的 MCP 包名。构建期 uvx/npx 拉取到缓存。
 # 命中即加速、离线可用；填错或改名不会中断构建（|| true）。
 # 需要新增默认预热的 MCP，扩展这两个列表即可。
-ARG UVX_MCP_PACKAGES="mcp-server-fetch mcp-server-time arxiv-mcp-server"
+ARG UVX_MCP_PACKAGES="mcp-server-fetch mcp-server-time arxiv-mcp-server duckduckgo-mcp-server"
 ARG NPM_MCP_PACKAGES="@modelcontextprotocol/server-filesystem @modelcontextprotocol/server-memory"
 # GPU 推理：CUDA 版 torch 配套矩阵（升级只改这三行，或 --build-arg 覆盖）。
 #   torch 2.6.0+cu124 ↔ 宿主机驱动 ≥550（推荐 570 系；RTX 3080 / sm_86 在
@@ -155,6 +155,25 @@ RUN set -e; \
     done; \
     rm -rf /tmp/npm-prewarm; \
     echo "MCP prewarm done"
+
+# ---- 3b) mcp-jobs（stdio MCP server，Playwright 运行时）-----------------------
+# 该包运行期需要无头浏览器，三样前置固化进镜像（容器可写层的运行期安装
+# 扛不住重建）：
+#   ① npm 全局安装本体；PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 阻断 playwright
+#      postinstall 联网拉浏览器（改由 ③ 显式安装，下载源可控）；--cache 指向
+#      构建期临时目录，避免 root 污染运行期缓存目录属主。
+#   ② Chromium 系统依赖（apt：nss/gbm/atk/xvfb/CJK 字体等）。
+#   ③ Chromium 二进制装入 app 用户缓存目录（与运行期 HOME 一致）。
+# PLAYWRIGHT_DOWNLOAD_HOST 默认国内镜像加速，海外构建 --build-arg 覆盖回官方源。
+# 置于镜像末层：本层变更不触发前面 torch / requirements 大层重下。
+ARG PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
+USER root
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install -g --cache /tmp/npm-cache-build mcp-jobs \
+    && /usr/lib/node_modules/mcp-jobs/node_modules/.bin/playwright install-deps chromium \
+    && rm -rf /var/lib/apt/lists/* /tmp/npm-cache-build
+USER app
+RUN PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST} \
+    /usr/lib/node_modules/mcp-jobs/node_modules/.bin/playwright install chromium
 
 EXPOSE 8000
 
