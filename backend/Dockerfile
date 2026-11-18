@@ -34,12 +34,17 @@ ARG NPM_MCP_PACKAGES="@modelcontextprotocol/server-filesystem @modelcontextproto
 ARG TORCH_VERSION=2.6.0+cu124
 ARG TORCHVISION_VERSION=0.21.0+cu124
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+# 普通 PyPI 依赖（pillow/numpy 等）的回退索引：torch 索引不携带它们，官方源
+# 国内直连易断流。带 local 版本号（+cu124）的 torch 只存在于 torch 索引，
+# 不会被 extra-index 的 CPU 版覆盖。
+ARG PIP_EXTRA_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 
 # ---- 环境变量 ----------------------------------------------------------------
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} \
     # uv：复制而非软链，预编译字节码
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
