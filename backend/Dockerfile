@@ -61,7 +61,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # ---- OS 依赖 -----------------------------------------------------------------
 # tini: PID 1，正确转发信号 + 回收 MCP 子进程；git: git 类 MCP 需要；
 # build-essential: 兜底少数无 wheel 的包（如全 wheel 可移除以瘦身）。
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# APT_MIRROR：deb.debian.org 替换源（CN 网络传 mirrors.aliyun.com；缺省空 =
+# 官方源）。声明在最前，首个 apt 层与 1b) opencv 层共用。
+ARG APT_MIRROR=
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git tini build-essential \
     && rm -rf /var/lib/apt/lists/*
 
@@ -116,9 +122,7 @@ RUN pip install -r requirements.txt
 # "libxcb.so.1: cannot open shared object file"，经 docling 包装成误导性的
 # "RapidOCR is not installed"。单列一层（而非并入上方 2) 的 apt）是为保住
 # torch/requirements 两层重缓存——本层变更只重建其后廉价层。
-# APT_MIRROR：可选 deb.debian.org 替换源（CN 网络传 mirrors.aliyun.com 等；
-# 缺省空 = 官方源，不绑架上游仓库）。经 build args / override 注入。
-ARG APT_MIRROR=
+# APT_MIRROR 已提升至首个 apt 层前声明，此处直接复用。
 RUN if [ -n "$APT_MIRROR" ]; then \
         sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
     fi \
