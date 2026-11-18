@@ -351,6 +351,18 @@ class Settings(BaseSettings):
         description="终态 TTL 回收循环的扫描间隔（秒）。",
     )
 
+    # ---- 会话排队发送（queued send，plan: queued-send-messages）----
+    queue_max_per_session: int = Field(
+        default=5,
+        gt=0,
+        description="单会话待发队列上限（pending+sending 计数；超出 409 提示）。",
+    )
+    queue_sent_keep: int = Field(
+        default=200,
+        gt=0,
+        description="sent 审计行每会话保留条数（置 sent 后 best-effort 清理）。",
+    )
+
     # ---- 定时任务（cron jobs）----
     cron_enabled: bool = Field(
         default=True,

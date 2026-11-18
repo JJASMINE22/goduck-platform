@@ -381,16 +381,39 @@ async def _run_agent_round(
         # usage 与 SSE 路径同构即时入库（best-effort，见 _persist_usage）
         await _persist_usage(st.pool, session["id"], payload)
 
-    async def on_final(_final_event) -> None:
+    async def on_final(final_event) -> None:
         await SessionService(st.pool).touch(session["id"])
+        # queued-send §4：语音回合终态同样联动队列（done 续排 / error 挂起）；
+        # 续排为 spawn_drain，不阻塞 run 收尾
+        if st.queue_service is not None:
+            await st.queue_service.on_run_final(session["id"], final_event.type)
 
     try:
         await st.run_manager.start_run(
             thread_id, session["id"], "voice", factory,
             on_usage=on_usage, on_final=on_final,
         )
-    except RunConflictError as e:
-        await sess.send_error(f"该会话已有进行中的回合：{e}")
+    except RunConflictError:
+        # queued-send §5：录音期间被手打回合抢跑（单写者闸冲突）→ 转写文本
+        # 化入队不丢按键；终态后的 on_final 钩子负责续排
+        from app.services.queue_service import QueueLimitError
+
+        try:
+            await st.queue_service.enqueue(
+                session,
+                session["user_id"],
+                agent_id,
+                user_text,
+                rubric=start.rubric,
+                attachments=start.attachments,
+                knowledge_base_ids=start.knowledge_base_ids,
+            )
+        except QueueLimitError as e:
+            await sess.send_error(str(e))
+            return None
+        await sess.send_json(
+            SSEEvent(type="status", payload={"phase": "queued", "count": 1})
+        )
         return None
     except RunLimitError as e:
         await sess.send_error(str(e))

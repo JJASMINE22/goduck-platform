@@ -611,6 +611,39 @@ pre,
     0 4px 14px color-mix(in srgb, var(--color-danger) 24%, transparent);
 }
 
+/* —— 待发队列条带（queued-send）：消息列末尾的候客厅视图 ——
+   pending 半透明（数据态标注 data-status），sending 恢复完全不透明；
+   行卡片复用玻璃软底，与气泡同语言但更轻（非对话内容） */
+.queue-strip {
+  margin: 4px 0 8px;
+}
+.queue-strip__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.queue-strip__row {
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg-soft);
+}
+.queue-strip__row[data-status='sending'] {
+  border-color: color-mix(in srgb, var(--color-primary) 35%, var(--glass-border));
+}
+.queue-strip__content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.queue-strip__row .ant-btn {
+  height: 22px;
+  padding-inline: 4px;
+}
+
 /* 麦克风按钮：与左下工具栏圆形图标按钮同规格；长按说话（pointer 按下/松起）。
    录音中（--active）点亮主色 + 呼吸光圈，提示"正在听" */
 .chat-composer__mic {

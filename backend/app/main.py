@@ -92,6 +92,21 @@ async def lifespan(app: FastAPI):
     st.run_manager = RunManager(settings)
     await st.run_manager.start()
 
+    # 5b. QueueService（会话排队发送，plan: queued-send-messages）
+    from app.models import db as dbmod
+    from app.services.queue_service import QueueService
+
+    st.queue_service = QueueService(st)
+    # 启动清扫：崩溃残留 sending 回置 pending；一切非空队列统一挂起（restart）
+    # ——与"run 缓冲俱失"的重启语义对齐（重开后 [继续] 或新消息恢复）
+    reset = await dbmod.reset_stale_sending_queued(st.pool)
+    paused = await dbmod.pause_nonempty_queues(st.pool, "restart")
+    if reset or paused:
+        logger.info(
+            "queue startup sweep: %d sending->pending, %d queue(s) paused(restart)",
+            reset, paused,
+        )
+
     # 6. MinIO storage (附件字节持久层)
     from app.services.storage import build_minio_storage
 
@@ -168,8 +183,6 @@ async def lifespan(app: FastAPI):
     app.state.appstate = st
 
     # 9. warmup: preload active agents (fault-tolerant — one failure non-fatal)
-    from app.models import db as dbmod
-
     for a in await dbmod.list_active_agents(st.pool):
         try:
             await st.agent_registry.get_or_build(a["id"])
@@ -212,9 +225,11 @@ async def lifespan(app: FastAPI):
     logger.info("goduck-platform started")
     yield
     # shutdown: reverse-order cleanup — 调度器最先停（不再派发新运行），
-    # 随后 RunManager 取消在飞回合，再拆基础设施。
+    # 队列续排随之停止，随后 RunManager 取消在飞回合，再拆基础设施。
     if st.cron_scheduler is not None:
         await st.cron_scheduler.shutdown()
+    if st.queue_service is not None:
+        await st.queue_service.shutdown()
     if st.run_manager is not None:
         await st.run_manager.shutdown()
     if st.ingest_pool is not None:

@@ -87,8 +87,9 @@ export interface ErrorPayload {
 
 // —— status payload（附件预消费进度，非错误型；映射临时徽标，首个 token 顶替）——
 export interface StatusPayload {
-  /** parsing=正在解析附件；skipped=单附件解析失败已跳过（降级发送）；parsed=全部解析完成 */
-  phase: 'parsing' | 'parsed' | 'skipped'
+  /** parsing=正在解析附件；skipped=单附件解析失败已跳过（降级发送）；parsed=全部
+   *  解析完成；queued=语音转写已入发送队列（queued-send：当前回合结束后自动发送） */
+  phase: 'parsing' | 'parsed' | 'skipped' | 'queued'
   /** parsing：本批文件名 */
   files?: string[]
   /** skipped：失败文件名 + 原因 */

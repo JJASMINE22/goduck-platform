@@ -62,6 +62,7 @@ backend/
 │   │   ├── docling_parser.py#   docling 结构化解析 + OCR（KB_PARSER_ENGINE=docling）
 │   │   ├── cron_service.py / cron_scheduler.py  # 定时任务 CRUD + 周期调度 + 失败熔断
 │   │   ├── run_manager.py / run_source.py       # 会话/定时统一回合运行管理
+│   │   ├── queue_service.py #   会话排队发送：入队/FIFO 排水/暂停态（on_final 自推进）
 │   │   ├── jev_client.py    #   TypeSafe Jev REST 客户端（概率判决）
 │   │   ├── attachment_policy.py / vision_describer.py / tool_content.py
 │   │   │                    #   附件能力判定 / 视觉模型识图 / 工具消息内容组装
@@ -227,10 +228,16 @@ python -m app.main          # 或 uvicorn app.main:app --reload
 | GET | `/sessions/{id}` | 会话详情 |
 | DELETE | `/sessions/{id}` | 归档会话 |
 | GET | `/sessions/{id}/history` | checkpointer 历史消息 |
-| POST | `/sessions/{id}/messages` | 发送消息（可带 agent_id/附件/KB 锚点）→ SSE 流；发送成功写 last_agent_id；悬空中断存在时 409 |
+| POST | `/sessions/{id}/messages` | 发送消息（可带 agent_id/附件/KB 锚点）→ SSE 流；发送成功写 last_agent_id。run 活跃 / HITL 悬空 / 队列非空时改入队 → 202 + 条目（queued-send） |
 | POST | `/sessions/{id}/resume` | HITL 决策恢复 → SSE 流（恒经 last_agent_id 取图，不收 agent_id） |
 | GET | `/sessions/{id}/interrupt` | 待审批查询（?agent_id= 可选，缺省回落 last） |
-| POST | `/sessions/{id}/withdraw` | 回撤回合（body.agent_id 可选：弱绑定取图，last 悬空时选中即可回撤） |
+| POST | `/sessions/{id}/withdraw` | 回撤回合（body.agent_id 可选：弱绑定取图，last 悬空时选中即可回撤）；成功后队列非空则挂起（withdrawn） |
+| POST | `/sessions/{id}/cancel` | 中止：有 run → 杀 run + 冻结队列（pending 批量 canceled）；无 run 但队列非空 → 仅冻结队列 |
+| GET | `/sessions/{id}/queue` | 待发队列真值（纯读；state=active/paused/idle + 条目，含解析后附件/KB） |
+| POST | `/sessions/{id}/queue/continue` | [继续] 清除暂停（error/withdrawn/restart）并触发排水 |
+| POST | `/sessions/{id}/queue/requeue` | canceled → pending（body.ids 缺省 = 全部；保留原顺序），清除暂停并排水 |
+| POST | `/sessions/{id}/queue/clear` | [清空] 删除全部非 sent 行并清除暂停 |
+| DELETE | `/sessions/{id}/queue/{item_id}` | 删除单条（pending/canceled/failed；sending 409） |
 | GET | `/sessions/{id}/attachment-capability` | 附件能力（?agent_id= 可选；解析落空全关降级） |
 | GET | `/sessions/{id}/knowledge-capability` | 知识库能力（?agent_id= 可选） |
 | GET | `/sessions/{id}/shell-capability` | shell 能力（?agent_id= 可选） |

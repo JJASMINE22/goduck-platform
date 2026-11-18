@@ -16,6 +16,8 @@ export interface StreamHandlers {
   onEvent: (e: SSEEvent) => void
   /** 网络层异常（fetch 失败 / 非 200 / 解析失败）—— 非后端 error 事件 */
   onFatal?: (err: unknown) => void
+  /** POST /messages 的 202 入队分流（queued-send）：item 为后端 QueuedMessageOut */
+  onQueued?: (item: unknown) => void
 }
 
 export type StreamTermination =
@@ -25,9 +27,20 @@ export type StreamTermination =
   | 'canceled'
   | 'resync'
   | 'closed'
+  | 'queued'
 
 /** GET 观察流的 204（无 run）信号：非错误，静默映射为 'closed' */
 class NoRunSignal extends Error {}
+
+/** POST /messages 的 202 入队信号（非 SSE 流，body 携带队列条目） */
+class QueuedSignal extends Error {
+  readonly item: unknown
+
+  constructor(item: unknown) {
+    super('queued')
+    this.item = item
+  }
+}
 
 /** 后端拒绝（非 2xx，message 携带后端 detail 真实原因）。
  *  与网络层异常（fetch TypeError 等）区分：拒绝=请求未成立、无 run 启动，
@@ -94,6 +107,17 @@ export async function streamPostSse(
       openWhenHidden: true, // 切后台不断流
       // POST 幂等性未知：禁止自动重连（DESIGN §8.4）
       async onopen(res) {
+        // queued-send：入队分流返回 202 JSON（非 SSE），携带队列条目
+        if (res.status === 202) {
+          let item: unknown = null
+          try {
+            const body = (await res.clone().json()) as { item?: unknown } | null
+            item = body?.item ?? null
+          } catch {
+            /* body 解析失败按无条目处理 */
+          }
+          throw new QueuedSignal(item)
+        }
         if (res.ok && res.headers.get('content-type')?.includes('text/event-stream')) return
         throw await rejectionFrom(res)
       },
@@ -117,6 +141,10 @@ export async function streamPostSse(
   } catch (err) {
     // abort 不算 fatal
     if (err instanceof DOMException && err.name === 'AbortError') return 'closed'
+    if (err instanceof QueuedSignal) {
+      handlers.onQueued?.(err.item)
+      return 'queued'
+    }
     handlers.onFatal?.(err)
     throw err
   }

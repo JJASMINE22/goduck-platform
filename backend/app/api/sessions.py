@@ -11,6 +11,7 @@ from app.api.stream import (
     resolve_agent_choice_or_409,
 )
 from app.deps import get_appstate, get_current_user
+from app.models import db as dbmod
 from app.models.schemas import (
     MessageOut,
     SessionCreate,
@@ -88,7 +89,16 @@ async def archive_session(
         raise HTTPException(status_code=404, detail="session not found")
     _ensure_owner(s, user)
     _refuse_cron_session(s, action="归档")
-    return await svc.archive(session_id)
+    archived = await svc.archive(session_id)
+    # queued-send：归档即放弃在途意图——pending 批量置 canceled 并清除暂停；
+    # purge 路径经 FK CASCADE 连带清队，无需在此处理
+    if archived is not None:
+        st = _appstate(request)
+        if st.queue_service is not None:
+            async with st.queue_service.lock(session_id):
+                await dbmod.cancel_pending_queued(st.pool, session_id, None)
+                await dbmod.resume_queue(st.pool, session_id)
+    return archived
 
 
 @router.post("/{session_id}/purge", status_code=204)
@@ -145,36 +155,45 @@ async def withdraw_turn(
     the front-end cancels the stream first then retries. The withdrawn user
     text + attachments are returned so the composer can be prefilled for
     edit-and-resend.
+
+    queued-send（plan §5 双闸封闭）：全程持队列锁与排水互斥——锁内复查无
+    sending 行（正在排水的条目 = 即将活跃的写者），回撤成功后队列非空则
+    挂起（withdrawn，防纠偏句悬空指向已删内容），一次 [继续] 恢复。
     """
     st = _appstate(request)
     session, svc = await _load_session_or_404(request, session_id)
     _ensure_owner(session, user)
     _refuse_cron_session(session, action="回撤消息")
 
-    if st.run_manager.is_active(session["thread_id"]):
-        raise HTTPException(status_code=409, detail="流式生成中，请先停止再回撤")
+    async with st.queue_service.lock(session_id):
+        if await dbmod.count_queued_by_status(st.pool, session_id, ("sending",)):
+            raise HTTPException(status_code=409, detail="队列正在发送，请稍候再回撤")
 
-    # 弱绑定取图（§4.4 解析矩阵）：回撤只需任一 same-schema 图（messages/files
-    # 基座通道全图同 reducer），显式 agent_id 优先——last 悬空（agent 已删）时
-    # "仅选中、不发送"即可恢复回撤。摘要旁通道的清理经锚点归属另行取图。
-    chosen_id = await resolve_agent_choice_or_409(st, session, body.agent_id)
-    agent = await _build_agent_or_409(st, chosen_id)
+        if st.run_manager.is_active(session["thread_id"]):
+            raise HTTPException(status_code=409, detail="流式生成中，请先停止再回撤")
 
-    async def _anchor_agent_builder(anchor_id: uuid.UUID):
-        """锚点回合归属取图（§4.4）：按 HumanMessage additional_kwargs.agent_id
-        构建"产出该回合的图"，供摘要旁通道清理使用。构建失败由调用方降级。"""
-        return await _build_agent_or_409(st, anchor_id)
+        # 弱绑定取图（§4.4 解析矩阵）：回撤只需任一 same-schema 图（messages/files
+        # 基座通道全图同 reducer），显式 agent_id 优先——last 悬空（agent 已删）时
+        # "仅选中、不发送"即可恢复回撤。摘要旁通道的清理经锚点归属另行取图。
+        chosen_id = await resolve_agent_choice_or_409(st, session, body.agent_id)
+        agent = await _build_agent_or_409(st, chosen_id)
 
-    try:
-        result = await svc.withdraw_turn(
-            st.checkpointer,
-            agent,
-            session["thread_id"],
-            session["id"],
-            body.message_id,
-            anchor_agent_builder=_anchor_agent_builder,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    await svc.touch(session["id"])
+        async def _anchor_agent_builder(anchor_id: uuid.UUID):
+            """锚点回合归属取图（§4.4）：按 HumanMessage additional_kwargs.agent_id
+            构建"产出该回合的图"，供摘要旁通道清理使用。构建失败由调用方降级。"""
+            return await _build_agent_or_409(st, anchor_id)
+
+        try:
+            result = await svc.withdraw_turn(
+                st.checkpointer,
+                agent,
+                session["thread_id"],
+                session["id"],
+                body.message_id,
+                anchor_agent_builder=_anchor_agent_builder,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        await svc.touch(session["id"])
+        await st.queue_service.pause_if_pending(session_id, "withdrawn")
     return result

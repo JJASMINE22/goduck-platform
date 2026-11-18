@@ -87,6 +87,8 @@ class AppState:
         self.vision_describer = None
         # 回合执行注册表（吸收原 StreamTracker 的 withdraw/双发闸；lifespan 装配）
         self.run_manager = None
+        # 会话排队发送（queued-send；lifespan 装配）
+        self.queue_service = None
         # cron scheduler — None when cron_enabled=false (lifespan wires it)
         self.cron_scheduler = None
         # knowledge base (RAG) — None when kb_enabled=false (lazy, 503-gated)

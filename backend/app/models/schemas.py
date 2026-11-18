@@ -309,6 +309,48 @@ class WithdrawResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# ---------------------------------------------------------------------------
+# 会话排队发送（queued send）
+# ---------------------------------------------------------------------------
+class QueuedMessageOut(BaseModel):
+    """队列条目：附件/KB 服务端解析为展示元数据（与 /history 回显同构，
+    供前端物化用户气泡与回撤锚定）。sent 审计行不在此列。"""
+
+    id: uuid.UUID
+    agent_id: uuid.UUID
+    content: str
+    rubric: Optional[str] = None
+    attachments: list["UploadOut"] = Field(default_factory=list)
+    kbs: list["KbRef"] = Field(default_factory=list)
+    status: str = Field(description="pending | sending | failed | canceled")
+    fail_reason: Optional[str] = None
+    created_at: datetime
+
+
+class QueueOut(BaseModel):
+    """GET /queue 真值：整体态 + 条目列表。state = idle（无 pending/sending）|
+    paused（挂起，带原因）| active（可自动排水）。"""
+
+    state: str
+    paused_reason: Optional[str] = None
+    items: list[QueuedMessageOut] = Field(default_factory=list)
+
+
+class QueueEnqueueResponse(BaseModel):
+    """POST /messages 入队分流（202）的响应体。"""
+
+    queued: bool = True
+    item: QueuedMessageOut
+
+
+class RequeueRequest(BaseModel):
+    """canceled → pending（保留 created_at 序）；ids 缺省/空 = 全部 canceled。"""
+
+    ids: Optional[list[uuid.UUID]] = Field(
+        default=None, description="要复队的条目 id；缺省 = 全部 canceled 条目"
+    )
+
+
 class ToolInfo(BaseModel):
     name: str
     description: str

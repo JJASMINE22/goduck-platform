@@ -19,7 +19,17 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from langgraph.graph import END
 from sse_starlette.sse import EventSourceResponse
 
@@ -28,6 +38,8 @@ from app.deps import SimpleUser, get_appstate, get_current_user
 from app.models import db as dbmod
 from app.models.schemas import (
     KnowledgeCapability,
+    QueueOut,
+    RequeueRequest,
     ResumeRequest,
     SendMessageRequest,
     ShellCapability,
@@ -37,6 +49,7 @@ from app.services.message_content import (
     MessageContentError,
     validate_message_content,
 )
+from app.services.queue_service import QueueLimitError
 from app.services.run_manager import (
     NoSuchRun,
     ResyncNeeded,
@@ -261,8 +274,15 @@ def _refuse_cron_session(session: dict, *, action: str) -> None:
         )
 
 
-async def _start_run_or_error(st, session: dict, *, kind: str, factory, on_final=None):
-    """经 RunManager 启动 run（单写者闸 + usage 即时入库 + 会话 touch 收尾）。"""
+async def _start_run_or_error(
+    st, session: dict, *, kind: str, factory, on_final=None, queue_hook: bool = True
+):
+    """经 RunManager 启动 run（单写者闸 + usage 即时入库 + 会话 touch 收尾）。
+
+    queue_hook：终态是否挂队列联动（done 续排 / error 挂起，queued-send §4）。
+    排水启动的 run 传 False——行落态与续排由 QueueService 自身的 on_final
+    承担，避免双重触发。
+    """
     async def _on_usage(payload: dict) -> None:
         await _persist_usage(st.pool, session["id"], payload)
 
@@ -271,6 +291,11 @@ async def _start_run_or_error(st, session: dict, *, kind: str, factory, on_final
 
         await SessionService(st.pool).touch(session["id"])
 
+    use_queue_hook = queue_hook and st.queue_service is not None
+
+    async def _queue(final_event) -> None:
+        await st.queue_service.on_run_final(session["id"], final_event.type)
+
     try:
         return await st.run_manager.start_run(
             session["thread_id"],
@@ -278,7 +303,7 @@ async def _start_run_or_error(st, session: dict, *, kind: str, factory, on_final
             kind,
             factory,
             on_usage=_on_usage,
-            on_final=_final_hook(on_final, _touch),
+            on_final=_final_hook(on_final, _queue if use_queue_hook else None, _touch),
         )
     except RunConflictError as e:
         raise HTTPException(status_code=409, detail=f"该会话已有进行中的回合（{e}）")
@@ -286,17 +311,16 @@ async def _start_run_or_error(st, session: dict, *, kind: str, factory, on_final
         raise HTTPException(status_code=503, detail=str(e))
 
 
-def _final_hook(extra, touch):
-    """合并 on_final 回调（extra 在前、touch 兜底；均 best-effort）。"""
-    if extra is None:
-        return touch
+def _final_hook(extra, queue, touch):
+    """合并 on_final 回调（extra → queue → touch 顺序；均 best-effort）。"""
+    hooks = [h for h in (extra, queue, touch) if h is not None]
 
     async def _hook(final_event) -> None:
-        try:
-            await extra(final_event)
-        except Exception:
-            logger.warning("run on_final hook failed (skipped)", exc_info=True)
-        await touch(final_event)
+        for h in hooks:
+            try:
+                await h(final_event)
+            except Exception:
+                logger.warning("run on_final hook failed (skipped)", exc_info=True)
 
     return _hook
 
@@ -314,6 +338,23 @@ async def _subscriber_gen(st, thread_id: str, after: str | None = None):
         yield SSEEvent(type="resync", payload={"reason": "buffer-evicted"}).to_sse()
 
 
+async def _enqueue_or_409(st, session: dict, user: dict, chosen_id, body) -> dict:
+    """入队分流共用段：上限校验 + 落行 + 解析展示元数据（QueuedMessageOut 形状）。"""
+    try:
+        item = await st.queue_service.enqueue(
+            session,
+            user["id"],
+            chosen_id,
+            body.content,
+            rubric=body.rubric,
+            attachments=body.attachments,
+            knowledge_base_ids=body.knowledge_base_ids,
+        )
+    except QueueLimitError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return await st.queue_service.to_item_out(item)
+
+
 @router.post("/{session_id}/messages")
 async def send_message(
     session_id: uuid.UUID,
@@ -321,22 +362,16 @@ async def send_message(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
+    """发送决策树（queued-send plan §3）：run 活跃 / HITL 悬空 / 队列非空 →
+    入队 202；否则直发 SSE 200（既有行为原样）。入队是后端内部分流，前端
+    仍只调本接口。"""
     st = get_appstate(request)
     session, _svc = await _load_session_or_404(request, session_id, user)
     _refuse_cron_session(session, action="手动发送消息")
     config = _config_for(session, user)
 
-    # 写者解析（§4.4）：显式 body.agent_id > last_agent_id，落空/无效 → 409
+    # 写者解析（§4.4）+ 内容校验（附件/KB/能力）——两条路径都要，错误尽早暴露
     chosen_id = await resolve_agent_choice_or_409(st, session, body.agent_id)
-    agent = await _build_agent_or_409(st, chosen_id)
-
-    # HITL 门禁 + 中止残留自愈（§4.4）：真中断 409 拒绝（审批不可静默丢弃）；
-    # cancelled/崩溃残留的孤儿 pending 就地清尾后放行（不再强制先撤回）
-    await _refuse_or_heal_pending(agent, config)
-
-    # 附件/KB 校验（流外，plan §6.5）—— 与语音 WS 共享同一校验器：能力门控 422 /
-    # 附件归属 403 / KB 不存在 404 / 503 以 HTTP 状态码尽早暴露。组装（含图像
-    # 预消费与 status 事件）在 run task 内经 chat_event_source 执行。
     try:
         await validate_message_content(
             st,
@@ -348,7 +383,35 @@ async def send_message(
     except MessageContentError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
-    # last_agent_id 唯一写点（§4.4 写者语义）：校验通过后、开 run 前写入。
+    # ① 回合进行中 → 入队（不建图、不碰门禁；终态后的 on_final 钩子负责续排）
+    if st.run_manager.is_active(session["thread_id"]):
+        item = await _enqueue_or_409(st, session, user, chosen_id, body)
+        return JSONResponse(
+            status_code=202, content=jsonable_encoder({"queued": True, "item": item})
+        )
+
+    agent = await _build_agent_or_409(st, chosen_id)
+
+    # ② 状态门禁：真 HITL 悬空 → 入队（不清中断，审批仍是唯一推进手段）；
+    # 孤儿 pending 自愈（_refuse_or_heal_pending 同手法）后落 ③
+    state = await agent.aget_state(config)
+    if state.next:
+        if has_interrupt(state):
+            item = await _enqueue_or_409(st, session, user, chosen_id, body)
+            return JSONResponse(
+                status_code=202, content=jsonable_encoder({"queued": True, "item": item})
+            )
+        await agent.aupdate_state(config, None, as_node=END)
+
+    # ③ 队列非空 → 入队尾（核心不变式：下一回合永远是队列头，新消息不插队）
+    if await dbmod.count_queued_by_status(st.pool, session_id, ("pending",)):
+        item = await _enqueue_or_409(st, session, user, chosen_id, body)
+        await st.queue_service.wake_after_enqueue(session_id)
+        return JSONResponse(
+            status_code=202, content=jsonable_encoder({"queued": True, "item": item})
+        )
+
+    # 直发：last_agent_id 唯一写点（§4.4 写者语义）：校验通过后、开 run 前写入。
     # run 单写者闸排除并发 send；crash 窗口内 last 指向"意图 agent"，无害。
     await dbmod.set_session_last_agent(st.pool, session["id"], chosen_id)
 
@@ -539,30 +602,129 @@ async def observe_stream(
 async def cancel_run(
     session_id: uuid.UUID, request: Request, user: dict = Depends(get_current_user)
 ):
-    """显式取消当前 run：广播 canceled 终态（各订阅者据其落态），随后释放
-    单写者闸（withdraw 即刻放行）。无 active run → 409。
+    """显式取消（queued-send §5 两级语义，全程持队列锁封闭排水竞态）：
 
-    取消收尾（孤儿 pending 清理）：join run task 终止后清空图状态残留的
-    pending task，使「中止后直接发新消息」即刻可行（此前该残留被门禁误判
-    为待审批中断，强制先撤回）。清理 best-effort：join 超时或清理失败仅
-    告警，残留由 send 门禁的自愈（_refuse_or_heal_pending）兜底。
+    - 有 active run：杀 task → 广播 canceled 终态（各订阅者据其落态）→ join
+      → 清孤儿 pending（既有链路）；join 后（被杀 run 的 on_final 已把 sending
+      行置 sent）把全部 pending 批量置 canceled（冻结队列）；
+    - 无 active run 但队列非空：仅批量置 canceled，返回 200（不再 409——
+      消除"点停止报无回合、片刻后队列开跑"的断裂）；
+    - 两者皆无 → 409。
+
+    取消是数据无损操作：content/附件/KB 全保留，复原 = 显式「重新排队」。
     """
     st = get_appstate(request)
     session, _svc = await _load_session_or_404(request, session_id, user)
     _refuse_cron_session(session, action="手动取消")
-    run = st.run_manager.cancel(session["thread_id"])
-    if run is None:
-        raise HTTPException(status_code=409, detail="当前没有进行中的回合")
-    if await join_cancelled_run(run):
-        try:
-            await clear_orphan_pending(st, session, _config_for(session, user))
-        except Exception:
-            logger.warning(
-                "cancel cleanup failed for session %s (send gate will self-heal)",
-                session_id,
-                exc_info=True,
-            )
-    return {"ok": True}
+    async with st.queue_service.lock(session_id):
+        run = st.run_manager.cancel(session["thread_id"])
+        if run is not None:
+            if await join_cancelled_run(run):
+                try:
+                    await clear_orphan_pending(st, session, _config_for(session, user))
+                except Exception:
+                    logger.warning(
+                        "cancel cleanup failed for session %s (send gate will self-heal)",
+                        session_id,
+                        exc_info=True,
+                    )
+            await dbmod.cancel_pending_queued(st.pool, session_id, None)
+            return {"ok": True}
+        cleared = await dbmod.cancel_pending_queued(st.pool, session_id, None)
+        if cleared == 0:
+            raise HTTPException(status_code=409, detail="当前没有进行中的回合")
+        return {"ok": True, "queue_cleared": cleared}
+
+
+# ---------------------------------------------------------------------------
+# 会话排队发送：队列管理端点（plan queued-send-messages §7）
+# ---------------------------------------------------------------------------
+
+@router.get("/{session_id}/queue", response_model=QueueOut)
+async def get_queue(
+    session_id: uuid.UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """队列真值回查（纯读，不触发排水；前端终态后据此决定重挂与气泡物化）。"""
+    st = get_appstate(request)
+    await _load_session_or_404(request, session_id, user)
+    return await st.queue_service.get_queue_view(session_id)
+
+
+@router.post("/{session_id}/queue/continue", response_model=QueueOut)
+async def continue_queue(
+    session_id: uuid.UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """[继续]：清除暂停（error/withdrawn/restart 均可）并触发排水。"""
+    st = get_appstate(request)
+    session, _svc = await _load_session_or_404(request, session_id, user)
+    _refuse_cron_session(session, action="操作发送队列")
+    async with st.queue_service.lock(session_id):
+        await dbmod.resume_queue(st.pool, session_id)
+    st.queue_service.spawn_drain(session_id)
+    return await st.queue_service.get_queue_view(session_id)
+
+
+@router.post("/{session_id}/queue/clear")
+async def clear_queue(
+    session_id: uuid.UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """[清空]：删除全部非 sent 行并清除暂停（显式放弃在途意图）。"""
+    st = get_appstate(request)
+    session, _svc = await _load_session_or_404(request, session_id, user)
+    _refuse_cron_session(session, action="操作发送队列")
+    async with st.queue_service.lock(session_id):
+        removed = await dbmod.clear_queued_messages(st.pool, session_id)
+        await dbmod.resume_queue(st.pool, session_id)
+    return {"ok": True, "removed": removed}
+
+
+@router.post("/{session_id}/queue/requeue")
+async def requeue_queue_items(
+    session_id: uuid.UUID,
+    request: Request,
+    body: RequeueRequest | None = None,
+    user: dict = Depends(get_current_user),
+):
+    """canceled → pending（单条/批量；ids 缺省 = 全部 canceled，created_at 序
+    不变）。显式恢复动作：清除暂停并触发排水。"""
+    st = get_appstate(request)
+    session, _svc = await _load_session_or_404(request, session_id, user)
+    _refuse_cron_session(session, action="操作发送队列")
+    ids = body.ids if body and body.ids else None
+    async with st.queue_service.lock(session_id):
+        requeued = await dbmod.requeue_canceled_queued(st.pool, session_id, ids)
+        if requeued == 0 and ids:
+            raise HTTPException(status_code=404, detail="条目不存在或状态不可复队")
+        await dbmod.resume_queue(st.pool, session_id)
+    if requeued:
+        st.queue_service.spawn_drain(session_id)
+    return {"ok": True, "requeued": requeued}
+
+
+@router.delete("/{session_id}/queue/{item_id}", status_code=204)
+async def delete_queue_item(
+    session_id: uuid.UUID,
+    item_id: uuid.UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """删除单条队列项（pending/canceled/failed 可删；sending = 正在执行的回合，409）。"""
+    st = get_appstate(request)
+    session, _svc = await _load_session_or_404(request, session_id, user)
+    _refuse_cron_session(session, action="操作发送队列")
+    row = await dbmod.get_queued_message(st.pool, session_id, item_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="队列条目不存在")
+    if row["status"] == "sending":
+        raise HTTPException(status_code=409, detail="该条目正在发送，不可删除")
+    await dbmod.delete_queued_message(st.pool, session_id, item_id)
+    return None
 
 
 async def _sync_cron_job_status(pool, session_id: uuid.UUID, final_event: str) -> None:

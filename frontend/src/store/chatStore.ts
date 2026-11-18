@@ -7,6 +7,9 @@ import type {
   FileChangeRecord,
   InterruptPayload,
   KbRef,
+  QueuedItem,
+  QueueState,
+  QueueView,
   TodoItem,
   UploadOut,
   UsagePayload,
@@ -129,6 +132,13 @@ export interface ChatState {
   /** stt_chunk 实时中间稿（录音期间流式渲染；stt_output 固化后清空） */
   interimTranscript: string
 
+  // —— 会话排队发送（queued-send §6）——
+  /** 待发队列条目（pending/sending/failed/canceled；sent 审计行不进前端） */
+  queueItems: QueuedItem[]
+  /** 队列整体态：idle=无待发 | active=自动排水中 | paused=挂起（带原因） */
+  queueState: QueueState
+  queuePausedReason: string | null
+
   // —— 动作 ——
   pushUser: (content: string, attachments?: UploadOut[], kbs?: KbRef[]) => void
   /** 追加原子 agent 消息（agent_message 事件）。携带 id 时按消息 id 去重：
@@ -197,6 +207,18 @@ export interface ChatState {
   setVoiceState: (s: VoiceState) => void
   /** stt_chunk 中间稿整段替换（后端每 Turn 全量下发，非增量） */
   setInterimTranscript: (v: string) => void
+  // —— 会话排队发送（queued-send §6）——
+  /** 服务端队列真值整表替换（终态回查 / 进会话初始化 / 队列操作后） */
+  syncQueue: (view: QueueView) => void
+  /** 本地入队回显（202 响应；乐观消息已回滚，条目改挂队列条带） */
+  enqueueLocal: (item: QueuedItem) => void
+  /** 队头 sending 条目物化为正式用户消息（排水开跑、SSE 流不携带用户消息事件，
+   *  不物化则时间线缺用户侧、回撤无法锚定）；仅消化队首且非取消态条目 */
+  materializeHead: () => void
+  /** 移除单条队列条目（删除操作本地回显） */
+  removeQueueItem: (id: string) => void
+  /** 批量置 canceled（中止操作本地回显；服务端真值随后回查对齐） */
+  markQueueCanceledLocal: () => void
   /** 乐观移除一个完整回合（用户消息 + 其后到下一用户消息前的全部 AI/工具消息）
       及同时间窗内的工具调用卡；真值以后端历史重拉兜底（准则 R9） */
   removeTurn: (messageId: string) => void
@@ -234,6 +256,9 @@ const initialState = {
   lastEventId: null as string | null,
   voiceState: 'idle' as VoiceState,
   interimTranscript: '',
+  queueItems: [] as QueuedItem[],
+  queueState: 'idle' as QueueState,
+  queuePausedReason: null as string | null,
 }
 
 let idSeq = 0
@@ -529,6 +554,64 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setInterimTranscript: (interimTranscript) => set({ interimTranscript }),
 
+  // —— 会话排队发送（queued-send §6）——
+  syncQueue: (view) =>
+    set({
+      queueItems: view.items,
+      queueState: view.state,
+      queuePausedReason: view.paused_reason ?? null,
+    }),
+
+  enqueueLocal: (item) =>
+    set((s) => ({
+      queueItems: [...s.queueItems, item],
+      queueState: s.queueState === 'paused' ? 'paused' : 'active',
+    })),
+
+  materializeHead: () =>
+    set((s) => {
+      const head = s.queueItems[0]
+      if (!head || head.status !== 'sending') return {}
+      const rest = s.queueItems.slice(1)
+      return {
+        messages: [
+          ...s.messages,
+          {
+            id: genId(),
+            role: 'user' as const,
+            agentPath: 'user',
+            content: head.content,
+            attachments: head.attachments.length ? head.attachments : undefined,
+            kbs: head.kbs.length ? head.kbs : undefined,
+            createdAt: Date.now(),
+          },
+        ],
+        queueItems: rest,
+        queueState: rest.some((q) => q.status === 'pending' || q.status === 'sending')
+          ? s.queueState
+          : 'idle',
+      }
+    }),
+
+  removeQueueItem: (id) =>
+    set((s) => {
+      const rest = s.queueItems.filter((q) => q.id !== id)
+      return {
+        queueItems: rest,
+        queueState: rest.some((q) => q.status === 'pending' || q.status === 'sending')
+          ? s.queueState
+          : 'idle',
+      }
+    }),
+
+  markQueueCanceledLocal: () =>
+    set((s) => ({
+      queueItems: s.queueItems.map((q) =>
+        q.status === 'pending' ? { ...q, status: 'canceled' as const } : q,
+      ),
+      queueState: 'idle',
+    })),
+
   removeTurn: (messageId) =>
     set((s) => {
       const idx = s.messages.findIndex((m) => m.id === messageId)
@@ -572,6 +655,10 @@ export const useChatStore = create<ChatState>((set) => ({
         // 跨会话进入则整体作废重建（旧水位/旧 id 属于上一会话）。
         lastEventId: s.sessionId === sessionId ? s.lastEventId : null,
         usageCountedIds: s.sessionId === sessionId ? s.usageCountedIds : new Set<string>(),
+        // 队列同理：跨会话作废（真值由 ChatPage 进会话拉取重建），同会话保留
+        queueItems: s.sessionId === sessionId ? s.queueItems : [],
+        queueState: s.sessionId === sessionId ? s.queueState : 'idle',
+        queuePausedReason: s.sessionId === sessionId ? s.queuePausedReason : null,
       }
     }),
 

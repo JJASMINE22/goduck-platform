@@ -26,11 +26,13 @@ import { HitlCard } from '@/features/chat/HitlCard'
 import { TodoPanel } from '@/features/chat/TodoPanel'
 import { TurnRail } from '@/features/chat/TurnRail'
 import { ChatInput } from '@/features/chat/ChatInput'
+import { QueueList } from '@/features/chat/QueueList'
 import { UsageBadge } from '@/features/chat/UsageBadge'
 import { WorkspaceView, type WorkspaceSelection } from '@/features/workspace/WorkspaceView'
 import { PageLoading } from '@/components/feedback/states'
 import { sessionsApi } from '@/api/sessions'
 import { streamApi } from '@/api/stream'
+import { queueApi } from '@/api/queue'
 import { ApiError } from '@/api/client'
 import { toastError, toastSuccess } from '@/lib/antdStatic'
 import type { WithdrawResponse } from '@/types'
@@ -444,6 +446,26 @@ export function ChatPage(): ReactNode {
     }
   }, [sessionId])
 
+  // —— 队列初始化（queued-send §6）：进会话拉队列真值（条带渲染 + 重启挂起横幅）——
+  useEffect(() => {
+    if (!sessionId || session?.kind !== 'chat' || session?.status === 'archived') return
+    let cancelled = false
+    void (async () => {
+      try {
+        const view = await queueApi.getQueue(sessionId)
+        if (cancelled) return
+        const store = useChatStore.getState()
+        if (store.sessionId !== sessionId) return
+        store.syncQueue(view)
+      } catch {
+        /* 拉取失败不阻塞会话进入，终态回查会再同步 */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, session?.kind, session?.status])
+
   // —— 回撤 ——
   // useCallback + ref 闸门（而非依赖 withdrawingId state）：引用稳定，不击穿
   // MessageList/气泡的 memo 隔离；并发防抖语义与原 state 闸门一致
@@ -849,6 +871,8 @@ export function ChatPage(): ReactNode {
                   readOnly={readOnly}
                   onOpenFile={allowWorkspace ? openWorkspaceFile : undefined}
                 />
+                {/* 待发队列条带（queued-send）：pending/canceled/failed 条目 + 挂起横幅 */}
+                {!readOnly ? <QueueList sessionId={session.id} /> : null}
                 {!archived ? <HitlCard resume={stream.resume} /> : null}
               </div>
               </div>

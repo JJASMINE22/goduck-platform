@@ -112,13 +112,15 @@ export function dispatchStreamEvent(e: SSEEvent): void {
   switch (e.type) {
     case 'status': {
       // 附件预消费进度（非错误型）：parsing/skipped 映射临时徽标；parsed 不展示
-      //（首个 token 即将到达，避免徽标闪烁）
+      //（首个 token 即将到达，避免徽标闪烁）；queued=语音转写已入队（queued-send）
       const p = e.payload as unknown as StatusPayload
       if (p.phase === 'parsing') {
         const names = (p.files ?? []).join('、')
         store.setParseStatus(names ? `正在解析附件（${names}）…` : '正在解析附件…')
       } else if (p.phase === 'skipped') {
         store.setParseStatus(`「${p.file ?? '附件'}」解析失败已跳过${p.reason ? `：${p.reason}` : ''}`)
+      } else if (p.phase === 'queued') {
+        store.setParseStatus('语音内容已加入发送队列，当前回合结束后自动发送')
       } else {
         store.setParseStatus(null)
       }

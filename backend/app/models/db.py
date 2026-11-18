@@ -301,6 +301,32 @@ CREATE TABLE IF NOT EXISTS jev_decision (
     model           VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_jev_decision_agent ON jev_decision(agent_id, created_at DESC);
+
+-- ============================ 会话排队发送（queued send）============================
+-- queued_message 是候客厅而非消息存储：直发路径不落本表，消息真相源恒为
+-- checkpointer 历史。sent 行仅审计（GET /queue 不返回）；failed 行带 fail_reason。
+CREATE TABLE IF NOT EXISTS queued_message (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id  UUID NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL,
+    agent_id    UUID NOT NULL,                      -- 入队时解析的意图智能体（发送时才写 last_agent_id）
+    content     TEXT NOT NULL,
+    rubric      TEXT,                               -- 评审提示（与 SendMessageRequest.rubric 对齐）
+    upload_ids  JSONB NOT NULL DEFAULT '[]',
+    kb_ids      JSONB NOT NULL DEFAULT '[]',
+    status      VARCHAR NOT NULL DEFAULT 'pending', -- pending|sending|sent|failed|canceled
+    fail_reason TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_queued_message_session
+    ON queued_message(session_id, status, created_at);
+
+-- 会话队列暂停态（持久化：error/withdrawn/restart 挂起跨重启保留；行缺失 = active）
+CREATE TABLE IF NOT EXISTS queue_state (
+    session_id    UUID PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
+    paused_reason VARCHAR NOT NULL,                 -- error | withdrawn | restart
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 # session.agent_id → last_agent_id 一次性物理改名（幂等：旧列不存在即跳过；
@@ -922,6 +948,304 @@ async def add_session_usage(
                 f"UPDATE session SET usage_totals = jsonb_build_object(\n      {set_expr}\n      ) "
                 "WHERE id = %s",
                 (*values, session_id),
+            )
+
+
+# ============================ 会话排队发送（queued send）=============================
+# 状态机见 .kilo/plans/queued-send-messages.md §2。行级操作均为单条 UPDATE 原子
+# 完成（无读-改-写窗口）；FIFO 认领经 FOR UPDATE SKIP LOCKED（单 worker 下由
+# QueueService per-session 锁先串行，此为多副本兜底）。
+
+_QUEUED_COLUMNS = (
+    "id, session_id, user_id, agent_id, content, rubric, "
+    "upload_ids, kb_ids, status, fail_reason, created_at"
+)
+
+
+async def insert_queued_message(
+    pool: AsyncConnectionPool,
+    session_id: uuid.UUID,
+    user_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    content: str,
+    rubric: Optional[str],
+    upload_ids: list[str],
+    kb_ids: list[str],
+) -> dict:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"INSERT INTO queued_message "
+                "(session_id, user_id, agent_id, content, rubric, upload_ids, kb_ids) "
+                f"VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING {_QUEUED_COLUMNS}",
+                (
+                    session_id, user_id, agent_id, content, rubric,
+                    Json(upload_ids or []), Json(kb_ids or []),
+                ),
+            )
+            return await cur.fetchone()
+
+
+async def count_queued_by_status(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, statuses: tuple[str, ...]
+) -> int:
+    placeholders = ", ".join(["%s"] * len(statuses))
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT count(*) FROM queued_message "
+                f"WHERE session_id = %s AND status IN ({placeholders})",
+                (session_id, *statuses),
+            )
+            return (await cur.fetchone())[0]
+
+
+async def list_queued_messages(
+    pool: AsyncConnectionPool, session_id: uuid.UUID
+) -> list[dict]:
+    """待发 / 发送中 / 失败 / 已取消行（sent 审计行不返回），created_at FIFO 序。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_QUEUED_COLUMNS} FROM queued_message "
+                "WHERE session_id = %s AND status != 'sent' "
+                "ORDER BY created_at",
+                (session_id,),
+            )
+            return await cur.fetchall()
+
+
+async def get_queued_message(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, item_id: uuid.UUID
+) -> Optional[dict]:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_QUEUED_COLUMNS} FROM queued_message "
+                "WHERE id = %s AND session_id = %s",
+                (item_id, session_id),
+            )
+            return await cur.fetchone()
+
+
+async def claim_next_queued(
+    pool: AsyncConnectionPool, session_id: uuid.UUID
+) -> Optional[dict]:
+    """认领队头 pending 行（FIFO）→ sending；无可认领返回 None。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "UPDATE queued_message SET status = 'sending' "
+                "WHERE id = ("
+                "  SELECT id FROM queued_message"
+                "  WHERE session_id = %s AND status = 'pending'"
+                "  ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"
+                ") "
+                f"RETURNING {_QUEUED_COLUMNS}",
+                (session_id,),
+            )
+            return await cur.fetchone()
+
+
+async def mark_queued_sent(pool: AsyncConnectionPool, item_id: uuid.UUID) -> None:
+    """sending → sent：run 终态即已消耗回合（interrupt/error/canceled 同置，消息已进历史）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE queued_message SET status = 'sent', fail_reason = NULL "
+                "WHERE id = %s AND status = 'sending'",
+                (item_id,),
+            )
+
+
+async def mark_queued_failed(
+    pool: AsyncConnectionPool, item_id: uuid.UUID, reason: str
+) -> None:
+    """sending → failed：发送前复检失败（单条意图失效，跳过续排）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE queued_message SET status = 'failed', fail_reason = %s "
+                "WHERE id = %s AND status = 'sending'",
+                (reason, item_id),
+            )
+
+
+async def reset_queued_to_pending(pool: AsyncConnectionPool, item_id: uuid.UUID) -> None:
+    """sending → pending：start_run 冲突 / 限额的回置（留待下一终态或手动触发）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE queued_message SET status = 'pending' "
+                "WHERE id = %s AND status = 'sending'",
+                (item_id,),
+            )
+
+
+async def requeue_canceled_queued(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, item_ids: Optional[list[uuid.UUID]]
+) -> int:
+    """canceled → pending（保留 created_at，FIFO 序不变）。ids 缺省 = 全部 canceled。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            if item_ids:
+                placeholders = ", ".join(["%s"] * len(item_ids))
+                await cur.execute(
+                    "UPDATE queued_message SET status = 'pending', fail_reason = NULL "
+                    f"WHERE session_id = %s AND status = 'canceled' AND id IN ({placeholders})",
+                    (session_id, *item_ids),
+                )
+            else:
+                await cur.execute(
+                    "UPDATE queued_message SET status = 'pending', fail_reason = NULL "
+                    "WHERE session_id = %s AND status = 'canceled'",
+                    (session_id,),
+                )
+            return cur.rowcount
+
+
+async def cancel_pending_queued(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, item_ids: Optional[list[uuid.UUID]]
+) -> int:
+    """pending → canceled（中止 / 单条删除前的取消）。ids 缺省 = 全部 pending。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            if item_ids:
+                placeholders = ", ".join(["%s"] * len(item_ids))
+                await cur.execute(
+                    f"UPDATE queued_message SET status = 'canceled' "
+                    f"WHERE session_id = %s AND status = 'pending' AND id IN ({placeholders})",
+                    (session_id, *item_ids),
+                )
+            else:
+                await cur.execute(
+                    "UPDATE queued_message SET status = 'canceled' "
+                    "WHERE session_id = %s AND status = 'pending'",
+                    (session_id,),
+                )
+            return cur.rowcount
+
+
+async def delete_queued_message(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, item_id: uuid.UUID
+) -> Optional[str]:
+    """删除单行，返回删除前的 status（行不存在 / 属他会话返回 None）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "DELETE FROM queued_message WHERE id = %s AND session_id = %s "
+                "RETURNING status",
+                (item_id, session_id),
+            )
+            row = await cur.fetchone()
+    return row["status"] if row else None
+
+
+async def clear_queued_messages(pool: AsyncConnectionPool, session_id: uuid.UUID) -> int:
+    """清空队列（删除全部非 sent 行；[清空] 动作）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM queued_message WHERE session_id = %s AND status != 'sent'",
+                (session_id,),
+            )
+            return cur.rowcount
+
+
+async def prune_sent_queued(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, keep: int = 200
+) -> int:
+    """sent 审计行按会话限量保留（删旧留新），防无限增长。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM queued_message WHERE id IN ("
+                "  SELECT id FROM queued_message"
+                "  WHERE session_id = %s AND status = 'sent'"
+                "  ORDER BY created_at DESC OFFSET %s"
+                ")",
+                (session_id, keep),
+            )
+            return cur.rowcount
+
+
+async def reset_stale_sending_queued(pool: AsyncConnectionPool) -> int:
+    """lifespan 启动清扫：崩溃残留的 sending 行回置 pending。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE queued_message SET status = 'pending' "
+                "WHERE status = 'sending'"
+            )
+            return cur.rowcount
+
+
+async def pause_nonempty_queues(
+    pool: AsyncConnectionPool, reason: str = "restart"
+) -> int:
+    """lifespan 启动清扫：一切非空队列（有 pending/sending 行）统一置暂停。
+
+    与"run 缓冲俱失"的重启语义对齐：在途意图挂起待确认（error/withdrawn 的
+    既有挂起行被 restart 覆盖为同效挂起，语义不回退）。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO queue_state (session_id, paused_reason) "
+                "SELECT DISTINCT session_id, %s FROM queued_message "
+                "WHERE status IN ('pending', 'sending') "
+                "ON CONFLICT (session_id) DO UPDATE "
+                "SET paused_reason = EXCLUDED.paused_reason, updated_at = now()",
+                (reason,),
+            )
+            return cur.rowcount
+
+
+async def get_queue_pause(
+    pool: AsyncConnectionPool, session_id: uuid.UUID
+) -> Optional[str]:
+    """队列暂停原因；无行 = active。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT paused_reason FROM queue_state WHERE session_id = %s",
+                (session_id,),
+            )
+            row = await cur.fetchone()
+    return row[0] if row else None
+
+
+async def pause_queue(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, reason: str
+) -> None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO queue_state (session_id, paused_reason) VALUES (%s, %s) "
+                "ON CONFLICT (session_id) DO UPDATE "
+                "SET paused_reason = EXCLUDED.paused_reason, updated_at = now()",
+                (session_id, reason),
+            )
+
+
+async def resume_queue(pool: AsyncConnectionPool, session_id: uuid.UUID) -> None:
+    """清除暂停（行删除即 active）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM queue_state WHERE session_id = %s", (session_id,)
+            )
+
+
+async def clear_queue_pause_if(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, reason: str
+) -> None:
+    """仅当当前暂停原因为 reason 时清除（新消息入队清 restart 用）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM queue_state WHERE session_id = %s AND paused_reason = %s",
+                (session_id, reason),
             )
 
 

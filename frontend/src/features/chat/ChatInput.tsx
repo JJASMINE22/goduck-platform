@@ -151,6 +151,8 @@ export function ChatInput({
 
   const idle = status === 'idle'
   const streaming = status === 'streaming'
+  // queued-send：streaming/interrupted 期间输入保持可用，发送按钮转「排队」次级态
+  const canSend = idle || streaming || status === 'interrupted'
   const taRef = useRef<HTMLTextAreaElement>(null)
   // 玻璃"点击聚焦"：点击 composer 任意空白处（padding/边缘）即聚焦输入框，
   // 触发 :focus-within 聚焦态特效；交互元素（按钮/输入/popover 内容）不劫持。
@@ -188,7 +190,7 @@ export function ChatInput({
   // 粘贴上传：截图/复制的图片/复制的文件 → 附件；纯文本粘贴零干预。
   // DataTransferItem 让出事件循环即失效，getAsFile 必须同步收集后再异步上传。
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (!canAttach || !idle || recording || transcribing) return
+    if (!canAttach || !canSend || recording || transcribing) return
     const files = Array.from(e.clipboardData.items)
       .filter((it) => it.kind === 'file' && it.type)
       .map((it) => it.getAsFile())
@@ -201,7 +203,7 @@ export function ChatInput({
 
   const handleSend = () => {
     const text = draft.trim()
-    if (!text || !idle) return
+    if (!text || !canSend) return
     // 附件在途/未决：禁止发送（见 hasPending 注释）
     if (hasPending) return
     // 未选智能体：禁止发送（空会话必须先选择，见 hasAgent 注释）
@@ -351,8 +353,8 @@ export function ChatInput({
                 : idle
                   ? '输入消息，Enter 发送，Shift+Enter 换行'
                   : streaming
-                    ? '生成中…（可中止）'
-                    : '等待人工审批…'
+                    ? '生成中…可输入排队发送，或中止'
+                    : '等待人工审批…可输入排队发送'
         }
       />
 
@@ -400,7 +402,7 @@ export function ChatInput({
                   size="middle"
                   icon={<Paperclip size={16} />}
                   loading={anyUploading}
-                  disabled={!idle}
+                  disabled={!canSend}
                 />
               </Tooltip>
             </Upload>
@@ -419,7 +421,7 @@ export function ChatInput({
                   shape="circle"
                   size="middle"
                   icon={<BookOpen size={16} />}
-                  disabled={!idle}
+                  disabled={!canSend}
                   style={selectedKbs.length ? { color: 'var(--color-primary)' } : undefined}
                 />
               </Tooltip>
@@ -463,7 +465,7 @@ export function ChatInput({
               shape="circle"
               icon={<ListChecks size={16} />}
               onClick={() => setShowRubric((v) => !v)}
-              disabled={!idle}
+              disabled={!canSend}
               style={showRubric ? { color: 'var(--color-primary)' } : undefined}
             />
           </Tooltip>
@@ -473,26 +475,29 @@ export function ChatInput({
               <Square size={14} fill="currentColor" strokeWidth={0} />
               中止
             </button>
-          ) : recording || transcribing ? (
+          ) : null}
+          {recording || transcribing ? (
             <span className="chat-composer__voice-hint">
               {recording ? '录音中…' : '识别中…'}
             </span>
           ) : (
             <button
               type="button"
-              className={`glass-btn chat-composer__send${idle && draft.trim() && !hasPending && hasAgent ? ' chat-composer__send--ready' : ''}`}
-              disabled={!idle || hasPending || !hasAgent}
+              className={`glass-btn chat-composer__send${canSend && draft.trim() && !hasPending && hasAgent ? ' chat-composer__send--ready' : ''}`}
+              disabled={!canSend || hasPending || !hasAgent}
               title={
                 hasPending
                   ? '附件上传中，请稍候…'
                   : !hasAgent
                     ? '请先选择智能体'
-                    : undefined
+                    : !idle
+                      ? '当前回合结束后自动按顺序发送'
+                      : undefined
               }
               onClick={handleSend}
             >
               <Send size={14} />
-              发送
+              {idle ? '发送' : '排队'}
             </button>
           )}
         </Flex>

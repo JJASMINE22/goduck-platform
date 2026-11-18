@@ -14,12 +14,13 @@
      204 确认无 run 才回落本地截断（旧行为）。 */
 import { useCallback, useEffect, useRef } from 'react'
 import { buildHistoryReplay } from '@/features/chat/historyReplay'
+import { queueApi } from '@/api/queue'
 import { sessionsApi } from '@/api/sessions'
 import { streamApi } from '@/api/stream'
 import { useChatStore } from '@/store/chatStore'
 import { dispatchStreamEvent, flushPendingTokens } from '@/lib/streamEvents'
 import { SseRejectedError, type StreamTermination } from '@/lib/sse'
-import type { ChatStreamStatus, Decision, SSEEvent, UUID } from '@/types'
+import type { ChatStreamStatus, Decision, QueuedItem, SSEEvent, UUID } from '@/types'
 
 export interface SendOptions {
   rubric?: string
@@ -66,6 +67,11 @@ const OBSERVER_MAX_RETRIES = 5
 /** 水合门兜底时限：正常路径（历史灌入/往返跳过）远早于此 settle */
 const HYDRATION_FALLBACK_MS = 10_000
 
+/** 排水 204 竞态的退避窗口（queued-send §6）：on_final 的 drain 是异步派发，
+ *  observe 可能先于 drain 启动返回 204 —— 队列 active 时短退避重试 */
+const QUEUE_DRAIN_RETRIES = 6
+const QUEUE_DRAIN_RETRY_MS = 500
+
 /** 观察循环等待历史水合的独立上限：水合门 promise 仅在组件挂载期可 settle
  *  （卸载后无人调 settle、hook 兜底 timer 亦随 effect 清除）——若无独立上限，
  *  孤儿等待会永久占住模块级 liveObserver 槽位，重进会话再也挂不上观察流。
@@ -100,6 +106,22 @@ async function reloadFromServer(sessionId: string): Promise<void> {
     store.loadHistory(sessionId, messages, toolCalls)
     store.resetWatermark()
   }
+}
+
+/** 队列真值回查（queued-send §6）：同步条带 + 队头 sending 物化用户气泡。
+ *  返回是否仍绑定本会话（false = 已切换，调用方应停止后续动作）。 */
+async function syncQueueView(sessionId: string): Promise<boolean> {
+  let view
+  try {
+    view = await queueApi.getQueue(sessionId)
+  } catch {
+    return false // 回查失败：保持现状（下一次终态/重进会话再同步）
+  }
+  const store = useChatStore.getState()
+  if (store.sessionId !== sessionId) return false
+  store.syncQueue(view)
+  if (view.items[0]?.status === 'sending') store.materializeHead()
+  return true
 }
 
 /**
@@ -138,6 +160,9 @@ function hydrationGate(
  *   返回，同步读 sessionId 必不匹配，循环即刻自尽且无人重启：后台 run 仍
  *   在跑，UI 却停在 /history 快照、发送被单写者闸 409。改为先等水合
  *   （gate settle 或独立兜底超时）再判绑定，未绑定窗口被等待自然覆盖。
+ * - 队列联动（queued-send §6）：终态或 204 后回查 GET /queue——队头 sending
+ *   先物化用户气泡，队列 active 则短退避后重挂观察，追赶服务端自动排水
+ *   开跑的下一回合（create_task 派发竞态由重试窗口覆盖）。
  */
 async function runObserverLoop(
   sessionId: string,
@@ -155,6 +180,7 @@ async function runObserverLoop(
   }
   const dispatch = hydrationGate(onEvent, hydration)
   let retries = 0
+  let drainRetries = 0
   while (!signal.aborted) {
     const store = useChatStore.getState()
     if (store.sessionId !== sessionId) return
@@ -184,6 +210,21 @@ async function runObserverLoop(
       }
       continue
     }
+    // 终态（done/interrupt/error/canceled）：队列回查同步条带 + 气泡物化；
+    // 成功挂上 run 即重置排水重试计数（长队列逐条续跑不受预算约束）
+    if (term !== 'closed') {
+      drainRetries = 0
+      if (!(await syncQueueView(sessionId))) return
+    } else if (useChatStore.getState().sessionId !== sessionId) {
+      return
+    }
+    // 队列 active → 退避重挂（终态后自动排水 / 204 后延迟启动同路径覆盖）
+    if (useChatStore.getState().queueState === 'active') {
+      if (++drainRetries > QUEUE_DRAIN_RETRIES) return
+      await abortableSleep(QUEUE_DRAIN_RETRY_MS, signal)
+      if (signal.aborted) return
+      continue
+    }
     // done/interrupt/error/canceled/closed(204)：观察结束
     return
   }
@@ -211,6 +252,39 @@ function startObserver(
 export function ensureObserver(sessionId: string): void {
   startObserver(sessionId, true, (e) => dispatchStreamEvent(e), null)
 }
+
+/** 队列操作（[继续]/[重新排队]）后的观察补挂：active 队列的自动排水回合
+ *  经观察流消费（终态边沿订阅只覆盖 streaming 起点的情况）。 */
+export function watchQueueDrain(sessionId: string): void {
+  const s = useChatStore.getState()
+  if (s.sessionId !== sessionId || s.queueState !== 'active') return
+  startObserver(sessionId, false, (e) => dispatchStreamEvent(e), null)
+}
+
+// —— 队列终态联动（queued-send §6）——
+// streaming → 终态边沿触发队列回查：覆盖 POST / 观察流 / 语音 WS 三类消费源
+//（观察流循环内另有就地续挂，此处 startObserver 遇槽位占用幂等跳过）。
+// done → 同步 + 队头物化 + active 时重挂观察追赶自动排水；error/interrupt →
+// 同步条带与挂起横幅。in-flight 去重防边沿抖动期间并发回查。
+let queueSyncInFlight = false
+useChatStore.subscribe((s, prev) => {
+  if (s.status === prev.status) return
+  if (prev.status !== 'streaming' || s.status === 'streaming') return
+  const sessionId = s.sessionId
+  if (!sessionId || queueSyncInFlight) return
+  queueSyncInFlight = true
+  void (async () => {
+    try {
+      const bound = await syncQueueView(sessionId)
+      if (!bound) return
+      if (useChatStore.getState().queueState === 'active') {
+        startObserver(sessionId, true, (e) => dispatchStreamEvent(e), null)
+      }
+    } finally {
+      queueSyncInFlight = false
+    }
+  })()
+})
 
 /** POST 断连/网络异常后的恢复：先经观察流接续（run 可能仍在执行），
  *  204 确认无 run 才回落本地截断（旧"连接中断"行为，含 HITL 重进可恢复提示）。
@@ -289,13 +363,21 @@ export function useStreamChat(sessionId: UUID | null, observerEnabled = true): U
     return () => clearTimeout(timer)
   }, [sessionId, observerEnabled, settleHydration])
 
-  /** 发起新消息流 */
+  /** 发起新消息流（queued-send §3/§6）：
+   *  idle=直发（接管消费通道，既有行为）；streaming/interrupted=排队侧发送——
+   *  不接管 livePost/观察流（正在跑的回合照常消费），后端决策树分流：
+   *  202 入队 → 回滚乐观消息改挂队列条带；200 SSE（并发收尾竞态）→ 事件照常
+   *  分发，终态由状态机收敛。 */
   const send = useCallback(
     async (content: string, opts?: SendOptions) => {
       if (!sessionId) return
       const store = useChatStore.getState()
-      // 仅 idle 可发（interrupted 走 resume）
-      if (store.status !== 'idle') return
+      // idle=直发；streaming/interrupted=排队；error 由横幅复位后重试
+      const prevStatus = store.status
+      if (prevStatus !== 'idle' && prevStatus !== 'streaming' && prevStatus !== 'interrupted') {
+        return
+      }
+      const sideSend = prevStatus !== 'idle'
 
       // 先快照待发附件 + 启用知识库：既要挂到 user 消息上（会话窗内展示 KB 徽标/
       // 附件缩略），又要写进请求体（后端同样把 kb_ids 旁挂进消息 additional_kwargs，
@@ -322,25 +404,55 @@ export function useStreamChat(sessionId: UUID | null, observerEnabled = true): U
       store.clearAttachments()
       store.clearKbs()
 
-      stopObserver(sessionId) // 本地消费即将开始，观察流让位（防双路）
-      abortLivePost(sessionId) // 防御：同会话残留旧连接
-      const controller = new AbortController()
-      livePost = { sessionId, controller }
+      let controller: AbortController | null = null
+      if (!sideSend) {
+        stopObserver(sessionId) // 本地消费即将开始，观察流让位（防双路）
+        abortLivePost(sessionId) // 防御：同会话残留旧连接
+        controller = new AbortController()
+        livePost = { sessionId, controller }
+      }
+      const aborted = () => controller?.signal.aborted ?? false
 
+      let queuedItem: QueuedItem | null = null
       try {
-        const termination = await streamApi.sendMessage(sessionId, body, { onEvent: dispatchEvent }, controller.signal)
-        if (livePost?.controller === controller) livePost = null
-        if (termination === 'closed' && !controller.signal.aborted) {
+        const termination = await streamApi.sendMessage(
+          sessionId,
+          body,
+          {
+            onEvent: dispatchEvent,
+            onQueued: (item) => {
+              queuedItem = item as QueuedItem
+            },
+          },
+          controller?.signal,
+        )
+        if (!sideSend && livePost?.controller === controller) livePost = null
+        if (termination === 'queued' && queuedItem) {
+          // 入队：乐观消息回滚（队列是候客厅，不走时间线），条目改挂队列条带；
+          // 状态回到发送前（streaming=回合仍在跑，interrupted=审批卡回归）
+          const s = useChatStore.getState()
+          flushPendingTokens()
+          s.finalizeStreaming()
+          const lastUser = [...s.messages].reverse().find((m) => m.role === 'user')
+          if (lastUser) s.removeTurn(lastUser.id)
+          s.enqueueLocal(queuedItem)
+          s.setStatus(prevStatus)
+          if (prevStatus === 'idle') s.setStreamSource(null)
+          // 回合仍在跑：sideSend 未接管消费通道，幂等补挂观察流续接直播
+          if (prevStatus === 'streaming') startObserver(sessionId, false, dispatchEvent, null)
+          return
+        }
+        if (termination === 'closed' && !aborted()) {
           // 后端被硬杀/代理掐断：run 可能仍在服务端执行 —— 观察流接续或截断
           await recoverOrTruncate(sessionId, dispatchEvent)
         }
       } catch (err) {
-        if (livePost?.controller === controller) livePost = null
-        // 后端拒绝（携带真实 detail 的 4xx：未选择智能体 / HITL 门禁 / 模型
-        // 不可用等）：请求未成立、无 run——回滚乐观消息、恢复 composer 内容、
+        if (!sideSend && livePost?.controller === controller) livePost = null
+        // 后端拒绝（携带真实 detail 的 4xx：未选择智能体 / 队列已满 / HITL 门禁 /
+        // 模型不可用等）：请求未成立、无 run——回滚乐观消息、恢复 composer 内容、
         // 以真实原因落横幅。注意顺序：setStreamError 会连带置 status='error'，
-        // 须在其后再显式回 idle，横幅保留而发送解锁。
-        if (err instanceof SseRejectedError && !controller.signal.aborted) {
+        // 须在其后再显式回发送前状态，横幅保留而发送解锁。
+        if (err instanceof SseRejectedError && !aborted()) {
           const s = useChatStore.getState()
           flushPendingTokens()
           s.finalizeStreaming()
@@ -350,12 +462,12 @@ export function useStreamChat(sessionId: UUID | null, observerEnabled = true): U
           s.setKbs(kbSnap)
           s.setDraft(content)
           s.setStreamError(err.message)
-          s.setStatus('idle')
-          s.setStreamSource(null)
+          s.setStatus(sideSend ? prevStatus : 'idle')
+          if (!sideSend) s.setStreamSource(null)
           return
         }
         // 网络层异常：先观察流接续（run 可能仍在），失败再落 error（准则 F4）
-        if (!controller.signal.aborted) {
+        if (!aborted()) {
           await recoverOrTruncate(sessionId, dispatchEvent)
         }
       }
@@ -428,12 +540,14 @@ export function useStreamChat(sessionId: UUID | null, observerEnabled = true): U
     if (sessionId) {
       stopObserver(sessionId)
       abortLivePost(sessionId)
-      // 服务端取消（best-effort）：广播 canceled 终态。本页订阅已拆（取消的
-      // 常态），由下方本地落态兜底，语义与终态事件一致；失败（网络）时 run
-      // 自然跑完，usage 照常入库，重进可见结果
+      // 服务端取消（best-effort）：广播 canceled 终态 + 冻结队列（pending 批量
+      // canceled，两级语义见后端）。本页订阅已拆（取消的常态），由下方本地
+      // 落态兜底；失败（网络）时 run 自然跑完，usage 照常入库，重进可见结果
       void streamApi.cancel(sessionId).catch(() => undefined)
     }
     const store = useChatStore.getState()
+    // 队列本地批量标记 canceled（服务端真值随后续回查对齐；失败则回 pending）
+    store.markQueueCanceledLocal()
     // 中止后固化仍在流式的消息（转 Markdown 渲染，而非停留在纯文本流式态），再回 idle；
     // 同时拆除本回合的任务清单浮窗——中止后计划已死，悬挂只会误导（旧清单累计的诱因之一）；
     // 时间线末尾落「用户已手动中断」提示条目（agent 输出气泡下方，见 MessageList）
