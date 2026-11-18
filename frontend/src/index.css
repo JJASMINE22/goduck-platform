@@ -614,14 +614,20 @@ pre,
 /* —— 待发队列条带（queued-send）：消息列末尾的候客厅视图 ——
    行卡片 = 状态左强调条（时间线卡同语言）+ 序号/状态徽标 + 两行截断正文 +
    chip 元信息；操作钮恒居卡片右侧垂直居中。浅色下白瓷卡 + 主色低染，
-   与近白画布拉开对比（原玻璃软底在浅色下近乎隐形）。 */
+   与近白画布拉开对比（原玻璃软底在浅色下近乎隐形）。
+   宽度层次（主宽辅窄）：条带限宽 720px 对齐非气泡卡/composer 窄列锚点
+   （不再是全阅读列宽的孤例）；行卡片 fit-content 随内容收缩——短消息得到
+   紧凑卡片（操作钮紧贴文本），长内容撑满 720px 后两行截断。 */
 .queue-strip {
   margin: 4px 0 8px;
+  max-width: 720px;
 }
 .queue-strip__group {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* 行卡片 fit-content 后不再被交叉轴 stretch 拉回满宽 */
+  align-items: flex-start;
 }
 .queue-strip__header {
   padding-inline: 2px;
@@ -644,6 +650,8 @@ pre,
 }
 .queue-strip__row {
   --queue-accent: color-mix(in srgb, var(--color-primary) 55%, transparent);
+  width: fit-content;
+  max-width: 100%;
   align-items: flex-start;
   padding: 8px 10px;
   border-radius: 10px;
