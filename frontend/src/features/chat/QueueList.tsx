@@ -1,12 +1,14 @@
 /* 队列条带（queued-send §6）—— 消息流末尾的待发队列视图：
-   - paused 横幅（error/withdrawn/restart 原因）+ [继续][清空]；
-   - pending 半透明排队气泡（FIFO 序，可删除）；sending 队首 = 正在发送；
-   - failed 行展示复检失败原因 + [回填草稿] 拯救；
-   - canceled 拯救列表：[重新排队]（单条/全部）+ [回填草稿] + 删除。
-   真值以 GET /queue 为准（终态回查驱动），本地操作即时回显。 */
-import { Alert, App as AntApp, Button, Flex, Tooltip, Typography } from 'antd'
+    - paused 横幅（error/withdrawn/restart 原因）+ [继续][清空]；
+    - 行卡片：状态左强调条 + 序号/状态徽标，内容两行截断，
+      附件/知识库收敛为 chip，操作钮恒居卡片右侧（垂直居中）；
+    - FIFO 顺序由序号徽标隐式表达，不占文案；
+    - failed 行展示复检失败原因 + [回填草稿] 拯救；
+    - canceled 拯救列表：[重新排队]（单条/全部）+ [回填草稿] + 删除。
+    真值以 GET /queue 为准（终态回查驱动），本地操作即时回显。 */
+import { Alert, App as AntApp, Button, Flex, Tooltip } from 'antd'
 import { type ReactNode, useState } from 'react'
-import { Clock, CornerUpLeft, RotateCcw, Trash2 } from 'lucide-react'
+import { Ban, BookOpen, Clock, CornerUpLeft, Loader2, Paperclip, RotateCcw, Trash2, XCircle } from 'lucide-react'
 import { queueApi } from '@/api/queue'
 import { useChatStore } from '@/store/chatStore'
 import { watchQueueDrain } from '@/hooks/useStreamChat'
@@ -19,7 +21,7 @@ const PAUSE_REASON_TEXT: Record<string, string> = {
   restart: '服务重启，队列已挂起',
 }
 
-function QueueRow({ item, sessionId }: { item: QueuedItem; sessionId: UUID }): ReactNode {
+function QueueRow({ item, sessionId, seq }: { item: QueuedItem; sessionId: UUID; seq?: number }): ReactNode {
   const { modal } = AntApp.useApp()
   const removeQueueItem = useChatStore((s) => s.removeQueueItem)
   const setDraft = useChatStore((s) => s.setDraft)
@@ -59,76 +61,97 @@ function QueueRow({ item, sessionId }: { item: QueuedItem; sessionId: UUID }): R
       watchQueueDrain(sessionId)
     })
 
-  const statusTag =
+  // 左缘徽标：pending=FIFO 序号 | sending=旋转指示 | failed/canceled=状态图标
+  const badge: ReactNode =
     item.status === 'sending' ? (
-      <Typography.Text type="secondary">发送中…</Typography.Text>
+      <Loader2 size={13} className="queue-strip__spin" />
     ) : item.status === 'failed' ? (
-      <Typography.Text type="danger" title={item.fail_reason ?? undefined}>
-        失败{item.fail_reason ? `：${item.fail_reason}` : ''}
-      </Typography.Text>
+      <XCircle size={13} />
     ) : item.status === 'canceled' ? (
-      <Typography.Text type="secondary">已取消</Typography.Text>
-    ) : null
+      <Ban size={13} />
+    ) : (
+      seq
+    )
+
+  const meta: ReactNode[] = []
+  if (item.status === 'sending') {
+    meta.push(
+      <span key="sending" className="queue-strip__chip queue-strip__chip--live">
+        发送中
+      </span>,
+    )
+  }
+  if (item.status === 'canceled') {
+    meta.push(
+      <span key="canceled" className="queue-strip__chip">
+        已取消
+      </span>,
+    )
+  }
+  if (item.status === 'failed') {
+    meta.push(
+      <span key="reason" className="queue-strip__reason" title={item.fail_reason ?? undefined}>
+        失败{item.fail_reason ? `：${item.fail_reason}` : ''}
+      </span>,
+    )
+  }
+  if (item.attachments.length) {
+    meta.push(
+      <span key="att" className="queue-strip__chip">
+        <Paperclip size={11} />
+        {item.attachments.length} 个附件
+      </span>,
+    )
+  }
+  if (item.kbs.length) {
+    const kbNames = item.kbs.map((k) => k.name).join('、')
+    meta.push(
+      <span key="kb" className="queue-strip__chip queue-strip__chip--kb" title={kbNames}>
+        <BookOpen size={11} />
+        {kbNames}
+      </span>,
+    )
+  }
 
   return (
-    <Flex
-      vertical
-      gap={2}
-      className="queue-strip__row"
-      data-status={item.status}
-      style={{ opacity: item.status === 'pending' ? 0.72 : 1 }}
-    >
-      <Flex align="center" gap={6}>
-        <Clock size={12} />
-        <span className="queue-strip__content" title={item.content}>
+    <Flex gap={8} className="queue-strip__row" data-status={item.status}>
+      <span className="queue-strip__badge">{badge}</span>
+      <div className="queue-strip__body">
+        <div className="queue-strip__content" title={item.content}>
           {item.content}
-        </span>
-      </Flex>
-      <Flex gap={4} align="center" justify="space-between">
-        <Flex gap={8} align="center">
-          {statusTag}
-          {item.attachments.length ? (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {item.attachments.length} 个附件
-            </Typography.Text>
-          ) : null}
-          {item.kbs.length ? (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {item.kbs.map((k) => k.name).join('、')}
-            </Typography.Text>
-          ) : null}
-        </Flex>
-        <Flex gap={2} align="center">
-          {item.status === 'canceled' || item.status === 'failed' ? (
-            <>
-              <Tooltip title="重新排队（保留原排队顺序）">
-                <Button type="text" size="small" icon={<RotateCcw size={13} />} loading={busy} onClick={requeue} />
-              </Tooltip>
-              <Tooltip title="回填到输入框编辑后重发">
-                <Button type="text" size="small" icon={<CornerUpLeft size={13} />} onClick={backfill} />
-              </Tooltip>
-            </>
-          ) : null}
-          {item.status !== 'sending' ? (
-            <Tooltip title="删除">
-              <Button
-                type="text"
-                size="small"
-                danger
-                icon={<Trash2 size={13} />}
-                onClick={() =>
-                  modal.confirm({
-                    title: '删除该排队消息？',
-                    okType: 'danger',
-                    okText: '删除',
-                    cancelText: '取消',
-                    onOk: del,
-                  })
-                }
-              />
+        </div>
+        {meta.length ? <div className="queue-strip__meta">{meta}</div> : null}
+      </div>
+      <Flex gap={2} align="center" className="queue-strip__actions">
+        {item.status === 'canceled' || item.status === 'failed' ? (
+          <>
+            <Tooltip title="重新排队（保留原排队顺序）">
+              <Button type="text" size="small" icon={<RotateCcw size={13} />} loading={busy} onClick={requeue} />
             </Tooltip>
-          ) : null}
-        </Flex>
+            <Tooltip title="回填到输入框编辑后重发">
+              <Button type="text" size="small" icon={<CornerUpLeft size={13} />} onClick={backfill} />
+            </Tooltip>
+          </>
+        ) : null}
+        {item.status !== 'sending' ? (
+          <Tooltip title="删除">
+            <Button
+              type="text"
+              size="small"
+              danger
+              icon={<Trash2 size={13} />}
+              onClick={() =>
+                modal.confirm({
+                  title: '删除该排队消息？',
+                  okType: 'danger',
+                  okText: '删除',
+                  cancelText: '取消',
+                  onOk: del,
+                })
+              }
+            />
+          </Tooltip>
+        ) : null}
       </Flex>
     </Flex>
   )
@@ -198,20 +221,21 @@ export function QueueList({ sessionId }: { sessionId: UUID }): ReactNode {
       ) : null}
       {pending.length ? (
         <div className="queue-strip__group">
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            待发队列（{pending.length}，按顺序自动发送）
-          </Typography.Text>
-          {pending.map((item) => (
-            <QueueRow key={item.id} item={item} sessionId={sessionId} />
+          <Flex gap={6} align="center" className="queue-strip__header">
+            <Clock size={12} className="queue-strip__header-icon" />
+            <span className="queue-strip__title">待发队列</span>
+            <span className="queue-strip__count">{pending.length} 条</span>
+          </Flex>
+          {pending.map((item, i) => (
+            <QueueRow key={item.id} item={item} sessionId={sessionId} seq={i + 1} />
           ))}
         </div>
       ) : null}
       {salvage.length ? (
         <div className="queue-strip__group">
-          <Flex gap={8} align="center">
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              已取消 / 失败（{salvage.length}）
-            </Typography.Text>
+          <Flex gap={6} align="center" className="queue-strip__header">
+            <span className="queue-strip__title">已取消 / 失败</span>
+            <span className="queue-strip__count">{salvage.length} 条</span>
             <Button
               size="small"
               type="link"

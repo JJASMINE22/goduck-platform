@@ -612,36 +612,163 @@ pre,
 }
 
 /* —— 待发队列条带（queued-send）：消息列末尾的候客厅视图 ——
-   pending 半透明（数据态标注 data-status），sending 恢复完全不透明；
-   行卡片复用玻璃软底，与气泡同语言但更轻（非对话内容） */
+   行卡片 = 状态左强调条（时间线卡同语言）+ 序号/状态徽标 + 两行截断正文 +
+   chip 元信息；操作钮恒居卡片右侧垂直居中。浅色下白瓷卡 + 主色低染，
+   与近白画布拉开对比（原玻璃软底在浅色下近乎隐形）。 */
 .queue-strip {
   margin: 4px 0 8px;
 }
 .queue-strip__group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+}
+.queue-strip__header {
+  padding-inline: 2px;
+}
+.queue-strip__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.queue-strip__header-icon {
+  color: var(--color-text-tertiary);
+}
+.queue-strip__count {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--color-primary);
+  background: var(--color-primary-bg);
 }
 .queue-strip__row {
-  padding: 6px 10px;
+  --queue-accent: color-mix(in srgb, var(--color-primary) 55%, transparent);
+  align-items: flex-start;
+  padding: 8px 10px;
   border-radius: 10px;
-  border: 1px solid var(--glass-border);
-  background: var(--glass-bg-soft);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 14%, var(--color-border-soft));
+  border-left: 3px solid var(--queue-accent);
+  background: color-mix(in srgb, var(--color-primary) 4%, var(--glass-bg));
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.queue-strip__row:hover {
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--glass-bg));
 }
 .queue-strip__row[data-status='sending'] {
-  border-color: color-mix(in srgb, var(--color-primary) 35%, var(--glass-border));
+  --queue-accent: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--glass-bg));
 }
-.queue-strip__content {
+.queue-strip__row[data-status='failed'] {
+  --queue-accent: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 16%, var(--color-border-soft));
+  background: color-mix(in srgb, var(--color-danger) 4%, var(--glass-bg));
+}
+.queue-strip__row[data-status='failed'] .queue-strip__badge {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+}
+.queue-strip__row[data-status='canceled'] {
+  --queue-accent: var(--color-text-tertiary);
+  border-color: var(--color-border-soft);
+  background: color-mix(in srgb, var(--color-text-tertiary) 4%, var(--glass-bg));
+}
+.queue-strip__row[data-status='canceled'] .queue-strip__badge {
+  color: var(--color-text-tertiary);
+  background: color-mix(in srgb, var(--color-text-tertiary) 12%, transparent);
+}
+.queue-strip__badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-primary);
+  background: var(--color-primary-bg);
+}
+.queue-strip__body {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.queue-strip__content {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+  color: var(--color-text);
+}
+.queue-strip__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+}
+.queue-strip__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-text-tertiary) 10%, transparent);
+  white-space: nowrap;
+}
+.queue-strip__chip .lucide {
+  flex-shrink: 0;
+}
+.queue-strip__chip--live {
+  color: var(--color-primary);
+  background: var(--color-primary-bg);
+}
+.queue-strip__chip--kb {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.queue-strip__reason {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--color-danger);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+}
+.queue-strip__actions {
+  flex-shrink: 0;
+  align-self: center;
+  margin-left: 4px;
 }
 .queue-strip__row .ant-btn {
-  height: 22px;
+  height: 24px;
   padding-inline: 4px;
+}
+.queue-strip__spin {
+  animation: queue-spin 1s linear infinite;
+}
+@keyframes queue-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* 麦克风按钮：与左下工具栏圆形图标按钮同规格；长按说话（pointer 按下/松起）。
