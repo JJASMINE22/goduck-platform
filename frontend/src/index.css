@@ -508,6 +508,15 @@ pre,
 .chat-composer__agent-select .ant-select-selection-item {
   color: var(--color-text-secondary);
 }
+/* 显示密度菜单项（简洁|详细）：文本 + 后置裸 ✔（无 Checkbox 框体，主色高亮） */
+.display-mode-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.display-mode-item__check {
+  color: var(--color-primary);
+}
 /* ===== [试验] 流体玻璃按钮（Liquid Glass · iOS 26 风）=====
    成像三要素：① 半透薄底 ② backdrop-filter 取景后景（blur + 提饱和），
    ③ 多道 inset rim 高光模拟玻璃边缘折射；::before 常驻顶部镜面亮斑（厚度感），

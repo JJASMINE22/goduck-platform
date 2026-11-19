@@ -30,6 +30,7 @@ import { useKnowledgeBases, useKnowledgeCapability } from '@/hooks/useKnowledge'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { uploadsApi } from '@/api/uploads'
 import { useChatStore, type PendingAttachment } from '@/store/chatStore'
+import { DisplayModeToggle } from './DisplayModeToggle'
 import type { ChatStreamStatus, KnowledgeBaseOut, UUID } from '@/types'
 import type { SendOptions } from '@/hooks/useStreamChat'
 import type { UseVoiceInput } from '@/hooks/useVoiceInput'
@@ -459,6 +460,9 @@ export function ChatInput({
           ) : null}
         </Flex>
         <Flex gap={8} align="center">
+          {/* 显示密度（简洁|详细）：图标 + Dropdown 单选列表，图标随模式切换；
+              与发送无耦合，任何会话状态（含流式中）均可即时切换 */}
+          <DisplayModeToggle />
           <Tooltip title={showRubric ? '收起 rubric 覆盖' : '展开单次 rubric 覆盖'} placement="top">
             <Button
               type="text"

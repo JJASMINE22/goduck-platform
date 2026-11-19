@@ -391,6 +391,12 @@ async function streamMessage(sessionId, body, handlers) {
 - **思考块**：默认收起（不自动展开/收起，尊重用户操作）；展开态放宽幅宽（`min(90%, 960px)`，
   收起回窄列）；流式中展开态贴底跟随（上滑即停跟），结束固化「思考 N 秒」
   （`endedAt` 落戳，仅 live 流式有值）并转 Markdown 渲染。
+- **阅读模式（简洁 | 详细）**：composer 工具条图标钮 + Dropdown 单选列表（`DisplayModeToggle`，
+  选中项文本后置裸 ✔ 主色高亮；图标随模式切换 Eye=详细 / EyeOff=简洁，状态即所见），纯客户端
+  展示偏好（`chatDisplayStore`，localStorage 持久化，缺省详细），后端零感知。简洁 = MessageList 时间线投影跳过工具调用卡
+  （含 kb_search 卡）；思考块、任务清单、用量徽标、文件变更卡、HITL 卡均不受影响。过滤只发生
+  在渲染层——chatStore 恒为全量超集，切换即时生效、可回溯（含流式进行中，切回详细已到达的
+  工具卡立即显影），回撤时间窗等存储层语义不变。归档/任务会话无 composer，沿用既有偏好展示。
 - **输入区**：
   - 文本框 + 发送（禁用条件：`streamStatus !== idle && !== interrupted`；另：未选智能体的空会话禁发）。
   - **智能体选择器**（会话-智能体解耦）：composer 左下角，逐回合选择；切换即按新选中

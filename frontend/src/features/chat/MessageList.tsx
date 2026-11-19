@@ -1,8 +1,12 @@
 /* 聊天消息流 —— 合并 chatStore.messages + toolCalls 按 createdAt 排序成统一时间线。
-   user/agent 气泡（按 agentPath 区分主/子代理，准则 F2 角色色）+ 工具调用折叠卡。
-   [Demo] 入场动画 / 头像 / 角色色带 / 流式打字指示 / 工具执行脉动。
+    user/agent 气泡（按 agentPath 区分主/子代理，准则 F2 角色色）+ 工具调用折叠卡。
+    [Demo] 入场动画 / 头像 / 角色色带 / 流式打字指示 / 工具执行脉动。
 
-   性能（渲染隔离）：流式期间 store 每个合并批（≈30fps）都会更新 messages 引用，
+    阅读模式（简洁 | 详细，chatDisplayStore）：简洁 = 本投影跳过工具调用卡
+    （执行/返回观测）；store 恒为全量超集，切换即时生效、可回溯，存储层语义
+    （回撤时间窗 / usage 去重）不受影响——详见 store 文件头。
+
+    性能（渲染隔离）：流式期间 store 每个合并批（≈30fps）都会更新 messages 引用，
    本列表随之重渲染——但所有子项（气泡/思考块/工具卡/提示行）均为 memo 组件，
    props 除正在增长的那条消息外全部引用稳定（ChatPage 侧已保证回调稳定），
    历史消息在 token 流期间完全跳过重渲染（否则每批成本 = O(会话总内容)，
@@ -11,6 +15,7 @@ import { Button, Collapse, Flex, Tag } from 'antd'
 import { type CSSProperties, type ReactNode, memo, useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, Brain, OctagonX, Undo2 } from 'lucide-react'
 import { useChatStore } from '@/store/chatStore'
+import { useChatDisplayStore } from '@/store/chatDisplayStore'
 import type { ChatMessage, FileChangeEntry, ToolCallEntry } from '@/store/chatStore'
 import { Markdown } from '@/components/markdown/Markdown'
 import { MessageAttachments } from './MessageAttachments'
@@ -83,6 +88,9 @@ export const MessageList = memo(function MessageList({
   const status = useChatStore((s) => s.status)
   const parseStatus = useChatStore((s) => s.parseStatus)
   const streaming = status === 'streaming'
+  // 阅读模式：简洁下工具调用卡不进时间线（仅渲染投影，数据仍在 store，
+  // 切回详细即恢复显示；空会话标语等其余逻辑不依赖 toolCalls 条目）
+  const displayMode = useChatDisplayStore((s) => s.mode)
   // 空会话标语（按会话稳定）：品牌徽章 + 一句 quip，不提示使用方式
   const slogan = useMemo(() => pickSlogan(sessionId), [sessionId])
 
@@ -95,18 +103,21 @@ export const MessageList = memo(function MessageList({
   }, [messages])
 
   // 统一时间线：三源按 createdAt 归并排序（useMemo——每个 token 合并批都会
-  // 触发本组件重渲染，避免重复建数组 + 排序）
+  // 触发本组件重渲染，避免重复建数组 + 排序）。简洁模式跳过工具卡源
+  //（kind:'tool'，含 kb_search 专属卡——同属工具执行观测）
   const timeline: TimelineItem[] = useMemo(
     () =>
       [
         ...messages.map((m) => ({ kind: 'msg' as const, ts: m.createdAt, data: m })),
-        ...toolCalls.map((t) => ({ kind: 'tool' as const, ts: t.createdAt, data: t })),
+        ...(displayMode === 'detailed'
+          ? toolCalls.map((t) => ({ kind: 'tool' as const, ts: t.createdAt, data: t }))
+          : []),
         // 单张本回合聚合卡：ts 取末条记录到达时间，随流式新增记录自然贴近时间线底部
         ...(fileChanges.length
           ? [{ kind: 'files' as const, ts: fileChanges[fileChanges.length - 1].createdAt, data: fileChanges }]
           : []),
       ].sort((a, b) => a.ts - b.ts),
-    [messages, toolCalls, fileChanges],
+    [messages, toolCalls, fileChanges, displayMode],
   )
 
   return (
