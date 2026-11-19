@@ -2,6 +2,7 @@
    - text/markdown → /file 取文本；md 走 Markdown 渲染，其余包代码块高亮
    - html → /file 取文本，沙箱 iframe（srcDoc）直接渲染，渲染/源码可切换；
      sandbox 不含 allow-same-origin → 不透明源，页面脚本无法触碰应用 cookie/存储
+   - svg → /file 取文本，SvgFigure 净化 + svg-scope 主题化渲染（语义类才有着色）
    - image → <img>（下载直链）
    - pdf → <iframe>（下载直链，浏览器原生）
    - office(docx/xlsx/pptx/csv…) → /preview 取 markitdown Markdown 渲染；503 降级
@@ -11,6 +12,7 @@ import { Alert, Button, Segmented, Skeleton, Space, Tooltip, Typography } from '
 import { type ReactNode, useState } from 'react'
 import { Download, FileText, X } from 'lucide-react'
 import { Markdown } from '@/components/markdown/Markdown'
+import { SvgFigure } from '@/components/markdown/SvgFigure'
 import { useWorkspaceFile, useWorkspacePreview } from '@/hooks/useWorkspace'
 import { workspaceApi } from '@/api/workspace'
 import { ApiError } from '@/api/client'
@@ -120,7 +122,7 @@ export function WorkspaceFilePreview({
   // —— 文本类：取 /file ——
   const fileQ = useWorkspaceFile(
     sessionId,
-    kind === 'text' || kind === 'markdown' || kind === 'html' ? path : null,
+    kind === 'text' || kind === 'markdown' || kind === 'html' || kind === 'svg' ? path : null,
   )
   // —— office 类：取 /preview（markitdown）——
   const previewQ = useWorkspacePreview(sessionId, kind === 'office' ? path : null)
@@ -213,6 +215,45 @@ export function WorkspaceFilePreview({
       data.modified_at,
       false,
       toggle,
+    )
+  }
+
+  if (kind === 'svg') {
+    if (fileQ.isLoading) return wrap(<Skeleton active paragraph={{ rows: 8 }} />)
+    if (fileQ.isError) {
+      return <FallbackCard sessionId={sessionId} path={path} name={name} reason={errMsg(fileQ.error)} onClose={onClose} />
+    }
+    const data = fileQ.data
+    if (!data || !data.is_text || !data.content) {
+      return (
+        <FallbackCard
+          sessionId={sessionId}
+          path={path}
+          name={name}
+          size={data?.size}
+          modifiedAt={data?.modified_at}
+          reason="该文件为二进制，无法在线预览"
+          onClose={onClose}
+        />
+      )
+    }
+    // 复用聊天内联 SVG 渲染管线：DOMPurify 净化 + svg-scope 语义类主题化
+    //（深浅色随平台）+ 硬编码色归一化；净化失败组件自身降级为源码展示。
+    // 截断的半截 SVG XML 解析必失败 → 同样落源码展示，配合提示下载查看。
+    return wrap(
+      <>
+        <SvgFigure code={data.content} />
+        {data.truncated ? (
+          <Alert
+            type="info"
+            showIcon
+            message="内容较长已截断，图表可能不完整，请下载查看完整文件"
+            style={{ margin: '8px 0' }}
+          />
+        ) : null}
+      </>,
+      data.size,
+      data.modified_at,
     )
   }
 
