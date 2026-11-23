@@ -51,6 +51,9 @@ export function buildHistoryReplay(history: MessageOut[]): HistoryReplay {
           // 与实时发送时的快照形状一致 → 同一渲染路径
           attachments: m.attachments?.length ? m.attachments : undefined,
           kbs: m.kbs?.length ? m.kbs : undefined,
+          // 排水回合锚点（queued-send）：loadHistory 据此登记幂等物化键，
+          // 冷进入后观察流重放 turn_start 不再重复物化该条目
+          queueItemId: m.queue_item_id ?? undefined,
           createdAt: i,
         })
         break

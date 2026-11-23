@@ -39,6 +39,7 @@ from websockets.exceptions import WebSocketException
 
 from app.api.stream import (
     _build_agent_or_409,
+    _persist_file_changes,
     _persist_usage,
     _refuse_or_heal_pending,
     clear_orphan_pending,
@@ -381,6 +382,10 @@ async def _run_agent_round(
         # usage 与 SSE 路径同构即时入库（best-effort，见 _persist_usage）
         await _persist_usage(st.pool, session["id"], payload)
 
+    async def on_file_change(payload: dict, run_token: str) -> None:
+        # 文件变更镜像落库同构（刷新后明细存活，见 _persist_file_changes）
+        await _persist_file_changes(st.pool, session["id"], payload, run_token)
+
     async def on_final(final_event) -> None:
         await SessionService(st.pool).touch(session["id"])
         # queued-send §4：语音回合终态同样联动队列（done 续排 / error 挂起）；
@@ -391,7 +396,7 @@ async def _run_agent_round(
     try:
         await st.run_manager.start_run(
             thread_id, session["id"], "voice", factory,
-            on_usage=on_usage, on_final=on_final,
+            on_usage=on_usage, on_file_change=on_file_change, on_final=on_final,
         )
     except RunConflictError:
         # queued-send §5：录音期间被手打回合抢跑（单写者闸冲突）→ 转写文本

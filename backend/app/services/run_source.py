@@ -30,6 +30,7 @@ def chat_event_source(
     knowledge_base_ids: list,
     rubric: str | None = None,
     raw_content: str | None = None,
+    queue_item_id: str | None = None,
 ) -> Callable[[], AsyncIterator[SSEEvent]]:
     """构建回合事件源工厂（即 RunManager.start_run 的 factory 参数）。
 
@@ -65,6 +66,7 @@ def chat_event_source(
             raw_content=raw_content,
             kb_ids=[str(k) for k in knowledge_base_ids],
             agent_id=str(agent_id),
+            queue_item_id=queue_item_id,
         )
         try:
             async for ev in gen:

@@ -4530,13 +4530,37 @@ body .ant-drawer .ant-drawer-mask {
     var(--shadow-md);
 }
 /* 浮层左缘手柄：绝对定位于 .ws-view（right 由内联样式随浮层宽度联动，10px 热区
-   中心对齐浮层左缘）——锚在预览卡外层，overflow:hidden 不裁切热区；z-index 压过
-   浮层本体保证可命中 */
+    中心对齐浮层左缘）——锚在预览卡外层，overflow:hidden 不裁切热区；z-index 压过
+    浮层本体保证可命中 */
 .ws-view__resizer {
   position: absolute;
   top: 0;
   bottom: 0;
   z-index: 4;
+}
+
+/* 预览铺满层（WorkspaceView PreviewStage）：ZoomStage 同构 portal 浮层——
+   dock 带 transform，树内 fixed 会错位，必须 portal 到 body 后再 fixed。
+   面板复用 .ws-view__preview 玻璃卡壳（本规则在其后，定位覆写生效）；
+   分栏实例同步 masked（visibility 保滚动位，退铺满无感回归） */
+.ws-full {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+}
+.ws-full__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 17, 23, 0.66);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.ws-full__panel {
+  position: absolute;
+  inset: 16px;
+}
+.ws-view__preview--masked {
+  visibility: hidden;
 }
 
 /* 树节点标题：名称 + 体积 + 悬停操作（下载/删除） */
@@ -4641,12 +4665,12 @@ body .ant-drawer .ant-drawer-mask {
   gap: 2px;
   max-width: 520px;
 }
-/* 行为 5 列网格：图标 | 动作 | 文件名(1fr 截断) | +N | −M。
+/* 行为 6 列网格：图标 | 动作 | 文件名(1fr 截断) | +N | −M | 明细按钮(可选)。
    数字列固定宽度右对齐 → 各行 +N/−M 逐列对齐（与 git diff --stat 观感一致）；
    0/null 时单元格留空占位，不塌列、不错位。 */
 .fc-row {
   display: grid;
-  grid-template-columns: max-content max-content minmax(0, 1fr) 3.5em 3.5em;
+  grid-template-columns: max-content max-content minmax(0, 1fr) 3.5em 3.5em max-content;
   column-gap: 6px;
   align-items: center;
   padding: 3px 4px;
@@ -4700,6 +4724,36 @@ body .ant-drawer .ant-drawer-mask {
 }
 .fc-row__num--del {
   color: var(--color-danger);
+}
+/* 行尾明细按钮（仅有 diff 的记录渲染）：行点击语义是跳工作区，按钮独立可点；
+   激活态主色提示展开中 */
+.fc-row__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.fc-row__btn:hover {
+  color: var(--color-primary);
+  background: var(--color-border-soft);
+}
+.fc-row__btn--active {
+  color: var(--color-primary);
+}
+/* 行下明细展开区：红绿 diff（DiffViewer，与 ToolCallCard 明细同观感）；
+   同文件多次落盘逐条堆叠；限宽与 fc-list 一致，缩进示意从属于上行 */
+.fc-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 4px 23px;
+  max-width: 520px;
 }
 
 /* 工作区文件预览（分栏右侧，由 WorkspaceFilePreview 渲染） */
@@ -5411,7 +5465,7 @@ body .ant-select-dropdown .ant-select-item-option-active:not(.ant-select-item-op
     font-size: 16px;
   }
   /* 工作区预览浮层：窄屏改近全幅遮挡（拖拽手柄隐藏，宽度不再内联联动的
-     桌面值——CSS 覆盖为 auto，左右各留 8px 呼吸） */
+      桌面值——CSS 覆盖为 auto，左右各留 8px 呼吸） */
   .ws-view__resizer {
     display: none;
   }
@@ -5421,6 +5475,9 @@ body .ant-select-dropdown .ant-select-item-option-active:not(.ant-select-item-op
     top: 8px;
     bottom: 8px;
     right: 8px;
+  }
+  .ws-full__panel {
+    inset: 8px;
   }
 }
 

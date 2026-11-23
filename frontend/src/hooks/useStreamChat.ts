@@ -17,6 +17,7 @@ import { buildHistoryReplay } from '@/features/chat/historyReplay'
 import { queueApi } from '@/api/queue'
 import { sessionsApi } from '@/api/sessions'
 import { streamApi } from '@/api/stream'
+import { hydrateFileChanges } from '@/lib/fileChanges'
 import { useChatStore } from '@/store/chatStore'
 import { dispatchStreamEvent, flushPendingTokens } from '@/lib/streamEvents'
 import { SseRejectedError, type StreamTermination } from '@/lib/sse'
@@ -105,11 +106,14 @@ async function reloadFromServer(sessionId: string): Promise<void> {
   if (store.sessionId === sessionId) {
     store.loadHistory(sessionId, messages, toolCalls)
     store.resetWatermark()
+    // 文件变更明细随真值重建回放（best-effort，见 lib/fileChanges）
+    await hydrateFileChanges(sessionId)
   }
 }
 
-/** 队列真值回查（queued-send §6）：同步条带 + 队头 sending 物化用户气泡。
- *  返回是否仍绑定本会话（false = 已切换，调用方应停止后续动作）。 */
+/** 队列真值回查（queued-send §6）：仅同步条带与整体态（用户气泡物化由排水
+ *  回合 turn_start 首帧确定性驱动，不依赖回查时点）。返回是否仍绑定本会话
+ *  （false = 已切换，调用方应停止后续动作）。 */
 async function syncQueueView(sessionId: string): Promise<boolean> {
   let view
   try {
@@ -120,7 +124,6 @@ async function syncQueueView(sessionId: string): Promise<boolean> {
   const store = useChatStore.getState()
   if (store.sessionId !== sessionId) return false
   store.syncQueue(view)
-  if (view.items[0]?.status === 'sending') store.materializeHead()
   return true
 }
 
@@ -160,9 +163,10 @@ function hydrationGate(
  *   返回，同步读 sessionId 必不匹配，循环即刻自尽且无人重启：后台 run 仍
  *   在跑，UI 却停在 /history 快照、发送被单写者闸 409。改为先等水合
  *   （gate settle 或独立兜底超时）再判绑定，未绑定窗口被等待自然覆盖。
- * - 队列联动（queued-send §6）：终态或 204 后回查 GET /queue——队头 sending
- *   先物化用户气泡，队列 active 则短退避后重挂观察，追赶服务端自动排水
- *   开跑的下一回合（create_task 派发竞态由重试窗口覆盖）。
+ * - 队列联动（queued-send §6）：终态或 204 后回查 GET /queue 同步条带（整体态
+ *   以服务端视图为准——sending 行存活整轮 run，active 期间持续重挂观察），
+ *   追赶服务端自动排水开跑的下一回合（turn_start 首帧物化用户气泡，
+ *   create_task 派发竞态由重试窗口覆盖）。
  */
 async function runObserverLoop(
   sessionId: string,
@@ -264,8 +268,8 @@ export function watchQueueDrain(sessionId: string): void {
 // —— 队列终态联动（queued-send §6）——
 // streaming → 终态边沿触发队列回查：覆盖 POST / 观察流 / 语音 WS 三类消费源
 //（观察流循环内另有就地续挂，此处 startObserver 遇槽位占用幂等跳过）。
-// done → 同步 + 队头物化 + active 时重挂观察追赶自动排水；error/interrupt →
-// 同步条带与挂起横幅。in-flight 去重防边沿抖动期间并发回查。
+// done → 同步条带 + active 时重挂观察追赶自动排水（turn_start 物化用户气泡）；
+// error/interrupt → 同步条带与挂起横幅。in-flight 去重防边沿抖动期间并发回查。
 let queueSyncInFlight = false
 useChatStore.subscribe((s, prev) => {
   if (s.status === prev.status) return
@@ -438,8 +442,10 @@ export function useStreamChat(sessionId: UUID | null, observerEnabled = true): U
           s.enqueueLocal(queuedItem)
           s.setStatus(prevStatus)
           if (prevStatus === 'idle') s.setStreamSource(null)
-          // 回合仍在跑：sideSend 未接管消费通道，幂等补挂观察流续接直播
-          if (prevStatus === 'streaming') startObserver(sessionId, false, dispatchEvent, null)
+          // 回合仍在跑：sideSend 未接管消费通道，幂等补挂观察流兜底断连。
+          // entryGuard：本地 POST/语音仍消费时即刻退出，不双路分发同一 run
+          //（双路会把余下 token 重复 append、done 双通道触发并发队列回查）
+          if (prevStatus === 'streaming') startObserver(sessionId, true, dispatchEvent, null)
           return
         }
         if (termination === 'closed' && !aborted()) {

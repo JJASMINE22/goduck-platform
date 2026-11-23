@@ -25,6 +25,7 @@ import type {
   TokenPayload,
   ToolCallPayload,
   ToolResultPayload,
+  TurnStartPayload,
   UsagePayload,
 } from '@/types'
 
@@ -102,9 +103,9 @@ export function dispatchStreamEvent(e: SSEEvent): void {
   // 已置 streaming，此处守卫天然空转）
   if (
     store.status === 'idle' &&
-    (e.type === 'agent_message' || e.type === 'thinking' || e.type === 'tool_call' ||
-      e.type === 'tool_result' || e.type === 'todos' || e.type === 'file_change' ||
-      e.type === 'usage')
+    (e.type === 'turn_start' || e.type === 'agent_message' || e.type === 'thinking' ||
+      e.type === 'tool_call' || e.type === 'tool_result' || e.type === 'todos' ||
+      e.type === 'file_change' || e.type === 'usage')
   ) {
     store.setStatus('streaming')
     store.setStreamSource('sse')
@@ -167,6 +168,13 @@ export function dispatchStreamEvent(e: SSEEvent): void {
     case 'usage': {
       // token 用量（一次 LLM 调用）：累加进会话级累计徽标
       store.applyUsageIncrement(e.payload as unknown as UsagePayload)
+      break
+    }
+    case 'turn_start': {
+      // 排水回合首帧：队列条目物化为时间线用户气泡（按 id 幂等，/history 回显
+      // 的 queue_item_id 同键对齐），直发路径的乐观 pushUser 对应物
+      const p = e.payload as unknown as TurnStartPayload
+      store.materializeQueueItem(p)
       break
     }
     case 'interrupt':

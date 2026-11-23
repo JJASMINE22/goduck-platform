@@ -303,6 +303,12 @@ class CronScheduler:
             with contextlib.suppress(Exception):
                 await dbmod.add_session_usage(self.st.pool, session["id"], payload)
 
+        async def on_file_change(payload: dict, run_token: str) -> None:
+            # 文件变更镜像落库（best-effort；任务会话浏览侧靠它回放落盘明细）
+            from app.api.stream import _persist_file_changes
+
+            await _persist_file_changes(self.st.pool, session["id"], payload, run_token)
+
         async def on_final(_final_event) -> None:
             with contextlib.suppress(Exception):
                 await dbmod.touch_session(self.st.pool, session["id"])
@@ -335,7 +341,7 @@ class CronScheduler:
             try:
                 run = await self.st.run_manager.start_run(
                     thread_id, session["id"], "cron", factory,
-                    on_usage=on_usage, on_final=on_final,
+                    on_usage=on_usage, on_file_change=on_file_change, on_final=on_final,
                 )
             except RunConflictError as e:
                 return "error", f"会话运行冲突（用户侧流抢先启动）：{e}"

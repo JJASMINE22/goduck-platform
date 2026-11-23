@@ -22,9 +22,11 @@ import contextlib
 import logging
 import uuid
 import weakref
+from collections.abc import AsyncIterator, Callable
 from typing import Optional
 
 from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
 
 from app.deps import SimpleUser
 from app.models import db as dbmod
@@ -33,6 +35,7 @@ from app.services.message_content import (
     MessageContentError,
     validate_message_content,
 )
+from app.streaming.events import SSEEvent
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,30 @@ def _parse_ids(raw) -> list[uuid.UUID]:
         except (ValueError, TypeError):
             continue
     return out
+
+
+def _drain_start_source(
+    item_out: dict, inner: Callable[[], AsyncIterator[SSEEvent]]
+) -> Callable[[], AsyncIterator[SSEEvent]]:
+    """排水回合事件源：首帧 turn_start（携带条目展示元数据），后续透传 inner。
+
+    回合 SSE 流不携带用户消息事件，用户气泡的物化不能依赖 GET /queue 的
+    轮询边界（sending 行存活整轮 run，边界回查存在重复/缺失竞态）；首帧
+    随流确定性到达（live 首帧或观察流重放），前端按条目 id 幂等物化。
+    inner 的确定性关闭与 run_source 同手法（防 asyncgen 终结器跨上下文）。
+    """
+
+    async def _source() -> AsyncIterator[SSEEvent]:
+        yield SSEEvent(type="turn_start", payload=item_out)
+        agen = inner()
+        try:
+            async for ev in agen:
+                yield ev
+        finally:
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await agen.aclose()
+
+    return _source
 
 
 class QueueService:
@@ -187,7 +214,7 @@ class QueueService:
 
         from app.services.run_source import chat_event_source
 
-        factory = chat_event_source(
+        inner = chat_event_source(
             self.st,
             session,
             agent,
@@ -198,7 +225,9 @@ class QueueService:
             knowledge_base_ids=kb_ids,
             rubric=row["rubric"],
             raw_content=row["content"],
+            queue_item_id=str(row["id"]),
         )
+        item_out = jsonable_encoder(await self.to_item_out(row))
         # 与手工直发同管道启动（usage 镜像 + touch + 409/503 映射）；
         # queue_hook=False：行落态与续排由 _drained_on_final 承担，不双触发
         from app.api.stream import _start_run_or_error
@@ -208,7 +237,7 @@ class QueueService:
                 self.st,
                 session,
                 kind="chat",
-                factory=factory,
+                factory=_drain_start_source(item_out, inner),
                 on_final=self._drained_on_final(session_id, row["id"]),
                 queue_hook=False,
             )

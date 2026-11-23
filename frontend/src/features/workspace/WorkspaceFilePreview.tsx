@@ -10,7 +10,7 @@
    任何预览失败都回退卡片，杜绝破图/空白。 */
 import { Alert, Button, Segmented, Skeleton, Space, Tooltip, Typography } from 'antd'
 import { type ReactNode, useState } from 'react'
-import { Download, FileText, X } from 'lucide-react'
+import { Download, FileText, Maximize2, Minimize2, X } from 'lucide-react'
 import { Markdown } from '@/components/markdown/Markdown'
 import { SvgFigure } from '@/components/markdown/SvgFigure'
 import { useWorkspaceFile, useWorkspacePreview } from '@/hooks/useWorkspace'
@@ -109,15 +109,32 @@ export function WorkspaceFilePreview({
   path,
   name,
   onClose,
+  fullscreen = false,
+  onToggleFullscreen,
 }: {
   sessionId: UUID
   path: string
   name: string
   onClose?: () => void
+  /** 铺满层变体（WorkspaceView 注入）：标题条显示「退出铺满」还原钮 */
+  fullscreen?: boolean
+  onToggleFullscreen?: () => void
 }): ReactNode {
   const kind = classifyFile(name)
   const downloadHref = workspaceApi.downloadUrl(sessionId, path)
   const [htmlView, setHtmlView] = useState<'render' | 'source'>('render')
+
+  // 铺满/还原切换钮（WorkspaceView 注入；与拖拽调宽并存，FallbackCard 无正文不提供）
+  const expandToggle = onToggleFullscreen ? (
+    <Tooltip title={fullscreen ? '退出铺满' : '铺满屏幕'}>
+      <Button
+        size="small"
+        type="text"
+        icon={fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        onClick={onToggleFullscreen}
+      />
+    </Tooltip>
+  ) : null
 
   // —— 文本类：取 /file ——
   const fileQ = useWorkspaceFile(
@@ -138,7 +155,15 @@ export function WorkspaceFilePreview({
     extra?: ReactNode,
   ): ReactNode => (
     <div className="ws-preview">
-      <DownloadBar sessionId={sessionId} path={path} name={name} size={size} modifiedAt={modifiedAt} extra={extra} onClose={onClose} />
+      <DownloadBar
+        sessionId={sessionId}
+        path={path}
+        name={name}
+        size={size}
+        modifiedAt={modifiedAt}
+        extra={expandToggle ? (extra ? <>{extra}{expandToggle}</> : expandToggle) : extra}
+        onClose={onClose}
+      />
       <div className={flush ? 'ws-preview__body ws-preview__body--flush' : 'ws-preview__body'}>{body}</div>
     </div>
   )

@@ -41,6 +41,7 @@ from langgraph.runtime import get_runtime
 from app.core.file_change_tracker import (
     FileChangeRecord,
     count_line_diff,
+    make_diff_patch,
     read_text_if_diffable,
     record_change,
 )
@@ -226,11 +227,14 @@ class TrackedUserScopedFilesystemBackend(UserScopedFilesystemBackend):
             if not old_existed:
                 # 新建：旧内容为空，新增行数 = 新文件行数（空文件也记动作本身）
                 added, removed = count_line_diff("", new) if new is not None else (None, None)
-                record_change(FileChangeRecord(file_path, "create", added, removed))
+                diff = make_diff_patch("", new, file_path) if new is not None else None
+                record_change(FileChangeRecord(file_path, "create", added, removed, diff))
             elif old is not None and new is not None:
                 added, removed = count_line_diff(old, new)
                 if added or removed:  # 0/0 视为 touch（等价写回），不记
-                    record_change(FileChangeRecord(file_path, "edit", added, removed))
+                    record_change(
+                        FileChangeRecord(file_path, "edit", added, removed, make_diff_patch(old, new, file_path))
+                    )
             else:
                 # 覆写了二进制/超大文件：只记动作，不做行级计数
                 record_change(FileChangeRecord(file_path, "edit", None, None))
@@ -246,7 +250,9 @@ class TrackedUserScopedFilesystemBackend(UserScopedFilesystemBackend):
             after = read_text_if_diffable(full)
             if before is not None and after is not None:
                 added, removed = count_line_diff(before, after)
-                record_change(FileChangeRecord(file_path, "edit", added, removed))
+                record_change(
+                    FileChangeRecord(file_path, "edit", added, removed, make_diff_patch(before, after, file_path))
+                )
             else:
                 record_change(FileChangeRecord(file_path, "edit", None, None))
         return result
@@ -262,6 +268,7 @@ class TrackedUserScopedFilesystemBackend(UserScopedFilesystemBackend):
                 record_change(FileChangeRecord(
                     file_path, "delete", None,
                     len(old.splitlines()) if old is not None else None,
+                    make_diff_patch(old, "", file_path) if old is not None else None,
                 ))
         return super().delete(file_path)
 

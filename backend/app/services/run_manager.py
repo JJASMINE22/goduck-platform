@@ -40,6 +40,7 @@ TERMINAL_EVENT_TYPES = frozenset({"done", "interrupt", "error", "canceled"})
 
 RunEventSource = Callable[[], AsyncIterator[SSEEvent]]
 UsageCallback = Callable[[dict], Any]
+FileChangeCallback = Callable[[dict, str], Any]  # (payload, run_token)
 FinalCallback = Callable[[SSEEvent], Any]
 
 
@@ -88,6 +89,7 @@ class RunState:
     terminal_at: float | None = None
     subscribers: dict[int, _Subscriber] = field(default_factory=dict)
     on_usage: UsageCallback | None = None
+    on_file_change: FileChangeCallback | None = None
     on_final: FinalCallback | None = None
 
     @property
@@ -138,6 +140,7 @@ class RunManager:
         factory: RunEventSource,
         *,
         on_usage: UsageCallback | None = None,
+        on_file_change: FileChangeCallback | None = None,
         on_final: FinalCallback | None = None,
     ) -> RunState:
         """启动一个 run（单写者闸：active run 存在则 RunConflictError）。
@@ -161,6 +164,7 @@ class RunManager:
             token=uuid.uuid4().hex[:8],
             task=None,  # type: ignore[assignment]
             on_usage=on_usage,
+            on_file_change=on_file_change,
             on_final=on_final,
         )
         run.task = asyncio.create_task(
@@ -295,6 +299,11 @@ class RunManager:
                     if run.on_usage is not None and ev.type == "usage":
                         with contextlib.suppress(Exception):
                             await run.on_usage(ev.payload)
+                    # file_change 镜像落库（usage 同款即时钩子；_emit 已先行广播，
+                    # 落库延迟不影响 SSE 下发时序）
+                    if run.on_file_change is not None and ev.type == "file_change":
+                        with contextlib.suppress(Exception):
+                            await run.on_file_change(ev.payload, run.token)
                     if ev.type in TERMINAL_EVENT_TYPES:
                         terminal = ev
                         # 不 break：继续驱动到生成器自然耗尽（return 路径）。

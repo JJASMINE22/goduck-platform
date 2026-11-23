@@ -10,6 +10,7 @@ import { Collapse, Flex, Tag, Tooltip, Typography } from 'antd'
 import { type ReactNode, memo, useMemo, useState } from 'react'
 import { Check, Diff, FileMinus, FilePen, FilePlus, Wrench } from 'lucide-react'
 import { isUnifiedDiff, isAbsoluteHostPath, parseDiff, type ParsedDiff } from './diffResult'
+import { DiffViewer } from './DiffViewer'
 import type { ToolCallEntry } from '@/store/chatStore'
 
 /** diff 动作 → 行图标/标签（与 FileChangesCard.ACTION_META 同语义；
@@ -141,12 +142,8 @@ function DiffSummarySection({
   onOpenFile?: (path: string) => void
 }): ReactNode {
   const [showDetail, setShowDetail] = useState(false)
-  const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
   const totalLines = diff.lines.length
-  const foldable = totalLines > CLAMP_LINES
-  const clamped = foldable && !expanded
-  const shown = clamped ? diff.lines.slice(0, CLAMP_LINES + 2) : diff.lines
   const onCopy = async () => {
     if (await copyText(text)) {
       setCopied(true)
@@ -196,28 +193,7 @@ function DiffSummarySection({
           )
         })}
       </div>
-      {showDetail ? (
-        <>
-          <pre
-            className={`tc-payload__pre tc-payload__pre--detail ${clamped ? 'tc-payload__pre--clamp' : ''}`}
-            style={clamped ? { maxHeight: CLAMP_MAX_HEIGHT } : undefined}
-          >
-            <code className="tc-diff">
-              {shown.map((l, i) => (
-                <span key={i} className={`tc-diff__line tc-diff__line--${l.type}`}>
-                  {l.text}
-                  {'\n'}
-                </span>
-              ))}
-            </code>
-          </pre>
-          {foldable ? (
-            <button type="button" className="tc-payload__toggle" onClick={() => setExpanded((v) => !v)}>
-              {expanded ? '收起' : `展开全部（共 ${totalLines} 行）`}
-            </button>
-          ) : null}
-        </>
-      ) : null}
+      {showDetail ? <DiffViewer lines={diff.lines} /> : null}
     </div>
   )
 }

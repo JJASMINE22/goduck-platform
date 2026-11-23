@@ -264,6 +264,27 @@ async def _persist_usage(pool, session_id: uuid.UUID, payload: dict) -> None:
         logger.warning("persist usage for session %s failed (skipped)", session_id, exc_info=True)
 
 
+async def _persist_file_changes(pool, session_id: uuid.UUID, payload: dict, run_token: str) -> None:
+    """Best-effort mirror one `file_change` event into file_change_log（usage 同款）。
+
+    落库是"刷新后明细存活"的唯一持久层：失败仅丢镜像不丢 SSE 徽标（前端 live
+    状态不受影响）。回合锚经 tracker 的 contextvar 读取——本回调随 run task
+    执行，事件源生成器帧内 set_turn_anchor 的写入对其可见。
+    """
+    from app.core.file_change_tracker import current_turn_anchor
+
+    records = payload.get("records")
+    if not isinstance(records, list) or not records:
+        return
+    anchor = current_turn_anchor()
+    try:
+        await dbmod.insert_file_changes(
+            pool, session_id, anchor if isinstance(anchor, str) else "", run_token, records
+        )
+    except Exception:
+        logger.warning("persist file_changes for session %s failed (skipped)", session_id, exc_info=True)
+
+
 def _refuse_cron_session(session: dict, *, action: str) -> None:
     """任务会话（kind='cron'）只读守卫：内容由调度器注入，用户不可主动发言/
     追问/回撤/取消（产品决策）。HITL 审批（resume）是唯一放行的交互。"""
@@ -286,6 +307,9 @@ async def _start_run_or_error(
     async def _on_usage(payload: dict) -> None:
         await _persist_usage(st.pool, session["id"], payload)
 
+    async def _on_file_change(payload: dict, run_token: str) -> None:
+        await _persist_file_changes(st.pool, session["id"], payload, run_token)
+
     async def _touch(_final_event) -> None:
         from app.services.session_service import SessionService
 
@@ -303,6 +327,7 @@ async def _start_run_or_error(
             kind,
             factory,
             on_usage=_on_usage,
+            on_file_change=_on_file_change,
             on_final=_final_hook(on_final, _queue if use_queue_hook else None, _touch),
         )
     except RunConflictError as e:

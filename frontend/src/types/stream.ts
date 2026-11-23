@@ -3,6 +3,7 @@
    services/hitl_resolver.py (_extract_interrupt 输出形状)。
    聊天状态机唯一终态来源（DESIGN 准则 F3）。 */
 import type { UUID } from './common'
+import type { QueuedItem } from './queue'
 
 /** 后端 EventType 字面量（streaming/events.py） */
 export type SSEEventType =
@@ -15,6 +16,7 @@ export type SSEEventType =
   | 'file_change'
   | 'usage'
   | 'status'
+  | 'turn_start'
   | 'interrupt'
   | 'done'
   | 'error'
@@ -99,6 +101,12 @@ export interface StatusPayload {
   count?: number
 }
 
+// —— turn_start payload（queue_service._drain_start_source：排水回合首帧）——
+/** 排水启动的回合携带的队列条目（与 GET /queue / 202 入队响应同构）；前端据此
+ *  把条目物化为时间线用户气泡并移出待发条带（幂等键 = id，与 /history 回显的
+ *  queue_item_id 同源对齐）。直发路径无此事件（气泡为乐观渲染）。 */
+export type TurnStartPayload = QueuedItem
+
 // —— todos payload（stream_adapter._normalize_todos：TodoListMiddleware 状态通道）——
 /** 单条任务项；status 与后端 write_todos 对齐 */
 export interface TodoItem {
@@ -119,6 +127,8 @@ export interface FileChangeRecord {
   action: 'create' | 'edit' | 'delete'
   added: number | null
   removed: number | null
+  /** unified diff 文本（行级明细）；null = 二进制/超大/超限降级，仅显 +N/−M */
+  diff?: string | null
 }
 
 /** file_change 事件 payload：一批（通常一个工具节点）落盘记录 */

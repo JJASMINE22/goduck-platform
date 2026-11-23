@@ -35,6 +35,7 @@ import { streamApi } from '@/api/stream'
 import { queueApi } from '@/api/queue'
 import { ApiError } from '@/api/client'
 import { toastError, toastSuccess } from '@/lib/antdStatic'
+import { hydrateFileChanges } from '@/lib/fileChanges'
 import type { WithdrawResponse } from '@/types'
 
 const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v))
@@ -570,6 +571,9 @@ export function ChatPage(): ReactNode {
     // 刷新 / 重进 / 归档会话均可回看工具调用细节（映射细节见 historyReplay.ts）
     const { messages, toolCalls } = buildHistoryReplay(historyQ.data)
     loadHistory(sessionId, messages, toolCalls)
+    // 文件变更明细回放（loadHistory 已清空 fileChanges；按末回合锚异步补镜像，
+    // 失败静默——徽标缺失可接受，不阻塞水合门）
+    void hydrateFileChanges(sessionId)
     forcedLoadRef.current = false
     // 历史基底已灌入：解除水合门，观察流缓冲的事件按序冲刷转 live
     settleHydration()
@@ -608,6 +612,8 @@ export function ChatPage(): ReactNode {
     lastCronLoadAtRef.current = historyQ.dataUpdatedAt
     const { messages, toolCalls } = buildHistoryReplay(historyQ.data)
     loadHistory(sessionId, messages, toolCalls)
+    // 任务会话无本地流：每轮快照后同步回放该回合落盘明细（调度器产物即时可见）
+    void hydrateFileChanges(sessionId)
     // 用量徽标以服务端计数落真值（usage 事件后端已即时入库）；工作区已挂载则
     // 同步文件树（调度器落盘产物即时可见）
     queryClient.invalidateQueries({ queryKey: queryKeys.session(sessionId) })

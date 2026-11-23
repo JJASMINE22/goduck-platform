@@ -57,11 +57,24 @@ export interface MessageOut {
   // 仅 tool 消息：jev kb 门控观测标记（response_metadata.jev_kb 随 checkpoint
   // 持久化）——与实时流 ToolResultPayload.jev_kb 同键同语义
   jev_kb?: 'unavailable'
+  // 仅 human 消息：排水回合锚点（additional_kwargs.queue_item_id，queued-send）。
+  // 历史回放据此把该用户消息与队列条目对齐（幂等物化键），与 turn_start 事件同源
+  queue_item_id?: string | null
+}
+
+/** file_change_log 单行（schemas.py FileChangeLogOut；GET /sessions/{id}/file-changes）。
+ *  形状与 SSE FileChangeRecord 对齐（diff_text → diff），另带落库时刻供时间线排序 */
+export interface FileChangeLogItem {
+  path: string
+  action: 'create' | 'edit' | 'delete'
+  added: number | null
+  removed: number | null
+  diff?: string | null
+  created_at: string
 }
 
 /** 回撤一个会话回合（schemas.py WithdrawRequest / WithdrawResponse） */
-export interface WithdrawRequest {
-  message_id: string // LangGraph 用户消息 id（定位被回撤的整段回合）
+export interface WithdrawRequest {  message_id: string // LangGraph 用户消息 id（定位被回撤的整段回合）
   /** 弱绑定取图（§4.4）：显式传入优先于 last_agent_id——last 悬空（agent 已删）
    *  时"仅选中、不发送"即可恢复回撤；缺省回落 */
   agent_id?: UUID | null

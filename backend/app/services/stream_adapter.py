@@ -48,6 +48,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any, Optional
 
@@ -340,15 +341,17 @@ class StreamAdapter:
         raw_content: str | None = None,
         kb_ids: list[str] | None = None,
         agent_id: str | None = None,
+        queue_item_id: str | None = None,
     ) -> AsyncIterator[SSEEvent]:
         """Stream a fresh user message. Yields until done / interrupt / error.
 
         content may be a plain str (text) or a multimodal list (text + image_url
         blocks) assembled by ContentComposer.
 
-        upload_ids / raw_content / kb_ids / agent_id are stashed on the message's
-        additional_kwargs so the checkpointer persists them alongside content
-        (they never enter the model payload — the model only sees ``content``):
+        upload_ids / raw_content / kb_ids / agent_id / queue_item_id are stashed
+        on the message's additional_kwargs so the checkpointer persists them
+        alongside content (they never enter the model payload — the model only
+        sees ``content``):
         - upload_ids: recovered on /history to render attachment thumbnails
           (read directly, never parsed out of content).
         - raw_content: the user's original input. Whenever ContentComposer
@@ -363,6 +366,9 @@ class StreamAdapter:
         - agent_id: 锚点回合归属（会话-智能体解耦，plan 1790660700000 §4.4）。
           withdraw 清理 `_summarization_event` 旁通道时，若当前解析图无该
           通道，经它取"产出该回合的图"执行（通道盲区的解法）。
+        - queue_item_id: 排水发送的队列条目 id（queued-send）。/history 回显
+          时前端据此把该用户消息与队列条目对齐（幂等物化键），与 turn_start
+          事件同源。
         """
         additional_kwargs: dict[str, Any] = {}
         if upload_ids:
@@ -371,9 +377,16 @@ class StreamAdapter:
             additional_kwargs["kb_ids"] = kb_ids
         if agent_id:
             additional_kwargs["agent_id"] = agent_id
+        if queue_item_id:
+            additional_kwargs["queue_item_id"] = queue_item_id
         if isinstance(raw_content, str) and raw_content:
             additional_kwargs["raw_content"] = raw_content
         msg = HumanMessage(content=content, additional_kwargs=additional_kwargs)
+        # 显式消息 id：落库的 file_change 行按它锚定回合（回撤删行依据）。不设则
+        # checkpoint 写入时才生成，本回合锚无法预知。
+        if not msg.id:
+            msg.id = str(uuid.uuid4())
+        file_change_tracker.set_turn_anchor(msg.id)
         payload: dict = {"messages": [msg]}
         if rubric:
             payload["rubric"] = rubric
@@ -387,6 +400,18 @@ class StreamAdapter:
         config: dict,
     ) -> AsyncIterator[SSEEvent]:
         """Resume after a HITL interrupt with caller decisions."""
+        # HITL 续跑属同回合：锚 = 图状态末条 human（与首跑 stream_message 写入的
+        # id 同一消息）。查不到（异常/空态）锚为 None，落库行退化为不可回撤删。
+        anchor: str | None = None
+        try:
+            state = await agent.aget_state(config)
+            for m in reversed(state.values.get("messages") or []):
+                if getattr(m, "type", None) == "human" and m.id:
+                    anchor = str(m.id)
+                    break
+        except Exception:  # noqa: BLE001 - 锚点查询失败不阻断续跑
+            anchor = None
+        file_change_tracker.set_turn_anchor(anchor)
         payload = Command(resume={"decisions": decisions})
         async for ev in self._run(agent, payload, config):
             yield ev

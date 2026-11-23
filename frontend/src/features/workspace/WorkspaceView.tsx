@@ -5,6 +5,8 @@
     - 选中文件 → 右侧浮起预览卡（按类型分派）覆盖在树卡右段之上：树始终全宽、
       排版恒定（不因打开/拖拽而重排换行），拖拽仅改变遮挡范围，可拖至近全宽
       （左侧留 TREE_REVEAL 窄缝，上限随容器宽动态变化）；双击重置宽度。
+    - 预览标题条「铺满屏幕」钮：ZoomStage 同构 portal 浮层一键铺满（Esc/遮罩/
+      还原钮退回分栏，不取代拖拽调宽）；铺满期间分栏实例 masked 保位。
     - 选中态由 ChatPage 受控注入（selected/onSelect）：聊天时间线"文件变更卡片"
       点击文件行可一步切到工作区并选中。
     - 树节点徽标：订阅 chatStore.fileChanges，本回合被 agent 落盘/编辑/删除的
@@ -13,6 +15,7 @@
 import { Button, Empty, Popconfirm, Skeleton, Space, Tooltip, Tree, Typography } from 'antd'
 import type { DataNode } from 'antd/es/tree'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, Download, Folder, File as FileIcon, FolderOpen, RefreshCw, Trash2 } from 'lucide-react'
 import { workspaceApi } from '@/api/workspace'
 import { useDeleteWorkspaceItem, useWorkspaceTree } from '@/hooks/useWorkspace'
@@ -212,13 +215,27 @@ export function WorkspaceView({
     if (previewWidth > maxPreview) applyPreviewWidth(maxPreview)
   }, [previewWidth, maxPreview, applyPreviewWidth])
 
+  // 预览铺满态（事件驱动，无 effect 重置）：仅「铺满」钮置键；其余所有选中
+  // 变更统一走 selectFile 清键（关闭/切换/删除联动自然退出）。键带会话作用域
+  // （时间线跳转可直改选中绕过本组件回调），渲染期与当前选中比对派生成态
+  const [fullKey, setFullKey] = useState<string | null>(null)
+  const previewFull = !!(selected && fullKey === `${sessionId}:${selected.path}`)
+  const selectFile = useCallback(
+    (sel: WorkspaceSelection | null) => {
+      setFullKey(null)
+      onSelect(sel)
+    },
+    [onSelect],
+  )
+  const exitPreviewFull = useCallback(() => setFullKey(null), [])
+
   // 删除为事件驱动（非 effect）：成功后失效树（hook 全局 onSuccess）+ 关闭预览分栏
   // （当被删项正是打开的文件，或被删目录包含该文件时）。mutate 引用稳定（react-query 保证）。
   const handleDelete = useCallback(
     (node: WorkspaceNode) => {
       deleteMut.mutate(node.path, {
         onSuccess: () => {
-          onSelect(
+          selectFile(
             selected && (selected.path === node.path || selected.path.startsWith(node.path + '/'))
               ? null
               : selected,
@@ -226,7 +243,7 @@ export function WorkspaceView({
         },
       })
     },
-    [deleteMut, onSelect, selected],
+    [deleteMut, selectFile, selected],
   )
 
   const treeData = useMemo(
@@ -280,7 +297,7 @@ export function WorkspaceView({
                 if (typeof key !== 'string') return
                 // 仅文件可预览（目录仅展开/收起，不进入选中态）
                 const node = findNode(treeQ.data ?? [], key)
-                if (node && !node.is_dir) onSelect({ path: node.path, name: node.name })
+                if (node && !node.is_dir) selectFile({ path: node.path, name: node.name })
               }}
             />
           )}
@@ -298,18 +315,83 @@ export function WorkspaceView({
             onDoubleClick={resetPreviewWidth}
             title="拖拽调整预览宽度（双击重置）"
           />
-          <section className="ws-view__preview ws-view__preview--float" style={{ width: previewWidth }}>
+          <section
+            className={
+              previewFull
+                ? 'ws-view__preview ws-view__preview--float ws-view__preview--masked'
+                : 'ws-view__preview ws-view__preview--float'
+            }
+            style={{ width: previewWidth }}
+          >
             {/* key=文件路径：切换文件时重挂载，滚动复位且不闪现上一文件内容 */}
             <WorkspaceFilePreview
               key={selected.path}
               sessionId={sessionId}
               path={selected.path}
               name={selected.name}
-              onClose={() => onSelect(null)}
+              onClose={() => selectFile(null)}
+              onToggleFullscreen={() => setFullKey(`${sessionId}:${selected.path}`)}
             />
           </section>
         </>
       ) : null}
+      {selected && previewFull ? (
+        <PreviewStage
+          sessionId={sessionId}
+          path={selected.path}
+          name={selected.name}
+          onExit={exitPreviewFull}
+          onClose={() => selectFile(null)}
+        />
+      ) : null}
     </div>
+  )
+}
+
+/** 预览铺满层：ZoomStage 同构（portal 到 body + 遮罩 + Esc/滚动锁——dock 带
+    transform，树内 fixed 会错位）。内容为预览组件的铺满变体（同一查询键，
+    react-query 缓存命中无感切换）；Esc/遮罩/还原钮退回分栏，关闭钮整层关闭。 */
+function PreviewStage({
+  sessionId,
+  path,
+  name,
+  onExit,
+  onClose,
+}: {
+  sessionId: UUID
+  path: string
+  name: string
+  onExit: () => void
+  onClose: () => void
+}): ReactNode {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onExit()
+    }
+    window.addEventListener('keydown', onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [onExit])
+
+  return createPortal(
+    <div className="ws-full" role="dialog" aria-modal="true">
+      <div className="ws-full__backdrop" onClick={onExit} />
+      <section className="ws-view__preview ws-full__panel">
+        <WorkspaceFilePreview
+          key={path}
+          sessionId={sessionId}
+          path={path}
+          name={name}
+          fullscreen
+          onToggleFullscreen={onExit}
+          onClose={onClose}
+        />
+      </section>
+    </div>,
+    document.body,
   )
 }

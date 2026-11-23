@@ -164,7 +164,8 @@ export function QueueList({ sessionId }: { sessionId: UUID }): ReactNode {
   const syncQueue = useChatStore((s) => s.syncQueue)
   const [busy, setBusy] = useState(false)
 
-  if (queueState === 'idle' && !items.length) return null
+  // 无条目即不占位：排水进行中（active）队头已物化为时间线气泡，空条带不留框
+  if (!items.length && queueState !== 'paused') return null
 
   const run = async (fn: () => Promise<unknown>) => {
     if (busy) return

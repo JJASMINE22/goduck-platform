@@ -299,6 +299,13 @@ class SessionService:
             anchor_agent_builder=anchor_agent_builder,
         )
 
+        # 4.5) 文件变更镜像随回合删除（best-effort）：锚 = 回合首条 human id，
+        #      与消息软删同界。失败仅残留镜像行（重拉历史后明细多显），不阻断回撤。
+        try:
+            await dbmod.delete_file_changes_by_anchor(self.pool, session_id, message_id)
+        except Exception:
+            logger.warning("withdraw: 删除 file_change_log 失败（残留镜像行）", exc_info=True)
+
         # 5) recover raw_content + attachments + kbs for composer prefill
         ak = getattr(target, "additional_kwargs", None) or {}
         raw = ak.get("raw_content")
@@ -627,4 +634,10 @@ def _serialize_message(
         out["attachments"] = attachments
     if kbs:
         out["kbs"] = kbs
+    # 排水回合锚点（仅 human 消息，queued-send）：additional_kwargs.queue_item_id。
+    # 前端历史回放据此把该用户消息与队列条目对齐（幂等物化键），与 turn_start
+    # 事件同源——冷进入重放不再重复物化。
+    qi = ak.get("queue_item_id")
+    if isinstance(qi, str) and qi:
+        out["queue_item_id"] = qi
     return out

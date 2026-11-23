@@ -41,6 +41,10 @@ Action = Literal["create", "edit", "delete"]
 # 512KB 源码 ≈ 万行级、毫秒级完成，超过则放弃精确计数只保留事件本身。
 MAX_DIFF_BYTES = 512 * 1024
 
+# unified diff 文本上限（超限 diff=None，与二进制/超大同降级语义：前端仅 +N/−M）：
+# diff 随 SSE 帧下发并驻留 RunManager 回放缓冲，必须钳制单条载荷放大。
+MAX_DIFF_PATCH_BYTES = 16 * 1024
+
 
 @dataclass
 class FileChangeRecord:
@@ -55,12 +59,20 @@ class FileChangeRecord:
     action: Action
     added: int | None = None
     removed: int | None = None
+    # 行级明细（unified diff 文本）：None = 二进制 / 超大 / 超限 / 空差异，前端降级仅计数
+    diff: str | None = None
     # 仅调试用途（record 排序/延迟观测），不进 SSE payload。
     ts: float = field(default_factory=time, repr=False)
 
     def to_payload(self) -> dict:
         """SSE payload 形状（stream.ts FileChangeRecord 一一对应）。"""
-        return {"path": self.path, "action": self.action, "added": self.added, "removed": self.removed}
+        return {
+            "path": self.path,
+            "action": self.action,
+            "added": self.added,
+            "removed": self.removed,
+            "diff": self.diff,
+        }
 
 
 class _Collector:
@@ -74,6 +86,22 @@ class _Collector:
 
 
 _collector: ContextVar[_Collector | None] = ContextVar("file_change_collector", default=None)
+
+# 回合锚（本回合首条 HumanMessage 的 id）：file_change 落库时随行写入，回撤按它
+# 精确删行。由 StreamAdapter 在 run 任务内设置（stream_message 构造消息时 /
+# stream_resume 从图状态取末条 human）；落库回调同任务读取——async 生成器帧不隔离
+# context（与 collector 同一传播机制），跨生成器可见。
+_turn_anchor: ContextVar[str | None] = ContextVar("file_change_turn_anchor", default=None)
+
+
+def set_turn_anchor(message_id: str | None) -> None:
+    """登记回合锚（run 任务内、首个 drain 前调用）。"""
+    _turn_anchor.set(message_id)
+
+
+def current_turn_anchor() -> str | None:
+    """读取回合锚（落库回调侧；未设置返回 None）。"""
+    return _turn_anchor.get()
 
 
 @contextmanager
@@ -155,6 +183,28 @@ def count_line_diff(old: str, new: str) -> tuple[int, int]:
         if tag in ("replace", "insert"):
             added += j2 - j1
     return added, removed
+
+
+def make_diff_patch(old: str, new: str, path: str) -> str | None:
+    """unified diff 文本（n=3 上下文，git 风格 a/ b/ 头）；无差异或超限返回 None。
+
+    与 count_line_diff 同一调用点共用内存中的 old/new，不重复读盘；计数仍走
+    opcodes（结构化），diff 文本仅为观测增量，超 MAX_DIFF_PATCH_BYTES 降级。
+    lineterm=""：join 后无尾随换行，前端按 \n 切行渲染。
+    """
+    patch = "\n".join(
+        difflib.unified_diff(
+            old.splitlines(),
+            new.splitlines(),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            lineterm="",
+            n=3,
+        )
+    )
+    if not patch or len(patch.encode("utf-8")) > MAX_DIFF_PATCH_BYTES:
+        return None
+    return patch
 
 
 def read_text_if_diffable(full_path: Path) -> str | None:

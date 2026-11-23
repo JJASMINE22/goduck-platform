@@ -217,6 +217,21 @@ class MessageOut(BaseModel):
     # 提取，随 checkpoint 持久化）。前端历史回放据此重建"思考过程"折叠块，
     # 与实时流 ThinkingBlock 同构；无思考内容的消息该字段为 null（同 name 等既有可空字段）。
     reasoning: Optional[str] = None
+    # 排水回合锚点（仅 human 消息）：additional_kwargs.queue_item_id（queued-send）。
+    # 前端据此把该用户消息与队列条目对齐（幂等物化键），与 turn_start 事件同源。
+    queue_item_id: Optional[str] = None
+
+
+class FileChangeLogOut(BaseModel):
+    """file_change_log 单行（GET /sessions/{id}/file-changes）：形状与 SSE
+    FileChangeRecord 对齐（diff_text → diff），另带落库时刻供时间线排序。"""
+
+    path: str
+    action: str
+    added: Optional[int] = None
+    removed: Optional[int] = None
+    diff: Optional[str] = None
+    created_at: datetime
 
 
 # ---------------------------------------------------------------------------

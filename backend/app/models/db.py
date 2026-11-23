@@ -327,6 +327,26 @@ CREATE TABLE IF NOT EXISTS queue_state (
     paused_reason VARCHAR NOT NULL,                 -- error | withdrawn | restart
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ============================ 工作区文件变更明细（file_change 落库）============================
+-- SSE file_change 事件的持久镜像：刷新/重进会话后明细回放的数据源（撤销基座同表，
+-- 撤销本身另行评审）。anchor_message_id = 回合首条 HumanMessage id：回撤按锚精确
+-- 删行，与 checkpointer 的 RemoveMessage 软删语义一致；run_token 供按 run 归因。
+-- diff_text NULL = 二进制/超大/超限降级（仅计数）。append-only，随会话级联删除。
+CREATE TABLE IF NOT EXISTS file_change_log (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id        UUID NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    anchor_message_id VARCHAR NOT NULL,
+    run_token         VARCHAR NOT NULL,
+    path              TEXT NOT NULL,
+    action            VARCHAR NOT NULL,             -- create | edit | delete
+    added             INT,
+    removed           INT,
+    diff_text         TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_file_change_log_session ON file_change_log(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_file_change_log_anchor ON file_change_log(session_id, anchor_message_id);
 """
 
 # session.agent_id → last_agent_id 一次性物理改名（幂等：旧列不存在即跳过；
@@ -948,6 +968,68 @@ async def add_session_usage(
                 f"UPDATE session SET usage_totals = jsonb_build_object(\n      {set_expr}\n      ) "
                 "WHERE id = %s",
                 (*values, session_id),
+            )
+
+
+# ============================ 工作区文件变更明细（file_change 落库）=============================
+# SSE file_change 事件的持久镜像（写入点：run 终端 on_file_change 回调，best-effort）。
+# records 为 tracker FileChangeRecord.to_payload() 形状（path/action/added/removed/diff）。
+
+async def insert_file_changes(
+    pool: AsyncConnectionPool,
+    session_id: uuid.UUID,
+    anchor_message_id: str,
+    run_token: str,
+    records: list[dict],
+) -> None:
+    """一批 file_change 记录镜像入库（同批单事务；空批直通）。"""
+    if not records:
+        return
+    rows = [
+        (session_id, anchor_message_id, run_token, r["path"], r["action"], r.get("added"), r.get("removed"), r.get("diff"))
+        for r in records
+    ]
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.executemany(
+                "INSERT INTO file_change_log "
+                "(session_id, anchor_message_id, run_token, path, action, added, removed, diff_text) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                rows,
+            )
+
+
+async def list_file_changes(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, anchor_message_id: str | None = None
+) -> list[dict]:
+    """会话的文件变更记录（到达序）。anchor 提供时仅取该回合（前端按末回合回放）；
+    无 anchor 取最近 500 条兜底（防全表回放，当前无调用方依赖）。"""
+    where = "WHERE session_id = %s"
+    params: list = [session_id]
+    if anchor_message_id is not None:
+        where += " AND anchor_message_id = %s"
+        params.append(anchor_message_id)
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT path, action, added, removed, diff_text, created_at "
+                f"FROM file_change_log {where} "
+                f"ORDER BY created_at {'DESC LIMIT 500' if anchor_message_id is None else ''}",
+                params,
+            )
+            rows = await cur.fetchall()
+    return list(reversed(rows)) if anchor_message_id is None else rows
+
+
+async def delete_file_changes_by_anchor(
+    pool: AsyncConnectionPool, session_id: uuid.UUID, anchor_message_id: str
+) -> None:
+    """回撤一回合：按锚点删该回合全部镜像行（与消息软删对齐，best-effort）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM file_change_log WHERE session_id = %s AND anchor_message_id = %s",
+                (session_id, anchor_message_id),
             )
 
 

@@ -23,6 +23,10 @@ EventType = Literal[
     "usage",
     # —— 附件解析进度（非错误型；前端映射临时徽标，首个 token 自然顶替）——
     "status",
+    # —— 排水回合首帧（queued-send：携带队列条目展示元数据，前端据此把条目
+    #    从待发条带物化为时间线用户气泡；仅 QueueService 排水启动的 run 产出，
+    #    直发路径的气泡由前端乐观渲染）——
+    "turn_start",
     "interrupt",
     "done",
     "error",

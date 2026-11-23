@@ -34,6 +34,9 @@ export interface ChatMessage {
   attachments?: UploadOut[]
   /** 用户消息启用的知识库（发送时快照 {id,name}；历史回放由 /history 的 kbs 回填） */
   kbs?: KbRef[]
+  /** 排水回合锚点（仅历史回放的 human 消息，queued-send）：对应队列条目 id，
+   *  loadHistory 据此登记幂等物化键（与 turn_start 事件同源对齐） */
+  queueItemId?: string
   createdAt: number
   /** 流式终批落态时间戳（仅 live 流式消息有值；思考块用于「思考 N 秒」时长） */
   endedAt?: number
@@ -138,6 +141,9 @@ export interface ChatState {
   /** 队列整体态：idle=无待发 | active=自动排水中 | paused=挂起（带原因） */
   queueState: QueueState
   queuePausedReason: string | null
+  /** 已物化为时间线用户气泡的队列条目 id（幂等键：turn_start 事件与 /history
+   *  回显的 queue_item_id 双源合一；sending 行存活整轮 run，回查重同步不重复物化） */
+  materializedQueueIds: Set<string>
 
   // —— 动作 ——
   pushUser: (content: string, attachments?: UploadOut[], kbs?: KbRef[]) => void
@@ -172,6 +178,8 @@ export interface ChatState {
   clearTodos: () => void
   /** file_change 事件落地：同批记录统一时间戳追加（合并展示在渲染层完成） */
   applyFileChange: (records: FileChangeRecord[]) => void
+  /** 文件变更镜像整表灌入（loadHistory 后按锚回放，覆盖清空态；会话绑定守卫） */
+  hydrateFileChanges: (sessionId: string, entries: FileChangeEntry[]) => void
   /** usage 事件落地：一次 LLM 调用的用量累加进会话累计（五键全加，负值不可能出现）。
       带 id 的事件按消息去重（回放/重挂不重复计入）；无 id 消息与后端同语义——不去重 */
   applyUsageIncrement: (p: UsagePayload) => void
@@ -208,13 +216,15 @@ export interface ChatState {
   /** stt_chunk 中间稿整段替换（后端每 Turn 全量下发，非增量） */
   setInterimTranscript: (v: string) => void
   // —— 会话排队发送（queued-send §6）——
-  /** 服务端队列真值整表替换（终态回查 / 进会话初始化 / 队列操作后） */
+  /** 服务端队列真值整表替换（终态回查 / 进会话初始化 / 队列操作后）；
+   *  已物化条目不回条带 */
   syncQueue: (view: QueueView) => void
   /** 本地入队回显（202 响应；乐观消息已回滚，条目改挂队列条带） */
   enqueueLocal: (item: QueuedItem) => void
-  /** 队头 sending 条目物化为正式用户消息（排水开跑、SSE 流不携带用户消息事件，
-   *  不物化则时间线缺用户侧、回撤无法锚定）；仅消化队首且非取消态条目 */
-  materializeHead: () => void
+  /** 排水回合 turn_start 落地：条目物化为正式用户消息并移出条带（按 id 幂等，
+   *  排水开跑的回合 SSE 流不携带用户消息事件，物化以首帧事件为唯一时点）。
+   *  queueState 不动：服务端视图派生，sending 行在 run 终态前保持 active */
+  materializeQueueItem: (item: QueuedItem) => void
   /** 移除单条队列条目（删除操作本地回显） */
   removeQueueItem: (id: string) => void
   /** 批量置 canceled（中止操作本地回显；服务端真值随后回查对齐） */
@@ -259,6 +269,7 @@ const initialState = {
   queueItems: [] as QueuedItem[],
   queueState: 'idle' as QueueState,
   queuePausedReason: null as string | null,
+  materializedQueueIds: new Set<string>() as Set<string>,
 }
 
 let idSeq = 0
@@ -451,6 +462,9 @@ export const useChatStore = create<ChatState>((set) => ({
         : {},
     ),
 
+  hydrateFileChanges: (sessionId, entries) =>
+    set((s) => (s.sessionId === sessionId ? { fileChanges: entries } : {})),
+
   applyUsageIncrement: (p) =>
     set((s) => {
       // 回放/重挂的同一 usage 事件不重复累计（payload.id = AI 消息 id，
@@ -556,11 +570,12 @@ export const useChatStore = create<ChatState>((set) => ({
 
   // —— 会话排队发送（queued-send §6）——
   syncQueue: (view) =>
-    set({
-      queueItems: view.items,
+    set((s) => ({
+      // 已物化条目不回条带（sending 行在 run 终态前持续存在于服务端视图）
+      queueItems: view.items.filter((q) => !s.materializedQueueIds.has(q.id)),
       queueState: view.state,
       queuePausedReason: view.paused_reason ?? null,
-    }),
+    })),
 
   enqueueLocal: (item) =>
     set((s) => ({
@@ -568,11 +583,9 @@ export const useChatStore = create<ChatState>((set) => ({
       queueState: s.queueState === 'paused' ? 'paused' : 'active',
     })),
 
-  materializeHead: () =>
+  materializeQueueItem: (item) =>
     set((s) => {
-      const head = s.queueItems[0]
-      if (!head || head.status !== 'sending') return {}
-      const rest = s.queueItems.slice(1)
+      if (s.materializedQueueIds.has(item.id)) return {}
       return {
         messages: [
           ...s.messages,
@@ -580,16 +593,15 @@ export const useChatStore = create<ChatState>((set) => ({
             id: genId(),
             role: 'user' as const,
             agentPath: 'user',
-            content: head.content,
-            attachments: head.attachments.length ? head.attachments : undefined,
-            kbs: head.kbs.length ? head.kbs : undefined,
+            content: item.content,
+            attachments: item.attachments.length ? item.attachments : undefined,
+            kbs: item.kbs.length ? item.kbs : undefined,
+            queueItemId: item.id,
             createdAt: Date.now(),
           },
         ],
-        queueItems: rest,
-        queueState: rest.some((q) => q.status === 'pending' || q.status === 'sending')
-          ? s.queueState
-          : 'idle',
+        materializedQueueIds: new Set(s.materializedQueueIds).add(item.id),
+        queueItems: s.queueItems.filter((q) => q.id !== item.id),
       }
     }),
 
@@ -631,10 +643,19 @@ export const useChatStore = create<ChatState>((set) => ({
       }
     }),
 
-  loadHistory: (sessionId, msgs, toolCalls = []) =>
-    set((s) => {
+  loadHistory: (sessionId, msgs, toolCalls = []) => {
+    // 历史快照携带的排水锚点即"已物化"（与 turn_start 同键）：冷进入后观察流
+    // 重放排水回合首帧不再重复物化；withdraw 重灌可能缺锚点，幂等键由同会话
+    // 保留并集兜底（多记至多让条带少显示一行 sending，不会重复气泡）
+    const historyQueueIds = new Set(
+      msgs.filter((m) => m.role === 'user' && m.queueItemId).map((m) => m.queueItemId as string),
+    )
+    return set((s) => {
       // 跨会话进入：占位不可能属于新会话，直接释放并清空
       s.pendingAttachments.forEach(revokePreview)
+      if (s.sessionId === sessionId) {
+        for (const id of s.materializedQueueIds) historyQueueIds.add(id)
+      }
       return {
         sessionId,
         messages: msgs,
@@ -659,8 +680,10 @@ export const useChatStore = create<ChatState>((set) => ({
         queueItems: s.sessionId === sessionId ? s.queueItems : [],
         queueState: s.sessionId === sessionId ? s.queueState : 'idle',
         queuePausedReason: s.sessionId === sessionId ? s.queuePausedReason : null,
+        materializedQueueIds: historyQueueIds,
       }
-    }),
+    })
+  },
 
   reset: () =>
     set((s) => {

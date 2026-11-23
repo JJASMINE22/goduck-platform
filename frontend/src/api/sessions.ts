@@ -1,7 +1,16 @@
 /* 会话 API —— 对应后端 api/sessions.py（prefix /sessions）。
    CRUD + checkpointer 历史。流式对话见 stream.ts。 */
 import { del, get, post } from './client'
-import type { KnowledgeCapability, MessageOut, SessionCreate, SessionOut, UUID, WithdrawRequest, WithdrawResponse } from '@/types'
+import type {
+  FileChangeLogItem,
+  KnowledgeCapability,
+  MessageOut,
+  SessionCreate,
+  SessionOut,
+  UUID,
+  WithdrawRequest,
+  WithdrawResponse,
+} from '@/types'
 
 export const sessionsApi = {
   create: (body: SessionCreate) => post<SessionOut>('/sessions', body),
@@ -20,6 +29,13 @@ export const sessionsApi = {
 
   /** checkpointer 历史消息（空数组非错误，plan §11.1） */
   history: (id: UUID) => get<MessageOut[]>(`/sessions/${id}/history`),
+
+  /** 工作区文件变更明细（file_change_log 镜像）。anchor=回合锚（末条用户消息
+   *  id）时仅取该回合，与 live 侧"本回合聚合卡"语义一致 */
+  fileChanges: (id: UUID, anchor?: string) =>
+    get<FileChangeLogItem[]>(`/sessions/${id}/file-changes`, {
+      ...(anchor ? { anchor } : {}),
+    }),
 
   /** 回撤一个回合（软删）→ 返回原文 + 附件用于回填发送框；流式中后端 409 */
   withdraw: (id: UUID, body: WithdrawRequest) =>

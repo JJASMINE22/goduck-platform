@@ -13,6 +13,7 @@ from app.api.stream import (
 from app.deps import get_appstate, get_current_user
 from app.models import db as dbmod
 from app.models.schemas import (
+    FileChangeLogOut,
     MessageOut,
     SessionCreate,
     SessionOut,
@@ -140,6 +141,38 @@ async def get_history(
     _ensure_owner(session, user)
     # empty list (not error) when no messages yet (plan §11.1)
     return await svc.get_history(st.checkpointer, session["thread_id"], session["id"])
+
+
+@router.get("/{session_id}/file-changes", response_model=list[FileChangeLogOut])
+async def get_file_changes(
+    session_id: uuid.UUID,
+    request: Request,
+    anchor: str | None = Query(None, description="回合锚（该回合首条用户消息 id）；缺省取最近 500 条"),
+    user: dict = Depends(get_current_user),
+):
+    """工作区文件变更明细（file_change_log 镜像）：刷新/重进后回放徽标与行级 diff。
+
+    前端历史灌入后按末回合锚查询，与 live 侧"本回合聚合卡"语义一致；回撤已
+    按锚删行，重拉天然收敛。该功能上线前的历史回合无镜像行，返回空属正常。
+    """
+    st = _appstate(request)
+    svc = _service(request)
+    session = await svc.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    _ensure_owner(session, user)
+    rows = await dbmod.list_file_changes(st.pool, session_id, anchor)
+    return [
+        FileChangeLogOut(
+            path=r["path"],
+            action=r["action"],
+            added=r["added"],
+            removed=r["removed"],
+            diff=r["diff_text"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
 
 
 @router.post("/{session_id}/withdraw", response_model=WithdrawResponse)
