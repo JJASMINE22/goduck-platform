@@ -137,11 +137,14 @@ services:
     image: goduck-laya:latest
     container_name: goduck-laya
     environment:
-      # 本地路径模式：平铺目录直载（响应无 Router routing 元数据，门控只消费
-      # answers 不受影响），且天然单 checkpoint 常驻（无多 checkpoint 轮换）。
-      # LAYA_MODEL 须保持 auto——别名与本地路径互斥。
-      LAYA_MODEL_PATH: /models/laya/laya-multilingual
-      LAYA_MODEL: auto
+      # 本地权重经 LAYA_EXTRA_MODELS 注册（0.4.38 serve 层原生机制：
+      # {name: 本地目录}，同名重指向内置 multilingual alias——官方镜像
+      # entrypoint 的 LAYA_MODEL_PATH 即此翻译；精简镜像直跑 laya-serve 须
+      # 显式使用）。单 checkpoint 常驻：LAYA_MODELS 只预载 multilingual
+      # （显存纪律），无语言证据的 state 回落 LAYA_DEFAULT_MODEL。
+      LAYA_EXTRA_MODELS: '{"multilingual":"/models/laya/laya-multilingual"}'
+      LAYA_MODELS: multilingual
+      LAYA_DEFAULT_MODEL: multilingual
       # 推理设备：生产默认显式锁 cuda（容器能起 = 设备声明已过，cuda 必然
       # 可用，同 KB_DOCLING_DEVICE 语义）；无 GPU 机器 .env 覆盖回 cpu。
       LAYA_DEVICE: ${LAYA_DEVICE:-cuda}
