@@ -4563,6 +4563,12 @@ body .ant-drawer .ant-drawer-mask {
   visibility: hidden;
 }
 
+/* 树类型图标：语义色由组件内联注入（主题变量），基类只管对齐与不收缩 */
+.ws-tree-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
 /* 树节点标题：名称 + 体积 + 悬停操作（下载/删除） */
 .ws-node {
   display: inline-flex;

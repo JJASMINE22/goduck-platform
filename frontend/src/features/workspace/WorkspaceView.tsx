@@ -1,6 +1,6 @@
 /* 会话页「工作区」视图（与会话同级的页内页面）—— 树卡全宽 + 预览浮层遮挡：
-    - 文件树：AntD Tree + showLine（层级连线 + 叶线，接近 tree 命令观感），递归渲染
-      （后端已限条目/深度）。
+    - 文件树：AntD Tree 无连线纯缩进 + 按文件类型着色的类型图标（fileIcon），
+      递归渲染（后端已限条目/深度）。
     - 行内悬停操作：下载（文件直链 / 目录 zip）、删除（Popconfirm，递归删目录）。
     - 选中文件 → 右侧浮起预览卡（按类型分派）覆盖在树卡右段之上：树始终全宽、
       排版恒定（不因打开/拖拽而重排换行），拖拽仅改变遮挡范围，可拖至近全宽
@@ -16,13 +16,14 @@ import { Button, Empty, Popconfirm, Skeleton, Space, Tooltip, Tree, Typography }
 import type { DataNode } from 'antd/es/tree'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Download, Folder, File as FileIcon, FolderOpen, RefreshCw, Trash2 } from 'lucide-react'
+import { ChevronDown, Download, FolderOpen, RefreshCw, Trash2 } from 'lucide-react'
 import { workspaceApi } from '@/api/workspace'
 import { useDeleteWorkspaceItem, useWorkspaceTree } from '@/hooks/useWorkspace'
 import { useDragResize } from '@/hooks/useDragResize'
 import { useChatStore } from '@/store/chatStore'
 import { mergeFileChangesByPath, type MergedFileChange } from '@/lib/fileChanges'
 import type { UUID, WorkspaceNode } from '@/types'
+import { dirTreeIcon, fileTreeIcon } from './fileIcon'
 import { WorkspaceFilePreview } from './WorkspaceFilePreview'
 
 const { Text } = Typography
@@ -141,7 +142,7 @@ function toTreeData(
   return nodes.map((n) => ({
     key: n.path,
     title: <NodeTitle node={n} sessionId={sessionId} onDelete={onDelete} badge={badges.get(n.path)} />,
-    icon: n.is_dir ? <Folder size={14} /> : <FileIcon size={13} />,
+    icon: n.is_dir ? dirTreeIcon() : fileTreeIcon(n.name),
     isLeaf: !n.is_dir,
     children: n.is_dir && n.children?.length ? toTreeData(n.children, sessionId, onDelete, badges) : undefined,
   }))
@@ -281,7 +282,6 @@ export function WorkspaceView({
             />
           ) : (
             <Tree
-              showLine={{ showLeafIcon: false }}
               showIcon
               blockNode
               treeData={treeData}

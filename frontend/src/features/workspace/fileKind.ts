@@ -30,7 +30,7 @@ const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'])
 const OFFICE_EXTS = new Set(['docx', 'xlsx', 'pptx', 'pdf', 'doc', 'xls', 'ppt', 'csv'])
 
 /** 文件名里的扩展名小写（无点）。Dockerfile/Makefile 等无后缀全名文件按名识别。 */
-function extOf(filename: string): string {
+export function extOf(filename: string): string {
   const lower = filename.toLowerCase()
   if (['dockerfile', 'makefile', '.gitignore'].some((n) => lower === n || lower.endsWith('/' + n))) {
     return lower.split('/').pop() ?? ''
