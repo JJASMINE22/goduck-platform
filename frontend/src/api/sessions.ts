@@ -5,6 +5,7 @@ import type {
   FileChangeLogItem,
   KnowledgeCapability,
   MessageOut,
+  RubricCapability,
   SessionCreate,
   SessionOut,
   UUID,
@@ -45,6 +46,13 @@ export const sessionsApi = {
    *  agentId=当前选中智能体（弱绑定解析：显式 > last；缺省回落） */
   knowledgeCapability: (id: UUID, agentId?: UUID | null) =>
     get<KnowledgeCapability>(`/sessions/${id}/knowledge-capability`, {
+      ...(agentId ? { agent_id: agentId } : {}),
+    }),
+
+  /** rubric 能力查询 —— 驱动会话框「本次 rubric 覆盖」入口显隐（准则 F2 能力驱动 UI）。
+   *  agentId=当前选中智能体（弱绑定解析：显式 > last；缺省回落） */
+  rubricCapability: (id: UUID, agentId?: UUID | null) =>
+    get<RubricCapability>(`/sessions/${id}/rubric-capability`, {
       ...(agentId ? { agent_id: agentId } : {}),
     }),
 }

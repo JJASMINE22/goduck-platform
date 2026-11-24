@@ -2,8 +2,8 @@
 
 两段式（plan §3.5）：
 - ``validate_message_content``：纯校验（流外）。能力门控/每消息图像上限/
-  附件归属/KB 存在性——语音 start 帧在录音**前**调用，POST 在 SSE 开流前
-  调用，配置错误以 HTTP 状态码（或 WS error 帧）尽早暴露；
+  附件归属/KB 存在性/会话 rubric 能力门控——语音 start 帧在录音**前**调用，POST 在
+  SSE 开流前调用，配置错误以 HTTP 状态码（或 WS error 帧）尽早暴露；
 - ``assemble_message_content_stream``：组装（流内 async generator）。逐条
   yield ``status`` 事件（正在解析/已跳过），最终 yield ``BuiltMessage``。
   解析函数保持纯 ``async -> T``，SSE/WS 编排语义只活在调用方的 event_gen
@@ -108,12 +108,29 @@ async def _validate_kbs(
     return kbs
 
 
+def _validate_rubric(rubric: Optional[str], agent_cfg: Optional[AgentConfig]) -> None:
+    """③ 会话内 rubric：仅按需模式（启用 rubric 且 fixed=false）的智能体接受。
+
+    未启用时没有中间件消费该字段、常驻模式的准则已写死——两者都显式 422，不做
+    静默丢弃（与附件/KB 能力门控同纪律）。空白视为未传。判定走
+    AgentConfig.allows_session_rubric，此处只为区分报错文案。
+    """
+    if not (rubric or "").strip():
+        return
+    if agent_cfg is not None and agent_cfg.allows_session_rubric:
+        return
+    if agent_cfg is not None and agent_cfg.rubric is not None:
+        raise MessageContentError(422, "该智能体使用常驻 rubric，准则已固定，不接受会话内覆盖")
+    raise MessageContentError(422, "该智能体未启用 rubric，不接受会话内准则")
+
+
 async def validate_message_content(
     st: "AppState",
     session: dict,
     agent_id: uuid.UUID,
     attachments: Optional[list[Attachment]] = None,
     knowledge_base_ids: Optional[list[uuid.UUID]] = None,
+    rubric: Optional[str] = None,
 ) -> None:
     """纯校验（无组装）：录音前/SSE 开流前暴露配置/归属错误。
 
@@ -125,7 +142,7 @@ async def validate_message_content(
 
     policy = await AttachmentPolicyService(st).for_agent_id(agent_id)
     agent_cfg: Optional[AgentConfig] = None
-    if attachments or knowledge_base_ids:
+    if attachments or knowledge_base_ids or rubric:
         agent_row = await dbmod.get_agent(st.pool, agent_id)
         agent_cfg = (
             AgentConfig.model_validate(agent_row["config_json"]) if agent_row else None
@@ -140,6 +157,7 @@ async def validate_message_content(
         st, knowledge_base_ids,
         allow_knowledge=bool(agent_cfg and agent_cfg.allow_knowledge),
     )
+    _validate_rubric(rubric, agent_cfg)
 
 
 # ----------------------------------------------------------------------

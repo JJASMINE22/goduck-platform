@@ -2,6 +2,9 @@
    嵌入式去壳呈现（原 antd Card 卡中卡改为 rubric-block）：直接平铺在
    详情面板的"行为与评审"分区内，标题 + 启用开关同行。
    value 为 null 表示该节点不启用 rubric；开关切换启用/关闭。
+   fixed 两态决定评审依据来源（镜像后端 RubricConfig 校验）：
+     - 非常驻（按需）：不出现规则填写框，准则由会话内每次调用传入，不传则不评审；
+     - 常驻：出现规则填写框且必填（grader=jev 可只写准则清单，由其序列化生成）。
    grader=jev（JEV 门控分诊）：准则清单（statement + 行级阈值）+ 节点阈值 +
    真值表预览；能力位（jev_rubric_enabled）驱动模式可见性。 */
 import { Empty, Flex, Input, InputNumber, Select, Switch, Tag, Tooltip, Typography, Button } from 'antd'
@@ -28,6 +31,7 @@ export function RubricEditor({
   const enabled = !!value
   const cur: RubricConfig = value ?? { content: '', fixed: false, max_iterations: 3, grader_tool_names: [] }
   const isJev = cur.grader === 'jev'
+  const isFixed = !!cur.fixed
   const criteria = cur.criteria ?? []
 
   const patch = (p: Partial<RubricConfig>) => onChange({ ...cur, ...p })
@@ -38,6 +42,9 @@ export function RubricEditor({
 
   // 客户端校验（镜像后端 validator：后端为准，此处为即时反馈）
   const criteriaValid = criteria.length > 0 && criteria.every((c) => (c.statement || '').trim())
+  // 常驻模式必须有可注入的固定准则：规则文本，或 jev 的准则清单（序列化生成）
+  const hasContent = !!(cur.content ?? '').trim()
+  const fixedRulesMissing = isFixed && !hasContent && !criteria.length
 
   return (
     <div className="rubric-block">
@@ -50,23 +57,12 @@ export function RubricEditor({
       </Flex>
       {enabled ? (
         <>
-          <DragTextarea
-            rows={4}
-            value={cur.content ?? ''}
-            onChange={(e) => patch({ content: e.target.value })}
-            placeholder={
-              isJev
-                ? '评分准则文本（可留空：未填时以下方准则清单序列化生成，LLM 与 JEV 评同一份）'
-                : '评分准则文本（grader 据此评审节点输出）'
-            }
-            wrapStyle={{ marginBottom: 8 }}
-          />
           <Flex gap={24} wrap style={{ marginBottom: 8 }}>
             <Flex align="center" gap={6}>
               <span style={{ fontSize: 13 }}>常驻：</span>
-              <Switch checked={!!cur.fixed} onChange={(v) => patch({ fixed: v })} />
+              <Switch checked={isFixed} onChange={(v) => patch({ fixed: v })} />
               <span style={{ color: 'var(--color-text-tertiary)', fontSize: 12 }}>
-                (FixedRubric 无显式 rubric 时注入)
+                {isFixed ? '(固定准则每回合注入，需在下方填写规则)' : '(按需：准则由会话内传入，不传不评审)'}
               </span>
             </Flex>
             <Flex align="center" gap={6}>
@@ -79,6 +75,34 @@ export function RubricEditor({
               />
             </Flex>
           </Flex>
+          {isFixed ? (
+            <>
+              <DragTextarea
+                rows={4}
+                value={cur.content ?? ''}
+                onChange={(e) => patch({ content: e.target.value })}
+                placeholder={
+                  isJev
+                    ? '评分准则文本（可留空：未填时以下方准则清单序列化生成，LLM 与 JEV 评同一份）'
+                    : '评分准则文本（必填，grader 据此评审节点输出）'
+                }
+                wrapStyle={{ marginBottom: fixedRulesMissing ? 4 : 8 }}
+              />
+              {fixedRulesMissing && (
+                <div style={{ marginBottom: 8 }}>
+                  <Text type="danger" style={{ fontSize: 12 }}>
+                    常驻模式必须填写评分准则
+                    {isJev ? '，或在下方的准则清单中至少添加一条达标准则' : ''}
+                  </Text>
+                </div>
+              )}
+            </>
+          ) : (
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+              按需模式：无需填写默认规则，在会话输入框展开「本次 rubric 覆盖」传入准则，
+              仅传入准则的回合会触发评审。
+            </Text>
+          )}
           <Flex align="center" gap={8} wrap>
             <span style={{ fontSize: 13 }}>grader 模式：</span>
             <Select

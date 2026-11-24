@@ -27,6 +27,13 @@ export interface RubricConfig {
   pass_threshold?: number | null
 }
 
+/** GET /sessions/{id}/rubric-capability —— 驱动会话框「本次 rubric 覆盖」入口显隐（准则 F2） */
+export interface RubricCapability {
+  /** = 该会话智能体启用 rubric 且 fixed=false（按需）；未启用 / 常驻模式均为 false。
+   *  后端发送门同样拒绝（422），前后端双保险 */
+  allow_rubric: boolean
+}
+
 /**
  * 后端 AgentConfig（schema_utils.py）—— 配置树，递归 subagents。
  * 主代理: is_main=true, name/description 为 null, 可设 memory/allow_attachments/allow_knowledge

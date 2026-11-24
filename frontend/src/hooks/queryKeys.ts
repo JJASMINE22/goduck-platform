@@ -43,6 +43,8 @@ export const queryKeys = {
     ['sessions', sessionId, 'workspace-preview', path] as const,
   shellCapability: (sessionId: string, agentId?: string | null) =>
     ['sessions', sessionId, 'shell-capability', agentId ?? ''] as const,
+  rubricCapability: (sessionId: string, agentId?: string | null) =>
+    ['sessions', sessionId, 'rubric-capability', agentId ?? ''] as const,
   cronJobs: ['cron', 'jobs'] as const,
   cronRuns: (jobId: string) => ['cron', 'jobs', jobId, 'runs'] as const,
 } as const

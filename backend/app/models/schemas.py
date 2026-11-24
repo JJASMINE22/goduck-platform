@@ -252,7 +252,9 @@ class SendMessageRequest(BaseModel):
         description="本回合智能体；缺省回落会话最近使用的智能体",
     )
     rubric: Optional[str] = Field(
-        default=None, description="Per-invoke rubric override (FixedRubric priority)"
+        default=None,
+        description="本轮评审准则：仅按需 rubric 智能体（启用 rubric 且 fixed=false）接受，"
+        "不传则该回合不评审；未启用 / 常驻模式的智能体传入 → 422。空白视为未传。",
     )
     attachments: list[Attachment] = Field(default_factory=list)
     knowledge_base_ids: list[uuid.UUID] = Field(
@@ -464,6 +466,17 @@ class ShellCapability(BaseModel):
     """
 
     allow_shell: bool
+
+
+class RubricCapability(BaseModel):
+    """GET /sessions/{id}/rubric-capability —— 驱动会话框「本次 rubric 覆盖」入口可见性（准则 F2）。
+
+    allow_rubric = 该会话智能体启用 rubric 且为按需模式（fixed=false）：准则由
+    会话内按次传入，不传则该回合不评审。未启用（无中间件消费该字段）与常驻
+    模式（准则已写死）均为 false——后端发送门同样拒绝（422，双保险）。
+    """
+
+    allow_rubric: bool
 
 
 # ---------------------------------------------------------------------------

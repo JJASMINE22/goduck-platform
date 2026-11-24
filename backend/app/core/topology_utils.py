@@ -87,7 +87,7 @@ def _node_lines(node: AgentConfig, is_main: bool, max_items: int = 4) -> List[st
     if node.skills:
         facts.append("skills: " + _cap_join([_skill_short(s) for s in node.skills], max_items))
 
-    if node.rubric and (node.rubric.content or "").strip():
+    if node.rubric:
         facts.append("rubric: " + ("fixed" if node.rubric.fixed else "on-demand"))
 
     if node.interrupt_on:
@@ -115,7 +115,7 @@ def _ascii_tree(node: AgentConfig, is_main: bool, prefix: str, is_last: bool) ->
         facts.append("tools: " + ", ".join(node.tool_names[:5]))
     if node.skills:
         facts.append("skills: " + ", ".join(_skill_short(s) for s in node.skills))
-    if node.rubric and (node.rubric.content or "").strip():
+    if node.rubric:
         facts.append("rubric ✓")
     if node.interrupt_on:
         ks = [k for k, v in node.interrupt_on.items() if v]
@@ -220,9 +220,7 @@ def _summary_line(node: AgentConfig, is_main: bool) -> Optional[str]:
 
 def _caps(node: AgentConfig) -> dict:
     """节点能力摘要（TopologyNodeCaps 字段对齐）。"""
-    rubric_on = bool(
-        node.rubric and ((node.rubric.content or "").strip() or node.rubric.criteria)
-    )
+    rubric_on = node.rubric is not None
     return {
         "tools": list(node.tool_names or []),
         "skills": [_skill_short(s) for s in (node.skills or [])],

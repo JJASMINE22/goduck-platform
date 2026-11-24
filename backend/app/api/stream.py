@@ -41,6 +41,7 @@ from app.models.schemas import (
     QueueOut,
     RequeueRequest,
     ResumeRequest,
+    RubricCapability,
     SendMessageRequest,
     ShellCapability,
 )
@@ -395,7 +396,7 @@ async def send_message(
     _refuse_cron_session(session, action="手动发送消息")
     config = _config_for(session, user)
 
-    # 写者解析（§4.4）+ 内容校验（附件/KB/能力）——两条路径都要，错误尽早暴露
+    # 写者解析（§4.4）+ 内容校验（附件/KB/能力/rubric）——两条路径都要，错误尽早暴露
     chosen_id = await resolve_agent_choice_or_409(st, session, body.agent_id)
     try:
         await validate_message_content(
@@ -404,6 +405,7 @@ async def send_message(
             agent_id=chosen_id,
             attachments=body.attachments,
             knowledge_base_ids=body.knowledge_base_ids,
+            rubric=body.rubric,
         )
     except MessageContentError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -519,6 +521,34 @@ def _allows_shell_anywhere(cfg: AgentConfig) -> bool:
     if cfg.allow_shell:
         return True
     return any(_allows_shell_anywhere(sa) for sa in (cfg.subagents or []))
+
+
+@router.get("/{session_id}/rubric-capability", response_model=RubricCapability)
+async def get_rubric_capability(
+    session_id: uuid.UUID,
+    request: Request,
+    agent_id: Optional[uuid.UUID] = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
+    user: dict = Depends(get_current_user),
+):
+    """是否接受会话内按次传入的 rubric —— 驱动会话框「本次 rubric 覆盖」入口显隐（准则 F2）。
+
+    allow_rubric = 该会话智能体启用 rubric 且为按需模式（fixed=false）。未启用时
+    没有中间件消费该字段（填了也是静默丢弃），常驻模式准则已写死——两者都不
+    显示入口。解析落空 → false（全关降级）。只看主代理：会话 rubric 作用于
+    主代理图，子代理图不从父图继承 payload。
+    """
+    from app.services.session_service import SessionService
+
+    st = get_appstate(request)
+    session = await SessionService(st.pool).get(session_id)
+    if session is None or session["user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    allow = False
+    agent_row = await capability_agent_row(st, session, agent_id)
+    if agent_row is not None:
+        allow = AgentConfig.model_validate(agent_row["config_json"]).allows_session_rubric
+    return RubricCapability(allow_rubric=allow)
 
 
 @router.get("/{session_id}/interrupt")

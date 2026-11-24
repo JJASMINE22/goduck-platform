@@ -8,7 +8,9 @@
     录音中输入框只读展示"草稿 + 流式转写"合并预览（与后端 stt_output 合并稿同构），
     松开后草稿与终稿合并为一条消息发送，与手打输入互斥。
     单次 rubric 覆盖：composer 内嵌玻璃井（头部行 + 多行 TextArea），底部工具条
-    ListChecks 图标开关，发送后随回合折叠清空。 */
+    ListChecks 图标开关，发送后随回合折叠清空。能力驱动（准则 F2）：仅当当前智能体
+    启用按需 rubric（rubric-capability）时显示——未启用时没有中间件消费该字段，
+    常驻模式的准则已写死。 */
 import { Button, Checkbox, Flex, Input, Popover, Select, Tooltip, Typography, Upload } from 'antd'
 import { type ReactNode, useRef, useState } from 'react'
 import {
@@ -27,6 +29,7 @@ import {
 } from 'lucide-react'
 import { useAttachmentCapability, useAttachFiles } from '@/hooks/useUploads'
 import { useKnowledgeBases, useKnowledgeCapability } from '@/hooks/useKnowledge'
+import { useRubricCapability } from '@/hooks/useRubric'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { uploadsApi } from '@/api/uploads'
 import { useChatStore, type PendingAttachment } from '@/store/chatStore'
@@ -137,6 +140,11 @@ export function ChatInput({
   const addKb = useChatStore((s) => s.addKb)
   const removeKb = useChatStore((s) => s.removeKb)
 
+  // —— rubric（能力随选中智能体）：仅"启用 rubric 且按需模式"的智能体显示入口。
+  //    未启用时填了也没有中间件消费（静默丢弃），常驻模式准则已写死——后端发送
+  //    门同样 422 拒绝（validate_message_content），此处是同一谓词的展示层门。 ——
+  const rubricCap = useRubricCapability(sessionId, selectedAgentId)
+
   // —— 语音（能力驱动：后端 voice_enabled 才显示麦克风）——
   const capabilities = useCapabilities()
   const voiceEnabled = capabilities.voice_enabled
@@ -163,6 +171,8 @@ export function ChatInput({
   }
   const canAttach = !!cap.data?.allow_attachments
   const canUseKb = !!kbCap.data?.allow_knowledge
+  // 能力未返回（加载中 / 切换智能体的重拉窗口）按 false 处理：入口先隐藏，宁缺勿滥
+  const canUseRubric = !!rubricCap.data?.allow_rubric
   // 智能体选择门（§4.4 空会话）：未选择且无 last_agent_id 时能力端点全关降级，
   // 发送必须先完成选择（后端发送门同样 409 兜底，双保险）
   const hasAgent = !!selectedAgentId
@@ -211,7 +221,9 @@ export function ChatInput({
     if (!hasAgent) return
     // 语音回合进行中（录音/识别）不与手打发送并发
     if (useChatStore.getState().voiceState !== 'idle') return
-    void send(text, { rubric: rubric.trim() || undefined })
+    // rubric 只在当前智能体接受会话内准则时下发：切换智能体后输入框可能残留为
+    // 上一个智能体填写的准则，不能带给不接受它的智能体（后端同样 422）
+    void send(text, { rubric: canUseRubric ? rubric.trim() || undefined : undefined })
     setDraft('')
     setRubric('')
     setShowRubric(false)
@@ -305,13 +317,15 @@ export function ChatInput({
       ) : null}
 
       {/* 单次 rubric 覆盖（折叠）：composer 内嵌玻璃井——头部行（图标 + 标题 +
-          生效提示 + 收起钮）+ 多行 TextArea，容量与风格对齐主输入区 */}
-      {showRubric ? (
+          生效提示 + 收起钮）+ 多行 TextArea，容量与风格对齐主输入区。
+          能力关闭（切到未启用 / 常驻模式的智能体）时整体隐藏，已填文本保留在
+          state，切回接受会话准则的智能体时恢复 */}
+      {showRubric && canUseRubric ? (
         <div className="chat-composer__rubric">
           <div className="chat-composer__rubric-head">
             <ListChecks size={13} className="chat-composer__rubric-icon" />
             <span className="chat-composer__rubric-title">本次 rubric 覆盖</span>
-            <span className="chat-composer__rubric-hint">仅本轮调用生效 · FixedRubric 优先</span>
+            <span className="chat-composer__rubric-hint">仅本轮生效 · 不填则不评审</span>
             <Tooltip title="收起 rubric" placement="top">
               <button
                 type="button"
@@ -444,10 +458,10 @@ export function ChatInput({
                 className={`chat-composer__mic${recording ? ' chat-composer__mic--active' : ''}`}
                 disabled={micDisabled && !recording}
                 onPointerDown={(e) => {
-                  // 仅主键；按下即起录（start 帧零握手直发）
+                  // 仅主键；按下即起录（start 帧零握手直发）。rubric 守卫同 handleSend
                   if (e.button !== 0) return
                   e.preventDefault()
-                  void voice.press(rubric.trim() || undefined)
+                  void voice.press(canUseRubric ? rubric.trim() || undefined : undefined)
                 }}
                 onPointerUp={() => voice.release()}
                 onPointerLeave={() => voice.release()}
@@ -463,16 +477,19 @@ export function ChatInput({
           {/* 显示密度（简洁|详细）：图标 + Dropdown 单选列表，图标随模式切换；
               与发送无耦合，任何会话状态（含流式中）均可即时切换 */}
           <DisplayModeToggle />
-          <Tooltip title={showRubric ? '收起 rubric 覆盖' : '展开单次 rubric 覆盖'} placement="top">
-            <Button
-              type="text"
-              shape="circle"
-              icon={<ListChecks size={16} />}
-              onClick={() => setShowRubric((v) => !v)}
-              disabled={!canSend}
-              style={showRubric ? { color: 'var(--color-primary)' } : undefined}
-            />
-          </Tooltip>
+          {/* rubric 入口（能力驱动）：仅按需 rubric 智能体显示 */}
+          {canUseRubric ? (
+            <Tooltip title={showRubric ? '收起 rubric 覆盖' : '展开单次 rubric 覆盖'} placement="top">
+              <Button
+                type="text"
+                shape="circle"
+                icon={<ListChecks size={16} />}
+                onClick={() => setShowRubric((v) => !v)}
+                disabled={!canSend}
+                style={showRubric ? { color: 'var(--color-primary)' } : undefined}
+              />
+            </Tooltip>
+          ) : null}
           {streaming ? (
             <button type="button" className="glass-btn chat-composer__stop" onClick={cancel}>
               {/* 实心方块 = 标准停止符 ■（fill 填充随文字取 danger 红） */}

@@ -51,19 +51,27 @@ class RubricConfig(BaseModel):
       跳过 LLM grader；灰区/不可用/带取证工具/覆盖重试一律委派 LLM（fail-closed）。
       需后端 jev 能力（jev_rubric_enabled ∧ TYPESAFE_API_KEY），缺失时构建回落
       llm 并告警。
+
+    fixed 两态决定评审依据的来源：
+    - fixed=false（按需）：准则全部来自会话内每次调用传入的 rubric，content 无需
+      填写；不传则该回合不评审。
+    - fixed=true（常驻）：content（或 jev 的 criteria）必填，作为无显式 rubric 时的
+      注入准则。
     """
 
     content: Optional[str] = Field(
         default=None,
-        description="评分准则文本（LLM grader 的评审依据）。为空且无 criteria 则该节点"
-        "不启用 rubric；grader=jev 且 fixed=true 时可只写 criteria（平台自动"
-        "序列化为准则文本，单一真相源）。与 criteria 并存时 content 为 LLM 评审"
-        "真相、criteria 为 JEV 快道预筛（分歧最坏=多一次 LLM 调用，不损害正确性）。",
+        description="评分准则文本（LLM grader 的评审依据）。fixed=true 时必填"
+        "（常驻注入文本；grader=jev 可只写 criteria，平台自动序列化为准则文本，"
+        "单一真相源）；fixed=false 时忽略——评审依据全部来自会话内传入的 rubric。"
+        "与 criteria 并存时 content 为 LLM 评审真相、criteria 为 JEV 快道预筛"
+        "（分歧最坏=多一次 LLM 调用，不损害正确性）。",
     )
     fixed: bool = Field(
         default=False,
         description="True=常驻 rubric (FixedRubricMiddleware, 无显式 rubric 时注入); "
-        "False=仅由调用方在 invoke payload 中传 rubric 时生效。",
+        "False=按需 rubric：中间件始终挂载，仅当调用方在 invoke payload 中传 rubric "
+        "时评审（不传则本回合不触发），content 无需填写。",
     )
     max_iterations: int = Field(
         default=3,
@@ -78,8 +86,7 @@ class RubricConfig(BaseModel):
     )
     grader: Literal["llm", "jev"] = Field(
         default="llm",
-        description="grader 模式：llm=现状 LLM 评审；jev=JEV 门控分诊（前置要求本节点"
-        "rubric 启用——content 或 criteria 至少一项非空）。",
+        description="grader 模式：llm=现状 LLM 评审；jev=JEV 门控分诊（需配置 criteria）。",
     )
     criteria: Optional[List[JevCriterion]] = Field(
         default=None,
@@ -95,15 +102,16 @@ class RubricConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _validate_grader_mode(self) -> "RubricConfig":
-        if self.grader == "jev":
-            if not self.criteria:
-                raise ValueError(
-                    "grader='jev' 需要配置 criteria（结构化判决准则集，"
-                    "JEV 只能对已枚举的命题出题）"
-                )
-            if not ((self.content or "").strip() or self.criteria):
-                raise ValueError("grader='jev' 前提是 rubric 启用（content 或 criteria 非空）")
+    def _validate_rubric(self) -> "RubricConfig":
+        if self.grader == "jev" and not self.criteria:
+            raise ValueError(
+                "grader='jev' 需要配置 criteria（结构化判决准则集，JEV 只能对已枚举的命题出题）"
+            )
+        if self.fixed and not ((self.content or "").strip() or self.criteria):
+            raise ValueError(
+                "rubric fixed=true（常驻模式）必须填写评分准则 content"
+                "（或 grader=jev 的 criteria）——常驻模式需有可注入的固定准则"
+            )
         return self
 
 
@@ -341,6 +349,16 @@ class AgentConfig(BaseModel):
                     raise ValueError("子代理不能设置 allow_knowledge 知识库能力")
 
         return self
+
+    @property
+    def allows_session_rubric(self) -> bool:
+        """会话内按次传入的 rubric 对本节点是否生效。
+
+        当且仅当启用 rubric 且为按需模式（fixed=false）：此时中间件已挂载且只认
+        payload rubric。未启用时没有中间件消费该字段；常驻模式的准则已写死。
+        能力端点（rubric-capability）与消息校验（validate_message_content）共用。
+        """
+        return self.rubric is not None and not self.rubric.fixed
 
     def to_dict(self) -> dict:
         result = {}

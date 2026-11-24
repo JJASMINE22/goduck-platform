@@ -302,6 +302,7 @@ class QueueService:
                 agent_id=row["agent_id"],
                 attachments=attachments,
                 knowledge_base_ids=kb_ids,
+                rubric=row["rubric"],
             )
         except MessageContentError as e:
             raise _RecheckFailure(e.detail) from e

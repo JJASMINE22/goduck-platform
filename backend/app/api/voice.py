@@ -593,6 +593,7 @@ async def voice_ws(ws: WebSocket, session_id: uuid.UUID):
                     agent_id=chosen_id,
                     attachments=start.attachments,
                     knowledge_base_ids=start.knowledge_base_ids,
+                    rubric=start.rubric,
                 )
             except MessageContentError as e:
                 await sess.send_error(e.detail)

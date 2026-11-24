@@ -7,6 +7,10 @@ Changes:
 - Turn-scoped variants (TurnScopedRubricMiddleware / TurnScopedFixedRubricMiddleware):
   grading view is limited to the current turn (last real user message → end),
   see `_TurnScopedGraderMixin`.
+- On-demand rubric (fixed=false) always mounts; `_OnDemandRubricMixin` clears the
+  turn's rubric once grading reaches a terminal status so a later turn without a
+  payload rubric is not graded ("不传不评审"). Fixed rubric requires content/criteria
+  (enforced by RubricConfig validator).
 - JEV 门控变体（TurnScopedJev*）：`_JevTriageMixin` 在上游 `_invoke_grader`/
   `_ainvoke_grader` 扩展点上做先验分诊（每次评分含首评：fast-pass 合成
   satisfied，其余委派 LLM；shadow 态只判不短路）。
@@ -23,6 +27,7 @@ from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.rubric import GraderResponse, RUBRIC_GRADER_MESSAGE_SOURCE
+from langchain.agents.middleware import hook_config
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.errors import GraphBubbleUp
@@ -183,8 +188,51 @@ class _TurnScopedGraderMixin:
         return super()._grader_input(scoped, iteration, correction)
 
 
-class TurnScopedRubricMiddleware(_TurnScopedGraderMixin, RubricMiddleware):
-    """RubricMiddleware + 回合级评分窗口（每消息 invoke payload rubric 路径）。"""
+class _OnDemandRubricMixin:
+    """按需 rubric（fixed=false）：评分终态后清除本轮 rubric，实现「不传不评审」。
+
+    `rubric` 是持久化 state 通道——某回合传入后，后续不传的回合 state 里仍
+    残留旧值，上游 `_prepare_evaluation` 据此照常评审（上一份准则被静默沿用，
+    与"仅传入的回合触发"的按需语义相悖）。本 mixin 在 `after_agent` 评分走到
+    终态（satisfied / failed / max_iterations_reached / grader_error——上游
+    更新不含 jump_to）时追加 `rubric=None`：下一回合未传 → 上游 no-op；传了
+    新准则 → 正常开启新评分 run。
+
+    needs_revision 回环（更新含 jump_to="model"）期间 rubric 必须保留，
+    修订循环结束后才清除。
+
+    只挂按需变体，不能直接挂到常驻（fixed）变体：FixedRubricMiddleware 先
+    `_inject` 再以**未注入**的 state 调上游 before_agent，state 无 rubric 时上游
+    不重置评分 run；清除后每回合都走注入路径，迭代计数会跨回合累积
+    （实测 [0,1,2,3]，修订回环提前触顶）。要清除须先把注入结果并入传给上游
+    的 state。故 fixed 模式下会话覆盖一次后会被后续回合沿用（既有行为）。
+
+    已知残留：回合在 after_agent 之前终止（取消/模型异常）时 rubric 未清除，
+    紧随其后不传 rubric 的回合仍按旧准则评审——中间件层无法区分"本轮未传"
+    与"state 残留"。
+    """
+
+    @hook_config(can_jump_to=["model"])
+    def after_agent(self, state, runtime):
+        update = super().after_agent(state, runtime)
+        return self._clear_rubric_if_done(update)
+
+    @hook_config(can_jump_to=["model"])
+    async def aafter_agent(self, state, runtime):
+        update = await super().aafter_agent(state, runtime)
+        return self._clear_rubric_if_done(update)
+
+    @staticmethod
+    def _clear_rubric_if_done(update):
+        if not update or "jump_to" in update:
+            return update
+        return {**update, "rubric": None}
+
+
+class TurnScopedRubricMiddleware(
+    _OnDemandRubricMixin, _TurnScopedGraderMixin, RubricMiddleware
+):
+    """按需 rubric + 回合级评分窗口（会话内每次调用传入 rubric，不传不评审）。"""
 
 
 class TurnScopedFixedRubricMiddleware(_TurnScopedGraderMixin, FixedRubricMiddleware):
@@ -417,13 +465,15 @@ class _JevRubricBase(_JevTriageMixin):
         self._jev_judge = jev_judge
 
 
-class TurnScopedJevRubricMiddleware(_JevRubricBase, _TurnScopedGraderMixin, RubricMiddleware):
-    """payload-rubric 路径 + 回合切片 + JEV 门控。
+class TurnScopedJevRubricMiddleware(
+    _JevRubricBase, _OnDemandRubricMixin, _TurnScopedGraderMixin, RubricMiddleware
+):
+    """按需 rubric（payload 路径）+ 回合切片 + JEV 门控。
 
-    MRO 上三个构件各占独立方法位：_JevTriageMixin(_invoke_grader) /
-    _TurnScopedGraderMixin(_grader_input) / RubricMiddleware(其余全部)，
-    互不遮蔽。jev_judge=None 时退化为 TurnScopedRubricMiddleware（纯防御，
-    正常构建路径不会出现）。
+    MRO 上四个构件各占独立方法位：_JevTriageMixin(_invoke_grader) /
+    _OnDemandRubricMixin(after_agent 终态清 rubric) / _TurnScopedGraderMixin
+    (_grader_input) / RubricMiddleware(其余全部)，互不遮蔽。jev_judge=None 时
+    退化为 TurnScopedRubricMiddleware（纯防御，正常构建路径不会出现）。
     """
 
 
@@ -461,9 +511,14 @@ def build_rubric_middleware(
 ) -> Optional[RubricMiddleware]:
     """Build RubricMiddleware (or FixedRubricMiddleware) from a RubricConfig.
 
+    挂载规则由 fixed 决定（启用与否以 rubric_cfg 是否为 None 表达）：
+      - fixed=false（按需）：始终挂载。评审依据全部来自会话内每次调用传入的
+        payload rubric——不传则上游 no-op（本回合不评审），故 content 无需填写。
+      - fixed=true（常驻）：需有可注入的固定准则文本（content 或序列化 criteria）；
+        两者皆空属非法配置（RubricConfig 校验器已拦截），此处防御性不挂载。
+
     Args:
-        rubric_cfg: schema_utils.RubricConfig instance; None / 无 content 且无
-            criteria -> None。
+        rubric_cfg: schema_utils.RubricConfig instance; None -> None（节点未启用 rubric）。
         default_model: grader_model fallback (string or BaseChatModel).
         workspace_root: path for building grader forensics tools.
         ctx: BuildContext；grader="jev" 时经 ctx.jev_rubric_factory 注入判决器
@@ -476,8 +531,6 @@ def build_rubric_middleware(
         return None
     criteria = getattr(rubric_cfg, "criteria", None) or []
     content = (rubric_cfg.content or "").strip()
-    if not content and not criteria:
-        return None
 
     grader_registry = make_grader_tools(workspace_root)
     grader_tools = [
@@ -511,6 +564,13 @@ def build_rubric_middleware(
     # 单一真相源形态：content 为空但有 criteria → 序列化为准则文本（LLM 评审
     # 与 JEV 快道评同一份清单）。content 非空时以其为准（criteria 为预筛）。
     rubric_text = content or (serialize_jev_criteria(criteria) if criteria else "")
+
+    if rubric_cfg.fixed and not rubric_text:
+        # 常驻模式无准则可注入：校验器已拦截，此处仅为绕过校验的存量/外部配置兜底
+        logger.warning(
+            "rubric fixed=true has no content/criteria — middleware not mounted (invalid config)"
+        )
+        return None
 
     common = dict(
         model=default_model,

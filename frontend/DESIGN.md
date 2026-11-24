@@ -405,7 +405,8 @@ async function streamMessage(sessionId, body, handlers) {
     智能体回撤悬空回合"留逃生路径。选中态是 `chatStore.selectedAgentId`（纯 UI 态，
     永不落库），进入会话从 `session.last_agent_id` 初始化。
   - 附件按钮（**按 `attachment-capability` 渲染**，见 §10.4）。
-  - rubric 单次覆盖输入（可选，对应 `SendMessageRequest.rubric`）。
+  - rubric 单次覆盖输入（**按 `rubric-capability` 渲染**：仅启用 rubric 且 `fixed=false` 的智能体
+    显示，未启用 / 常驻模式不显示；对应 `SendMessageRequest.rubric`，后端发送门同样 422）。
 - **HITL 卡**：`interrupt` 事件到达 → 渲染决策按钮组（approve / edit / reject / respond）。
   - `edit` → 展开表单编辑 `edited_action.{name,args}`。
   - 提交 → `POST /sessions/:id/resume` `{ decisions: [...] }` → 继续同状态机（恒经

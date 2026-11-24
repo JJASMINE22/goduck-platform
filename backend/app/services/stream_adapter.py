@@ -369,6 +369,10 @@ class StreamAdapter:
         - queue_item_id: 排水发送的队列条目 id（queued-send）。/history 回显
           时前端据此把该用户消息与队列条目对齐（幂等物化键），与 turn_start
           事件同源。
+
+        rubric 不入 additional_kwargs，直接写入 invoke payload（仅按需 rubric 智能体
+        有中间件消费，发送前已经 validate_message_content 校验）。空白视为未传：
+        与校验器同判据，否则按需中间件会按空准则评审。
         """
         additional_kwargs: dict[str, Any] = {}
         if upload_ids:
@@ -388,7 +392,7 @@ class StreamAdapter:
             msg.id = str(uuid.uuid4())
         file_change_tracker.set_turn_anchor(msg.id)
         payload: dict = {"messages": [msg]}
-        if rubric:
+        if rubric and rubric.strip():
             payload["rubric"] = rubric
         async for ev in self._run(agent, payload, config):
             yield ev
