@@ -1,21 +1,23 @@
 # goduck-platform 一体化部署（单文件，直观易改）。
 #
-# GPU 支持已内置声明（backend 的 docling/torch 峰值 ~3-4G 显存 + tei ~1.5-2G，
-# 共占单卡；参考配置 Linux + 32G 内存 + RTX 3080 10G 实测），一条命令拉起全部：
+# GPU 支持已内置声明（backend 的 docling/torch 峰值 ~3-4G 显存 + tei ~1.5-2G +
+# laya ~1G，共占单卡；参考配置 Linux + 32G 内存 + RTX 3080 10G 实测），一条命令拉起全部：
 #   docker compose up -d --build
 # 浏览器访问：      http://<服务器IP>   （nginx 唯一对外入口 :80）
 # 凭据自定义：      同目录建 .env 覆盖 ${VAR:-默认值}
 #
 # GPU 前置（一次性）：NVIDIA 驱动 ≥550（推荐 570 系）+ NVIDIA Container Toolkit：
 #   sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
-# 防呆：未装工具包/驱动时 backend / tei 起不来（"could not select device driver
-#   nvidia"）——属预期失败。临时在无 GPU 机器跑：注释 backend/tei 两处 deploy
-#   段 + .env 置 KB_DOCLING_DEVICE=auto、TEI_IMAGE=cpu-1.9。
+# 防呆：未装工具包/驱动时 backend / tei / laya 起不来（"could not select device
+#   driver nvidia"）——属预期失败。临时在无 GPU 机器跑：注释 backend/tei/laya
+#   三处 deploy 段 + .env 置 KB_DOCLING_DEVICE=auto、TEI_IMAGE=cpu-1.9、
+#   LAYA_DEVICE=cpu，laya 镜像另按 CPU 矩阵重建（改 laya/Dockerfile 的
+#   TORCH_VERSION / TORCH_INDEX_URL 两个 ARG，同 backend 升级只改 ARG）。
 #
 # 架构：所有服务共享 compose 默认网络，按"服务名"互访（无需显式 networks）。
 #       仅 nginx 发布 :80（唯一入口）；backend/frontend 不对
-#       宿主发布，经 nginx 转发；postgres/minio/es/tei 的 ports 均绑定 127.0.0.1
-#       （仅本机调试，LAN 不可见）——缺省即生产安全，无需删改。
+#       宿主发布，经 nginx 转发；postgres/minio/es/tei/laya 的 ports 均绑定
+#       127.0.0.1（仅本机调试，LAN 不可见）——缺省即生产安全，无需删改。
 
 services:
   # ============ 基础设施 ============
@@ -123,6 +125,85 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
+  # ============ Laya 判决服务（Jev 协议兼容端点）============
+  laya:
+    # System 1 判决模型（Apache 2.0 开源权重，TypeSafe Jev 的自托管替代）：
+    # laya-serve 暴露 POST /v1/systemone，与 Jev wire 协议逐字段兼容——backend
+    # 的 JevClient 仅改 base_url 即接入（见 backend 段 JEV_BASE_URL）。
+    # 安装矩阵沿用 backend（slim + cu124 torch，驱动门槛 ≥550/570 系一致）。
+    # 安装矩阵（slim + cu124 torch + 国内回退源）固化在 laya/Dockerfile 的 ARG，
+    # 与 backend 同款：升级/换矩阵只改 Dockerfile，不在 yml 声明。
+    build: ./laya
+    image: goduck-laya:latest
+    container_name: goduck-laya
+    environment:
+      # 本地路径模式：平铺目录直载（响应无 Router routing 元数据，门控只消费
+      # answers 不受影响），且天然单 checkpoint 常驻（无多 checkpoint 轮换）。
+      # LAYA_MODEL 须保持 auto——别名与本地路径互斥。
+      LAYA_MODEL_PATH: /models/laya/laya-multilingual
+      LAYA_MODEL: auto
+      # 推理设备：生产默认显式锁 cuda（容器能起 = 设备声明已过，cuda 必然
+      # 可用，同 KB_DOCLING_DEVICE 语义）；无 GPU 机器 .env 覆盖回 cpu。
+      LAYA_DEVICE: ${LAYA_DEVICE:-cuda}
+      # 精度 fp16（bf16 实测翻 3/864 argmax，fp16 为 0；计算能力 <8 的卡两种
+      # 拼写都会强制 fp16）。
+      LAYA_CUDA_AMP: ${LAYA_CUDA_AMP:-fp16}
+      # 启动即装载权重（免首请求数秒冷启动）；preload 完成才开始监听。
+      LAYA_PRELOAD: "1"
+      # 运行期离线纪律：模型经 bind mount 预置，运行期零联网（对齐 docling/tei）。
+      HF_HUB_OFFLINE: "1"
+      # 认证与 backend 共用一把钥匙：设 TYPESAFE_API_KEY 后 laya-serve 强制
+      # Bearer 校验，backend 的 Jev 客户端用同值直连；空 = 无认证（仅 compose
+      # 内网 + 127.0.0.1 调试口可达）。
+      LAYA_API_KEY: ${TYPESAFE_API_KEY:-}
+      # 严格 Jev wire 契约（剥离 routing/action 附加字段），与 backend 的
+      # langchain-typesafe 客户端解析面严格对齐。
+      LAYA_JEV_STRICT: "1"
+      # 单请求 max_len/head_max_len 上限（multilingual 默认上下文 1024，长文
+      # 需随请求扩到 8192，受本值约束）。
+      LAYA_MAX_TOKEN_BUDGET: ${LAYA_MAX_TOKEN_BUDGET:-8192}
+      # 供应链门禁：权重解析前校验 SHA-256，不匹配拒绝装载。值为 pin commit
+      # e4e9ddf2（官方 revisions.py 审阅 SHA）的实测摘要；重下/换版后按实测
+      # 更新或清空。
+      LAYA_SHA256_DIGESTS: '{"model.safetensors":"9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204","tokenizer/tokenizer.json":"609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f"}'
+      # CPU 线程数（无 GPU 回落 cpu 时生效）。
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-4}
+      # 向容器注入的驱动能力：compute=CUDA 计算，utility=nvidia-smi（观测用）
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    expose: ["8000"]                       # 仅内部网络可见（backend 经服务名直连）
+    ports:
+      - "127.0.0.1:${LAYA_PORT:-8000}:8000"         # 仅本机调试（冒烟/直连验证）
+    volumes:
+      # 模型目录（bind mount → 宿主机 ${VOLUMES_ROOT:-./volumes}/laya/）。预下
+      # runbook（部署目录执行；pin = 官方审阅 SHA，核心 ~647MiB）：
+      #   mkdir -p volumes/laya/laya-multilingual
+      #   HF_ENDPOINT=https://hf-mirror.com huggingface-cli download \
+      #     convaiinnovations/laya-multilingual \
+      #     --revision e4e9ddf21a7b1903b7acffd8814ad4307bf63a67 \
+      #     --local-dir volumes/laya/laya-multilingual
+      #   sudo chown -R 10001:10001 volumes/laya
+      #     # loader 首次加载可能改写 tokenizer 配置，目录须 UID 10001 可写
+      - ${VOLUMES_ROOT:-./volumes}/laya:/models/laya
+    healthcheck:
+      # /health 无认证（设 LAYA_API_KEY 亦然）；slim 镜像无 curl，用 python
+      # 标准库探活。preload=1 下 healthy 即权重已驻留。
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # 权重装载（~647MiB）+ CUDA 初始化的宽限
+      start_period: 120s
+    restart: unless-stopped
+    # GPU 声明（与 backend/tei 共占单卡）：multilingual 322M fp16 权重 ~0.65G
+    # + 前向激活，单 checkpoint 常驻 ~1G；并发 docling 解析时留意 nvidia-smi 水位。
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   # ============ 后端 ============
   backend:
     build: ./backend
@@ -208,6 +289,10 @@ services:
       # 回落全人工审批（启动警告不崩）。shadow 起步校准后再切 enforce（见 README FAQ）。
       JEV_ENABLED: ${JEV_ENABLED:-false}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      # 端点根改指 compose 内置 laya-serve（Jev 协议兼容端点 POST /v1/systemone，
+      # 开源自托管替代 TypeSafe 云 API）。laya 停摆按 fail-closed 回落人工审批
+      # （与 tei 同理不设 depends_on，JevClient 懒连接）。
+      JEV_BASE_URL: ${JEV_BASE_URL:-http://laya:8000}
       JEV_MODE: ${JEV_MODE:-shadow}
       JEV_RUBRIC_ENABLED: ${JEV_RUBRIC_ENABLED:-false}
       JEV_KB_RERANK_ENABLED: ${JEV_KB_RERANK_ENABLED:-false}
