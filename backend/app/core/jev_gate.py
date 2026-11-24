@@ -349,11 +349,12 @@ _HISTORY_RESULT_CHARS = 160    # 单条结果摘要截断
 
 
 def render_state(messages: Any, command: str, max_chars: int) -> str:
-    """构建送判 state：近期 execute 命令/结果摘要 + 待评估命令，截断至 max_chars。
+    """构建送判 state：待评估命令 + 近期 execute 历史（截断只裁历史，命令恒在）。
 
     结果按 tool_call_id 归属（execute 调用产生的 ToolMessage 才入摘要），
     多步链意识（plan §五.2 / R3）。
     """
+    head = f"待评估命令: {command}"
     lines: list[str] = []
     try:
         iterable = list(messages or [])[-_RECENT_HISTORY_MESSAGES:]
@@ -371,14 +372,14 @@ def render_state(messages: Any, command: str, max_chars: int) -> str:
             content = str(getattr(msg, "content", "") or "").strip()
             if content:
                 lines.append(f"→ {content[:_HISTORY_RESULT_CHARS]}")
-    state_text = (
-        "（近期 shell 命令历史，最新在最后）\n"
-        + "\n".join(lines)
-        + f"\n\n待评估命令: {command}"
-    )
-    if len(state_text) > max_chars:
-        state_text = state_text[:max_chars] + "\n…(已截断)"
-    return state_text
+    history = "（近期 shell 命令历史，最新在最后）\n" + "\n".join(lines) if lines else ""
+    budget = max_chars - len(head) - 32
+    if budget <= 0:
+        history = ""
+    elif len(history) > budget:
+        # 只裁最早的历史，待评估命令恒在
+        history = "…(已截断)\n" + history[-budget:]
+    return f"{head}\n\n{history}".rstrip()
 
 
 # ---------------------------------------------------------------------------

@@ -11,9 +11,9 @@ Changes:
   turn's rubric once grading reaches a terminal status so a later turn without a
   payload rubric is not graded ("不传不评审"). Fixed rubric requires content/criteria
   (enforced by RubricConfig validator).
-- JEV 门控变体（TurnScopedJev*）：`_JevTriageMixin` 在上游 `_invoke_grader`/
-  `_ainvoke_grader` 扩展点上做先验分诊（每次评分含首评：fast-pass 合成
-  satisfied，其余委派 LLM；shadow 态只判不短路）。
+- JEV 门控变体（TurnScopedJevFixedRubricMiddleware，仅常驻模式）：`_JevTriageMixin`
+  在上游 `_invoke_grader`/`_ainvoke_grader` 扩展点上做先验分诊（每次评分含首评：
+  fast-pass 合成 satisfied，其余委派 LLM；shadow 态只判不短路）。
 """
 from __future__ import annotations
 
@@ -38,11 +38,6 @@ from app.core.user_scoped_shell_backend import UserScopedLocalShellBackend
 from app.tools.rubric_tools import make_grader_tools
 
 logger = logging.getLogger(__name__)
-
-try:  # 上游私有函数，可能随版本迁移；缺失时退回本地有界渲染
-    from deepagents.middleware.rubric import _build_grader_transcript as _upstream_transcript
-except ImportError:  # pragma: no cover - depends on installed versions
-    _upstream_transcript = None
 
 
 # ======================== Middleware ========================
@@ -242,47 +237,42 @@ class TurnScopedFixedRubricMiddleware(_TurnScopedGraderMixin, FixedRubricMiddlew
 # ======================== JEV rubric 门控（先验分诊，含首评）========================
 
 # thread_id 提取：langgraph `Runtime` 不含 `.config`（官方文档明示须用
-# `langgraph.config.get_config()`；shell 守卫的 `req.runtime` 是 ToolRuntime
-# 子类才有 config）。`_invoke_grader` 运行在 after_agent 图任务上下文内，
-# get_config() 直接返回该任务的 RunnableConfig——无需 after_agent 埋点透传。
+# `langgraph.config.get_config()`）。`_invoke_grader` 运行在 after_agent 图任务
+# 上下文内，get_config() 直接返回该任务的 RunnableConfig。
+
+def _message_text(message) -> str:
+    """消息 content → 纯文本（str 或 text 块列表）。"""
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "".join(parts)
+    return str(content or "")
 
 
-def _fallback_transcript(messages: list) -> str:
-    """上游 `_build_grader_transcript` 不可用时的本地有界渲染（防御性降级）。"""
-    parts: list[str] = []
-    for m in messages:
-        role = getattr(m, "type", "message")
-        content = str(getattr(m, "content", "") or "")
-        if len(content) > 4000:
-            content = content[:4000] + "...(truncated)"
-        parts.append(f"[{role}] {content}")
-    return "\n\n".join(parts) or "(empty transcript)"
-
-
-def render_turn_transcript(messages: list) -> str:
-    """回合切片 transcript（先切片再有界渲染）——JEV 送判 state 的素材。"""
+def final_answer_text(messages: list) -> str:
+    """当前回合最后一条助手消息的文本（JEV 唯一的判决材料）。"""
     start = current_turn_start(messages)
-    scoped = messages if start is None else messages[start:]
-    if _upstream_transcript is not None:
-        return _upstream_transcript(scoped)
-    return _fallback_transcript(scoped)
+    for message in reversed(messages[start:] if start is not None else messages):
+        if getattr(message, "type", None) in ("ai", "AIMessage") and not getattr(
+            message, "tool_calls", None
+        ):
+            return _message_text(message).strip()
+    return ""
 
 
-def render_jev_rubric_state(state, rubric_text: str) -> str:
-    """构建送判 state：回合切片 transcript + rubric + 冻结准则清单。
+def render_jev_answer_state(state) -> str:
+    """构建送判 state：仅当前回合的最终回答。
 
-    与 `_TurnScopedGraderMixin` 共用同一回合切片（current_turn_start），
-    保证 JEV 判的回合与 LLM 评的回合一致。state 全量送判不截断：超长由
-    API 拒绝 → JevUnavailable → 委派 LLM grader（宁可不判，不发残卷）。
+    准则只出现在问题里，state 不重复携带。全文送判不截断：超长由 API 拒绝
+    → JevUnavailable → 委派 LLM grader。
     """
-    frozen = state.get("_rubric_criteria") or []
-    transcript = render_turn_transcript(state.get("messages", []))
-    blocks = [f"<rubric>\n{rubric_text}\n</rubric>"]
-    if frozen:
-        checklist = "\n".join(f"{i}. {name}" for i, name in enumerate(frozen, start=1))
-        blocks.append(f"<criteria>\n{checklist}\n</criteria>")
-    blocks.append(f"<transcript>\n{transcript}\n</transcript>")
-    return "\n\n".join(blocks)
+    return f"<answer>\n{final_answer_text(state.get('messages', []))}\n</answer>"
 
 
 def serialize_jev_criteria(criteria) -> str:
@@ -295,32 +285,31 @@ def serialize_jev_criteria(criteria) -> str:
     return "本 rubric 由结构化准则序列化生成，逐条判定：\n" + "\n".join(lines)
 
 
+_JEV_DEFAULT_TRUE = "该属性在回答中明确成立，且仅凭回答内容即可核实"
+_JEV_DEFAULT_FALSE = "回答未体现该属性，或该属性需要回答之外的事实（项目文件、外部来源）方可核实"
+
+
 def render_jev_criteria(criteria, node_threshold: float | None = None):
     """JevCriterion[] → (API 问题集, 逐题合成元数据)。
 
-    单一语义：每条准则一个 noul 题（statement=达标断言，P(yes) 高=满足）。
-    问题措辞锚定 transcript 可观察属性（plan: laya-jev-migration W2）：instructions
-    限定"仅依据 <transcript>"，criteria 把"需对话之外的事实才能核实"显式归入
-    no 侧——无状态判决器本质不可验证的准则不产生快道放行。
-    qid 稳定为 c{index}（配置顺序即问题顺序；qid 只在单次判决内使用、
-    不跨配置持久化，无迁移问题）。行级 threshold 覆盖节点级；None 交给
-    build_rubric_judge 以平台级默认补齐（三级解析的最后一跳）。
+    每条准则一个 noul 题：statement 为达标断言（P(yes) 高=满足），
+    yes/no 为可选的逐条界定（缺省用平台默认）。
+    qid 为 c{index}（配置顺序即问题顺序）。行级 threshold 覆盖节点级；
+    None 由 build_rubric_judge 以平台级默认补齐。
 
     Returns:
-        (questions, crit_meta)：questions 为 langchain_typesafe Noul 对象集
-        （直接进 ClassifierRequest）；crit_meta 每项含 threshold/statement，
-        供本地布尔合成。
+        (questions, crit_meta)：questions 直接进 ClassifierRequest；
+        crit_meta 每项含 threshold/statement，供本地布尔合成。
     """
     questions: dict = {}
     crit_meta: dict[str, dict] = {}
     for i, c in enumerate(criteria):
         qid = f"c{i}"
         questions[qid] = Noul(
-            instructions=f"仅依据 <transcript> 中助手的最终回答判定：{c.statement}",
+            instructions=f"仅依据 <answer> 判定：{c.statement}",
             criteria=NoulCriteria(
-                true="该属性在回答中明确成立，且仅凭对话记录即可核实",
-                false="回答未体现该属性，或该属性需要对话之外的事实"
-                "（项目文件、外部来源）方可核实",
+                true=(c.yes or "").strip() or _JEV_DEFAULT_TRUE,
+                false=(c.no or "").strip() or _JEV_DEFAULT_FALSE,
             ),
         )
         crit_meta[qid] = {
@@ -333,17 +322,10 @@ def render_jev_criteria(criteria, node_threshold: float | None = None):
 class _JevTriageMixin:
     """JEV rubric 先验门控：`_invoke_grader`/`_ainvoke_grader` 方法位（上游钦定扩展点）。
 
-    门控链（先验语义：每次评分前分诊，含首评 iteration 0）：
-      L1 确定性直通（零成本短路 → 全部委派 LLM grader）：
-        - correction 非 None（`_grade` 覆盖重试，重试必须真干活）；
-        - 取证工具非空（grader_tool_names——证据型评审不可概率短路）。
-      L2 JEV 判决：回合切片 state → RubricJudge.judge/ajudge（异步路径不阻塞
-        事件循环）；判决异常已被 RubricJudge 归一为 unavailable（fail-closed）。
-        问题集来自结构化 criteria（配置即契约），不依赖上游冻结机制——首评
-        无冻结名单时合成响应用准则原文兜底，冻结名单由此锚定。
-      L3 本地合成：fast_pass ∧ mode=enforce → 合成 satisfied（criteria 逐条
-        CriterionPass，名字优先复用冻结名单——满足 `_usability_correction`
-        覆盖率契约）；shadow/灰区/不可用 → 委派 super()（= 纯 llm 行为）。
+    每次评分前分诊（含首评 iteration 0）：
+      - 直通 LLM：覆盖重试（correction 非 None）或配置了取证工具；
+      - JEV 判决：state 仅含最终回答，问题集来自结构化 criteria（配置即契约）；
+      - fast_pass ∧ mode=enforce → 合成 satisfied；shadow/灰区/不可用 → 委派 LLM。
 
     本 mixin 绝不向上抛异常：`after_agent` 会把异常记为 grader_error 终态，
     门控故障必须表现为"回落 LLM"而非"终止评审"。
@@ -352,19 +334,17 @@ class _JevTriageMixin:
     平台级 jev_rubric_mode=shadow 为全局回退保险丝（只判只落审计，行为不变）。
     """
 
-    # ---------------- L1：确定性直通判定（纯函数，便于单测）----------------
     @staticmethod
-    def _jev_gate_open(state, correction) -> bool:
+    def _jev_gate_open(correction) -> bool:
         return correction is None
 
-    # ---------------- L2/L3 ----------------
     def _jev_judge_or_none(self):
         return getattr(self, "_jev_judge", None)
 
     def _synthesize_jev_response(self, decision, state):
         """RubricDecision → GraderResponse（满足上游一致性 + 覆盖率契约）。"""
         names = list(state.get("_rubric_criteria") or [])
-        if not names:  # 防御：门控开启时冻结集必非空，此处兜底用准则原文
+        if not names:  # 首评无冻结名单：用配置的准则原文，冻结名单由此锚定
             judge = self._jev_judge_or_none()
             names = list(getattr(judge, "criteria_statements", None) or [])
         return GraderResponse.model_validate(
@@ -375,50 +355,46 @@ class _JevTriageMixin:
             }
         )
 
+    def _jev_fast_pass(self, decision, state):
+        """判决达标且处于 enforce → 合成响应；否则 None（调用方委派 LLM）。"""
+        if decision is None or not decision.fast_pass:
+            return None
+        if getattr(self._jev_judge_or_none(), "mode", "enforce") == "shadow":
+            return None
+        return self._synthesize_jev_response(decision, state)
+
     def _invoke_grader(self, state, iteration, correction=None, *, context=None):
         judge = self._jev_judge_or_none()
-        if (
-            judge is not None
-            and self._jev_gate_open(state, correction)
-            and not getattr(self, "_tools", None)
-        ):
+        decision = None
+        if judge is not None and self._jev_gate_open(correction) and not getattr(self, "_tools", None):
             try:
                 decision = judge.judge(
-                    render_jev_rubric_state(state, state.get("rubric") or ""),
+                    render_jev_answer_state(state),
                     key=_jev_cache_key(state, iteration),
                     thread_id=_jev_thread_id(),
                 )
             except Exception:  # noqa: BLE001 — 门控故障=回落 LLM，严禁 grader_error
                 logger.exception("jev rubric triage raised (fail-closed → delegate LLM)")
-            else:
-                if (
-                    decision.fast_pass
-                    and getattr(judge, "mode", "enforce") != "shadow"
-                ):
-                    return self._synthesize_jev_response(decision, state)
+        fast = self._jev_fast_pass(decision, state)
+        if fast is not None:
+            return fast
         return super()._invoke_grader(state, iteration, correction, context=context)
 
     async def _ainvoke_grader(self, state, iteration, correction=None, *, context=None):
         judge = self._jev_judge_or_none()
-        if (
-            judge is not None
-            and self._jev_gate_open(state, correction)
-            and not getattr(self, "_tools", None)
-        ):
+        decision = None
+        if judge is not None and self._jev_gate_open(correction) and not getattr(self, "_tools", None):
             try:
                 decision = await judge.ajudge(
-                    render_jev_rubric_state(state, state.get("rubric") or ""),
+                    render_jev_answer_state(state),
                     key=_jev_cache_key(state, iteration),
                     thread_id=_jev_thread_id(),
                 )
             except Exception:  # noqa: BLE001 — 门控故障=回落 LLM，严禁 grader_error
                 logger.exception("jev rubric triage raised (fail-closed → delegate LLM)")
-            else:
-                if (
-                    decision.fast_pass
-                    and getattr(judge, "mode", "enforce") != "shadow"
-                ):
-                    return self._synthesize_jev_response(decision, state)
+        fast = self._jev_fast_pass(decision, state)
+        if fast is not None:
+            return fast
         return await super()._ainvoke_grader(state, iteration, correction, context=context)
 
 
@@ -465,22 +441,8 @@ class _JevRubricBase(_JevTriageMixin):
         self._jev_judge = jev_judge
 
 
-class TurnScopedJevRubricMiddleware(
-    _JevRubricBase, _OnDemandRubricMixin, _TurnScopedGraderMixin, RubricMiddleware
-):
-    """按需 rubric（payload 路径）+ 回合切片 + JEV 门控。
-
-    MRO 上四个构件各占独立方法位：_JevTriageMixin(_invoke_grader) /
-    _OnDemandRubricMixin(after_agent 终态清 rubric) / _TurnScopedGraderMixin
-    (_grader_input) / RubricMiddleware(其余全部)，互不遮蔽。jev_judge=None 时
-    退化为 TurnScopedRubricMiddleware（纯防御，正常构建路径不会出现）。
-    """
-
-
-class TurnScopedJevFixedRubricMiddleware(
-    _JevRubricBase, _TurnScopedGraderMixin, FixedRubricMiddleware
-):
-    """常驻 rubric 路径 + 回合切片 + JEV 门控（fixed 注入逻辑继承宿主）。"""
+class TurnScopedJevFixedRubricMiddleware(_JevRubricBase, _TurnScopedGraderMixin, FixedRubricMiddleware):
+    """常驻 rubric + 回合切片 + JEV 门控（fixed 注入逻辑继承宿主）。"""
 
 
 # ======================== Rubric middleware build ========================
@@ -511,11 +473,11 @@ def build_rubric_middleware(
 ) -> Optional[RubricMiddleware]:
     """Build RubricMiddleware (or FixedRubricMiddleware) from a RubricConfig.
 
-    挂载规则由 fixed 决定（启用与否以 rubric_cfg 是否为 None 表达）：
-      - fixed=false（按需）：始终挂载。评审依据全部来自会话内每次调用传入的
-        payload rubric——不传则上游 no-op（本回合不评审），故 content 无需填写。
-      - fixed=true（常驻）：需有可注入的固定准则文本（content 或序列化 criteria）；
-        两者皆空属非法配置（RubricConfig 校验器已拦截），此处防御性不挂载。
+    挂载规则：
+      - fixed=false（按需）：始终挂载，评审依据来自会话内传入的 payload rubric；
+        不传则上游 no-op（本回合不评审）。
+      - fixed=true（常驻）：需有可注入的准则文本（content 或序列化 criteria）。
+      - grader=jev：仅常驻模式；问题集由 criteria 在建图时固定。
 
     Args:
         rubric_cfg: schema_utils.RubricConfig instance; None -> None（节点未启用 rubric）。
@@ -541,35 +503,21 @@ def build_rubric_middleware(
 
     jev_factory = getattr(ctx, "jev_rubric_factory", None) if ctx is not None else None
     use_jev = getattr(rubric_cfg, "grader", "llm") == "jev"
-    if use_jev and (jev_factory is None or not criteria):
-        # 能力缺失/准则缺失 → 回落 llm。回落本身是设计（能力开关全局控制），
-        # 但必须可见——"配置了 jev 但实际跑的是 llm"不允许静默发生。
+    if use_jev and (jev_factory is None or not criteria or not rubric_cfg.fixed):
+        # 回落本身是设计（能力开关全局控制），但必须可见。
         logger.warning(
-            "rubric grader='jev' falls back to llm (factory=%s criteria=%d) — "
-            "check jev_rubric_enabled/TYPESAFE_API_KEY/criteria",
+            "rubric grader='jev' falls back to llm (factory=%s criteria=%d fixed=%s)",
             "missing" if jev_factory is None else "ready",
             len(criteria),
+            rubric_cfg.fixed,
         )
         use_jev = False
 
-    if use_jev and content:
-        # 先验门控语义提示：快道只对结构化 criteria 出题；content 中未被 criteria
-        # 编码的要求只在灰区轮由 LLM grader 执行。criteria 即机器契约。
-        logger.info(
-            "rubric grader='jev' with content+criteria: fast lane grades the %d "
-            "structured criteria only; prose enforcement rides the LLM gray zone",
-            len(criteria),
-        )
-
-    # 单一真相源形态：content 为空但有 criteria → 序列化为准则文本（LLM 评审
-    # 与 JEV 快道评同一份清单）。content 非空时以其为准（criteria 为预筛）。
+    # content 为空但有 criteria → 序列化为准则文本（LLM 评审的依据）。
     rubric_text = content or (serialize_jev_criteria(criteria) if criteria else "")
 
     if rubric_cfg.fixed and not rubric_text:
-        # 常驻模式无准则可注入：校验器已拦截，此处仅为绕过校验的存量/外部配置兜底
-        logger.warning(
-            "rubric fixed=true has no content/criteria — middleware not mounted (invalid config)"
-        )
+        logger.warning("rubric fixed=true has no content/criteria — middleware not mounted")
         return None
 
     common = dict(
@@ -579,14 +527,11 @@ def build_rubric_middleware(
         on_evaluation=_log_evaluation,
     )
 
-    if use_jev and rubric_cfg.fixed:
-        return TurnScopedJevFixedRubricMiddleware(
-            jev_judge=jev_factory(rubric_cfg), fixed_rubric=rubric_text, **common
-        )
-    if use_jev:
-        return TurnScopedJevRubricMiddleware(jev_judge=jev_factory(rubric_cfg), **common)
-
     if rubric_cfg.fixed:
+        if use_jev:
+            return TurnScopedJevFixedRubricMiddleware(
+                jev_judge=jev_factory(rubric_cfg), fixed_rubric=rubric_text, **common
+            )
         return TurnScopedFixedRubricMiddleware(fixed_rubric=rubric_text, **common)
     return TurnScopedRubricMiddleware(**common)
 

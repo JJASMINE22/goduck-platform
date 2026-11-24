@@ -5,15 +5,15 @@
    fixed 两态决定评审依据来源（镜像后端 RubricConfig 校验）：
      - 非常驻（按需）：不出现规则填写框，准则由会话内每次调用传入，不传则不评审；
      - 常驻：出现规则填写框且必填（grader=jev 可只写准则清单，由其序列化生成）。
-   grader=jev（JEV 门控分诊）：准则清单（statement + 行级阈值）+ 节点阈值 +
-   真值表预览；能力位（jev_rubric_enabled）驱动模式可见性。 */
+    grader=jev（JEV 门控分诊，仅常驻模式）：准则清单（statement + 可选成立/不成立界定 +
+    行级阈值）+ 节点阈值 + 规则说明；能力位（jev_rubric_enabled）驱动模式可见性。 */
 import { Empty, Flex, Input, InputNumber, Select, Switch, Tag, Tooltip, Typography, Button } from 'antd'
 import { type ReactNode } from 'react'
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { useMcpTools } from '@/hooks/useMcp'
 import { DragTextarea } from './DragTextarea'
-import type { RubricConfig } from '@/types'
+import type { JevCriterion, RubricConfig } from '@/types'
 
 const { Text } = Typography
 
@@ -36,9 +36,13 @@ export function RubricEditor({
 
   const patch = (p: Partial<RubricConfig>) => onChange({ ...cur, ...p })
 
-  const patchCriterion = (i: number, p: Partial<{ statement: string; threshold: number | null }>) => {
+  const patchCriterion = (i: number, p: Partial<JevCriterion>) => {
     patch({ criteria: criteria.map((c, idx) => (idx === i ? { ...c, ...p } : c)) })
   }
+
+  // jev 仅支持常驻模式：选 jev 即切常驻，取消常驻则回到 llm
+  const changeGrader = (g: 'llm' | 'jev') => patch(g === 'jev' ? { grader: g, fixed: true } : { grader: g })
+  const changeFixed = (v: boolean) => patch(v ? { fixed: true } : { fixed: false, grader: 'llm' })
 
   // 客户端校验（镜像后端 validator：后端为准，此处为即时反馈）
   const criteriaValid = criteria.length > 0 && criteria.every((c) => (c.statement || '').trim())
@@ -60,9 +64,13 @@ export function RubricEditor({
           <Flex gap={24} wrap style={{ marginBottom: 8 }}>
             <Flex align="center" gap={6}>
               <span style={{ fontSize: 13 }}>常驻：</span>
-              <Switch checked={isFixed} onChange={(v) => patch({ fixed: v })} />
+              <Switch checked={isFixed} disabled={isJev} onChange={changeFixed} />
               <span style={{ color: 'var(--color-text-tertiary)', fontSize: 12 }}>
-                {isFixed ? '(固定准则每回合注入，需在下方填写规则)' : '(按需：准则由会话内传入，不传不评审)'}
+                {isJev
+                  ? '(JEV 评审固定使用下方准则，不接受会话内覆盖)'
+                  : isFixed
+                    ? '(固定准则每回合注入，需在下方填写规则)'
+                    : '(按需：准则由会话内传入，不传不评审)'}
               </span>
             </Flex>
             <Flex align="center" gap={6}>
@@ -108,7 +116,7 @@ export function RubricEditor({
             <Select
               style={{ width: 220 }}
               value={cur.grader ?? 'llm'}
-              onChange={(v) => patch({ grader: v })}
+              onChange={changeGrader}
               options={[
                 { value: 'llm', label: 'LLM 评审（默认）' },
                 {
@@ -161,36 +169,56 @@ export function RubricEditor({
                   }
                 />
               ) : (
-                <Flex vertical gap={8}>
+                <Flex vertical gap={4}>
                   {criteria.map((c, i) => (
-                    <Flex key={i} gap={8} align="center">
-                      <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)', minWidth: 44 }}>
-                        准则 {i + 1}
-                      </span>
-                      <Input
-                        value={c.statement}
-                        onChange={(e) => patchCriterion(i, { statement: e.target.value })}
-                        placeholder="达标断言（仅凭对话记录可核实），如：回答中每个统计数据均标注了来源"
-                        style={{ flex: 1 }}
-                      />
-                      <Tooltip title="行级阈值覆盖（P 与 conf 双轴同值），留空继承节点/平台阈值">
-                        <InputNumber
-                          min={0.5}
-                          max={0.99}
-                          step={0.05}
-                          size="small"
-                          value={c.threshold ?? undefined}
-                          placeholder="阈值"
-                          onChange={(v) => patchCriterion(i, { threshold: typeof v === 'number' ? v : null })}
+                    <Flex key={i} vertical gap={2}>
+                      <Flex gap={8} align="center">
+                        <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)', minWidth: 44 }}>
+                          准则 {i + 1}
+                        </span>
+                        <Input
+                          value={c.statement}
+                          onChange={(e) => patchCriterion(i, { statement: e.target.value })}
+                          placeholder="达标断言（仅凭回答内容可核实），如：回答中每个统计数据均标注了来源"
+                          style={{ flex: 1 }}
                         />
-                      </Tooltip>
-                      <Button
-                        size="small"
-                        type="text"
-                        danger
-                        icon={<DeleteOutlined />}
-                        onClick={() => patch({ criteria: criteria.filter((_, idx) => idx !== i) })}
-                      />
+                        <Tooltip title="行级阈值覆盖（P 与 conf 双轴同值），留空继承节点/平台阈值">
+                          <InputNumber
+                            min={0.5}
+                            max={0.99}
+                            step={0.05}
+                            size="small"
+                            value={c.threshold ?? undefined}
+                            placeholder="阈值"
+                            onChange={(v) => patchCriterion(i, { threshold: typeof v === 'number' ? v : null })}
+                          />
+                        </Tooltip>
+                        <Button
+                          size="small"
+                          type="text"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={() => patch({ criteria: criteria.filter((_, idx) => idx !== i) })}
+                        />
+                      </Flex>
+                      <Flex gap={8} style={{ paddingLeft: 52 }}>
+                        <Tooltip title="成立侧界定，留空用平台默认">
+                          <Input
+                            size="small"
+                            value={c.yes ?? ''}
+                            onChange={(e) => patchCriterion(i, { yes: e.target.value || null })}
+                            placeholder="成立（可选，留空用默认）"
+                          />
+                        </Tooltip>
+                        <Tooltip title="不成立侧界定，留空用平台默认">
+                          <Input
+                            size="small"
+                            value={c.no ?? ''}
+                            onChange={(e) => patchCriterion(i, { no: e.target.value || null })}
+                            placeholder="不成立（可选，留空用默认）"
+                          />
+                        </Tooltip>
+                      </Flex>
                     </Flex>
                   ))}
                 </Flex>
@@ -204,7 +232,7 @@ export function RubricEditor({
               )}
               <div className="rubric-block__rules">
                 <Flex vertical gap={2}>
-                  <Text style={{ fontSize: 12 }}>门控规则（首评冻结准则后生效）</Text>
+                  <Text style={{ fontSize: 12 }}>门控规则</Text>
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     · 快道放行：全部准则 P≥t 且 conf≥t，跳过 LLM 评审
                   </Text>

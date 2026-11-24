@@ -36,6 +36,14 @@ class JevCriterion(BaseModel):
         description="行级阈值覆盖（P 与 conf 双轴同值）；缺省回落节点级 pass_threshold"
         "→平台级全局默认。",
     )
+    yes: Optional[str] = Field(
+        default=None,
+        description="成立侧界定（可选）：覆盖默认的'回答中明确成立且仅凭对话可核实'。",
+    )
+    no: Optional[str] = Field(
+        default=None,
+        description="不成立侧界定（可选）：覆盖默认的'未体现或需对话之外的事实'。",
+    )
 
 
 class RubricConfig(BaseModel):
@@ -49,8 +57,8 @@ class RubricConfig(BaseModel):
     - llm（默认）：现状 LLM grader 子代理评审，行为不变；
     - jev：JEV 门控分诊——高置信达标（全部准则 P/conf 过阈值）合成 satisfied
       跳过 LLM grader；灰区/不可用/带取证工具/覆盖重试一律委派 LLM（fail-closed）。
-      需后端 jev 能力（jev_rubric_enabled ∧ TYPESAFE_API_KEY），缺失时构建回落
-      llm 并告警。
+      仅常驻模式可用（问题集由 criteria 在建图时固定）；需后端 jev 能力
+      （jev_rubric_enabled ∧ TYPESAFE_API_KEY），缺失时构建回落 llm 并告警。
 
     fixed 两态决定评审依据的来源：
     - fixed=false（按需）：准则全部来自会话内每次调用传入的 rubric，content 无需
@@ -86,12 +94,12 @@ class RubricConfig(BaseModel):
     )
     grader: Literal["llm", "jev"] = Field(
         default="llm",
-        description="grader 模式：llm=现状 LLM 评审；jev=JEV 门控分诊（需配置 criteria）。",
+        description="grader 模式：llm=现状 LLM 评审；jev=JEV 门控分诊"
+        "（仅 fixed=true 可用，需配置 criteria）。",
     )
     criteria: Optional[List[JevCriterion]] = Field(
         default=None,
-        description="结构化判决准则集（grader=jev 必填）。逐条渲染为 Jev 问题，"
-        "首评（iteration 0）仍由 LLM grader 枚举冻结准则集，冻结后 JEV 快道生效。",
+        description="结构化判决准则集（grader=jev 必填）。逐条渲染为 Jev 问题。",
     )
     pass_threshold: Optional[float] = Field(
         default=None,
@@ -103,10 +111,16 @@ class RubricConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_rubric(self) -> "RubricConfig":
-        if self.grader == "jev" and not self.criteria:
-            raise ValueError(
-                "grader='jev' 需要配置 criteria（结构化判决准则集，JEV 只能对已枚举的命题出题）"
-            )
+        if self.grader == "jev":
+            if not self.fixed:
+                raise ValueError(
+                    "grader='jev' 仅支持常驻模式（fixed=true）：JEV 只能对预先枚举的准则出题，"
+                    "不接受会话内传入的 rubric"
+                )
+            if not self.criteria:
+                raise ValueError(
+                    "grader='jev' 需要配置 criteria（结构化判决准则集，JEV 只能对已枚举的命题出题）"
+                )
         if self.fixed and not ((self.content or "").strip() or self.criteria):
             raise ValueError(
                 "rubric fixed=true（常驻模式）必须填写评分准则 content"

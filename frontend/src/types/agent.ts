@@ -11,6 +11,9 @@ export interface JevCriterion {
   statement: string
   /** 行级阈值覆盖（0.5 ≤ t < 1，P 与 conf 双轴同值）；缺省回落节点级→平台级 */
   threshold?: number | null
+  /** 成立/不成立侧界定（可选）：覆盖平台默认文案 */
+  yes?: string | null
+  no?: string | null
 }
 
 /** 后端 RubricConfig（schema_utils.py）—— 节点级评分自评 */
@@ -19,7 +22,7 @@ export interface RubricConfig {
   fixed?: boolean
   max_iterations?: number // 1..20
   grader_tool_names?: string[]
-  /** grader 模式：llm=现状 LLM 评审；jev=JEV 门控分诊（需 criteria 与平台能力） */
+  /** grader 模式：llm=现状 LLM 评审；jev=JEV 门控分诊（仅 fixed=true，需 criteria 与平台能力） */
   grader?: 'llm' | 'jev'
   /** 结构化判决准则集（grader=jev 必填） */
   criteria?: JevCriterion[] | null
