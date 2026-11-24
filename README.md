@@ -354,7 +354,7 @@ python -m app.seed agent_confs/default.yaml --name "Default Gateway" --creator a
 |---|---|---|---|---|
 | [知识库 RAG](#cap-kb) | `KB_ENABLED` | ✅ 开 | TEI（compose 内置）+ ES | 会话锚定私有知识，先检索后作答 |
 | [语音输入](#cap-voice) | `VOICE_ENABLED` | ⛔ 关 | AssemblyAI API Key | 长按说话，实时转写直发会话 |
-| [JEV 智能审批](#cap-jev) | `JEV_ENABLED` | ⛔ 关 | TypeSafe API Key | `allow_shell` 高频只读命令免审批 |
+| [JEV 智能审批](#cap-jev) | `JEV_ENABLED` | ⛔ 关 | laya 服务（compose 内置）+ API Key | `allow_shell` 高频只读/依赖补齐命令免审批 |
 
 ```bash
 curl http://localhost:8000/health
@@ -528,12 +528,18 @@ ASSEMBLYAI_API_KEY=<你的 key>     # https://www.assemblyai.com/
 
 ### JEV 智能审批（默认关闭）
 
-**能力**：为开启 `allow_shell` 的智能体减轻 HITL 负担——基于 [TypeSafe](https://docs.typesafe.ai) System One 的概率门控决定「是否跳过人工审批」，全程 fail-closed（不可用 / 超时 / 解析失败一律问人，绝不放行）：
+**能力**：为开启 `allow_shell` 的智能体减轻 HITL 负担——判决后端为 compose 内置的 [laya](https://github.com/conversationai/laya)-serve（Apache 2.0 开源 System 1 判决模型，Jev wire 协议兼容端点），基于概率门控决定「是否跳过人工审批」，全程 fail-closed（不可用 / 超时 / 解析失败一律问人，绝不放行）：
 
 ```text
 shell 命令
-  ├─ L1 只读白名单（ls / cat / git status…）   → 静默放行，不调 Jev
-  ├─ L1 高危黑名单（rm -rf / format / dd…）    → 跳过 Jev，强制人工审批
+  ├─ L1 只读白名单（ls / cat / git status…）           → 静默放行，不调 Jev
+  ├─ L1 允许项扩展（JEV_SHELL_L1_ALLOW，默认开）
+  │    ├─ 在册 MCP 前置依赖补齐（uvx --from / pip install，
+  │    │  包名以 mcp_server 表登记为准 + JEV_SHELL_ALLOW_PKGS） → 静默放行
+  │    └─ 工作区常规操作（mkdir/cp/mv/touch/python 脚本，
+  │       仅相对路径、拒绝 `..` 与绝对路径）               → 静默放行
+  │    （`&&` 复合链逐段判定，任一段不属允许面 → 整链落 L2）
+  ├─ L1 高危黑名单（rm -rf / format / dd…）            → 跳过 Jev，强制人工审批
   └─ L2 Jev 灰区判决（送判 当前命令 + 近期命令历史）
        ├─ shadow：仅概率标注 + 落审计，行为与现状一致（灰度观察期）
        ├─ enforce：高置信"常规命令" → 自动执行；其余 → 人工审批
@@ -545,17 +551,19 @@ shell 命令
 ```bash
 # .env
 JEV_ENABLED=true
-TYPESAFE_API_KEY=<你的 key>       # https://docs.typesafe.ai
-JEV_MODE=shadow                   # 先 shadow 观察审计，标定阈值后再切 enforce
+TYPESAFE_API_KEY=<key>             # 与 compose laya 段的 LAYA_API_KEY 同值（一把钥匙两端）
+JEV_MODE=enforce                   # shadow=只判只落审计（校准观察态）
 ```
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `JEV_MODE` | `shadow` | `shadow` = 只判只落审计；`enforce` = 灰区自动放行生效 |
+| `JEV_MODE` | `enforce` | `shadow` = 只判只落审计；`enforce` = 灰区自动放行生效 |
 | `JEV_SAFE_THRESHOLD` | `0.6` | 自动放行阈值（概率与置信度双轴全过才放行），按 shadow 期分歧样本标定 |
 | `JEV_TIMEOUT_SECONDS` | `5.0` | 判决硬超时（秒），超时即回落人工 |
-| `JEV_MODEL` | `jev-1.13.0` | 锁定具体版本号，不用 `jev-latest` 别名（防行为漂移） |
-| `JEV_BASE_URL` | `https://api.typesafe.ai` | TypeSafe REST 端点根 |
+| `JEV_MODEL` | `multilingual` | laya 侧注册名（与 `LAYA_EXTRA_MODELS` 同名注册） |
+| `JEV_BASE_URL` | `http://laya:8000` | Jev wire 端点根（compose 内置 laya-serve） |
+| `JEV_SHELL_L1_ALLOW` | `true` | L1 允许项扩展总开关；`false` = 一键回退扩展前行为 |
+| `JEV_SHELL_ALLOW_PKGS` | 空 | 额外放行包名（逗号分隔；与 `mcp_server` 表登记包并集） |
 
 **子门控**（均前置 `JEV_ENABLED=true` + key 就绪）：
 
@@ -649,7 +657,7 @@ npm run lint                  # eslint
 <details>
 <summary><b>JEV 何时可以切 enforce？</b></summary>
 
-先用 `JEV_MODE=shadow` 运行一段时间，按审计表中「建议放行 vs 人工实际同意」的分歧样本重标定 `JEV_SAFE_THRESHOLD`，再切 `enforce`。任何时刻 Jev 不可用都会 fail-closed 回落全人工审批。
+`enforce` 下自动放行由 L1 确定性层（白名单 + 允许项扩展）与 L2 概率判决共同产生：L1 零误判可直接信任；L2 阈值未经 shadow 期标定时，灰区判决自然回落人工（宁多问不误放）。要进一步收紧减负率，用 `JEV_MODE=shadow` 观察审计表中「建议放行 vs 人工实际同意」的分歧样本，重标定 `JEV_SAFE_THRESHOLD` 后再切回 `enforce`。任何时刻 Jev 不可用都会 fail-closed 回落全人工审批。
 </details>
 
 <details>

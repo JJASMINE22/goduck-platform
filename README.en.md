@@ -45,7 +45,7 @@
 | Model management | OpenAI-compatible multi-provider registration (OpenAI / DeepSeek / Qwen / local), connectivity test, key rotation |
 | MCP tools | Runtime registration of stdio / http MCP servers, namespaced `{server}__{tool}` tools, health checks |
 | Skills pool | Cross-agent shared `/skills/` directories, multipart upload, ready on upload |
-| JEV smart approval | Probability-gated `allow_shell` approval (shadow / enforce rollout), rubric fast-path, KB-retrieval noise reduction |
+| JEV smart approval | Probability-gated `allow_shell` approval (shadow / enforce rollout), rubric fast-path, KB-retrieval noise reduction; verdicts served by the bundled self-hosted laya-serve (Jev wire protocol) |
 
 ## Architecture
 
@@ -151,7 +151,7 @@ Optional capabilities are driven by backend env vars; `/health` reports them and
 |---|---|---|---|
 | Knowledge base RAG | `KB_ENABLED` | ✅ on | TEI (bundled) + Elasticsearch |
 | Voice input | `VOICE_ENABLED` | ⛔ off | AssemblyAI API key |
-| JEV smart approval | `JEV_ENABLED` | ⛔ off | TypeSafe API key |
+| JEV smart approval | `JEV_ENABLED` | ⛔ off | laya service (bundled) + API key |
 
 ## Project Layout
 

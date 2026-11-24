@@ -4,9 +4,11 @@
 
   出口一（既有，契约零变化）：`build_shell_guard` → interrupt_on["execute"] 的
   when/description 工厂。三级判决（对一条 execute tool_call）：
-    L1 确定性规则（零成本零误判，先于 Jev）：
-      - 白名单（只读直通）→ when=False 静默放行，不调 Jev；
-      - 黑名单（高危模式）→ 跳过 Jev 直接 when=True，description 强标注。
+     L1 确定性规则（零成本零误判，先于 Jev）：
+       - 白名单（只读直通）→ when=False 静默放行，不调 Jev；
+       - MCP 前置依赖补齐 / 工作区常规操作（jev_shell_l1_allow，plan: laya-jev-migration
+         W1；&& 复合链逐段判定）→ when=False 静默放行；
+       - 黑名单（高危模式）→ 跳过 Jev 直接 when=True，description 强标注。
     L2 Jev（白黑之间灰区）：state=当前命令+近期 execute 历史 → 一次并行问全 →
     本地布尔合成（无二次网络调用）：
       - shadow：恒 when=True（行为=现状），判决落库 + description 概率标注；
@@ -112,24 +114,43 @@ def _rest_of(command: str) -> str:
     return parts[1] if len(parts) > 1 else ""
 
 
-def is_readonly_whitelisted(command: str) -> bool:
+_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+
+def _path_token_ok(token: str) -> bool:
+    """路径 token 安全校验（strict 白名单 / 允许项共享）：剥包裹引号后
+    拒绝绝对路径与任何 `..` 段（cwd 即 per-user 工作区）。"""
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        token = token[1:-1]
+    if token.startswith(("/", "\\")) or _DRIVE_RE.match(token):
+        return False
+    return all(seg != ".." for seg in re.split(r"[/\\]", token))
+
+
+def is_readonly_whitelisted(command: str, *, strict_paths: bool = False) -> bool:
     """白名单判定：首 token 命中 ∧ 参数不含改变语义的运算符。
 
     git 特例：仅"无论带何参数都无副作用"的子命令放行（status/log/diff/show/
     rev-parse）；branch/tag/remote 带参会创建/删除，config 带参可写——均走 Jev。
+    strict_paths=True 时附加逐参数路径校验（绝对路径 / `..` 段即拒）。
     """
     if not command.strip():
         return False
-    rest = _rest_of(command)
     if _SEMANTIC_OPERATOR_RE.search(command):
         return False
     token = first_token(command)
+    rest = _rest_of(command)
     if token == "git":
         sub = rest.strip().split(None, 1)
         if not sub:
             return False
-        return sub[0].lower() in _GIT_READONLY_SUBCOMMANDS
-    return token in READONLY_FIRST_TOKENS
+        if sub[0].lower() not in _GIT_READONLY_SUBCOMMANDS:
+            return False
+    elif token not in READONLY_FIRST_TOKENS:
+        return False
+    if strict_paths:
+        return all(_path_token_ok(t) for t in rest.split())
+    return True
 
 
 def dangerous_match(command: str) -> str | None:
@@ -138,6 +159,185 @@ def dangerous_match(command: str) -> str | None:
         if pattern.search(command):
             return label
     return None
+
+
+# ---------------------------------------------------------------------------
+# L1 允许项扩展（plan: laya-jev-migration W1）
+#
+# 第三类直通：在册 MCP 前置依赖补齐 + 工作区常规操作。放行依据是平台登记
+# 事实（mcp_server 表 / JEV_SHELL_ALLOW_PKGS），零误判、零模型参与；与白名单
+# （只读）/黑名单（高危）并列，由 jev_shell_l1_allow 总开关控制。
+#
+# 字符串校验三层防线（允许项是零审批直通行，被构造绕过即 RCE）：
+# 1. 全串锚定 `^...$` 正则 + 显式空格分词 + 包名/参数字符集
+#    （防 `uvx --from "pkg; rm -rf"`、参数夹带、尾部追加 `&& evil`）；
+# 2. 语义操作符预检复用 _SEMANTIC_OPERATOR_RE（`&&` 拆段后逐段再检）；
+# 3. 路径仅相对、拒绝任何 `..` 段与绝对路径（cwd 即 per-user 工作区）。
+# ---------------------------------------------------------------------------
+
+_PKG = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+_PKG_RE = re.compile(_PKG)
+_FLAG_RE = re.compile(r"--?[A-Za-z0-9][A-Za-z0-9_-]*")
+_SAFE_ARG_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/=,@+%-~"
+)
+
+
+def _safe_arg_token(token: str) -> bool:
+    """允许项参数 token 校验：字符集白名单 + 相对路径 + 无 `..` 段、无引号。"""
+    return (
+        bool(token)
+        and all(c in _SAFE_ARG_CHARS for c in token)
+        and not token.startswith(("/", "\\"))
+        and not _DRIVE_RE.match(token)
+        and all(seg != ".." for seg in re.split(r"[/\\]", token))
+    )
+
+
+# (锚定形态, 是否允许受控尾参)。尾参 = flag 及其值（值过 _safe_arg_token）；
+# 裸位置参数视作追加安装的包名，必须同样在册。
+MCP_PREREQ_ALLOW: tuple[tuple[re.Pattern[str], bool], ...] = (
+    (re.compile(rf"^uvx --from (?P<pkg>{_PKG})$"), False),
+    (re.compile(rf"^uvx --from (?P<pkg>{_PKG}) [A-Za-z0-9][A-Za-z0-9._-]*$"), False),
+    (re.compile(rf"^uv tool install (?P<pkg>{_PKG})$"), False),
+    (re.compile(rf"^uv pip install (?P<pkg>{_PKG})(?: (?P<rest>.+))?$"), True),
+    (re.compile(rf"^pip install (?P<pkg>{_PKG})$"), False),
+    (re.compile(rf"^python3? -m pip install (?P<pkg>{_PKG})(?: (?P<rest>.+))?$"), True),
+    (re.compile(rf"^pip3? show (?P<pkg>{_PKG})$"), False),
+    (re.compile(rf"^python3? -m pip show (?P<pkg>{_PKG})$"), False),
+)
+
+WORKSPACE_OP_FIRST_TOKENS = frozenset({"mkdir", "touch", "cp", "mv", "python", "python3"})
+
+
+def _prereq_rest_ok(rest: str, allow_pkgs: frozenset[str]) -> bool:
+    expect_value = False
+    for tok in rest.split(" "):
+        if not tok:
+            return False
+        if expect_value:
+            if not _safe_arg_token(tok):
+                return False
+            expect_value = False
+        elif tok.startswith("-"):
+            if not _FLAG_RE.fullmatch(tok):
+                return False
+            expect_value = True
+        elif not (_PKG_RE.fullmatch(tok) and tok.lower() in allow_pkgs):
+            return False
+    return True
+
+
+def mcp_prereq_whitelisted(command: str, allow_pkgs: frozenset[str]) -> bool:
+    """在册 MCP 前置依赖补齐判定：形态命中 ∧ 包名在册 ∧ 尾参受控。"""
+    if not allow_pkgs or "'" in command or '"' in command:
+        return False
+    if _SEMANTIC_OPERATOR_RE.search(command):
+        return False
+    for pattern, allow_rest in MCP_PREREQ_ALLOW:
+        m = pattern.match(command)
+        if m is None or m.group("pkg").lower() not in allow_pkgs:
+            continue
+        rest = m.groupdict().get("rest")
+        if rest and not (allow_rest and _prereq_rest_ok(rest, allow_pkgs)):
+            return False
+        return True
+    return False
+
+
+def _python_script_args(args: list[str]) -> bool:
+    """python 工作区形态：`python [flags] script.py [args]`（排除 -m/-c 模块与
+    内联执行——模块形态仅经 MCP_PREREQ_ALLOW 的 pip show/install 覆盖）。"""
+    if any(t.startswith(("-m", "-c")) for t in args):
+        return False
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 1
+    return i < len(args) and args[i].endswith(".py")
+
+
+def workspace_op_whitelisted(command: str) -> bool:
+    """工作区常规操作判定：首 token 命中 ∧ 全参数过字符集/路径校验。"""
+    if "'" in command or '"' in command or _SEMANTIC_OPERATOR_RE.search(command):
+        return False
+    parts = command.split()
+    token = parts[0].lower() if parts else ""
+    if token not in WORKSPACE_OP_FIRST_TOKENS:
+        return False
+    args = parts[1:]
+    if not args or not all(_safe_arg_token(t) for t in args):
+        return False
+    if token in ("python", "python3"):
+        return _python_script_args(args)
+    return True
+
+
+_CHAIN_SPLIT_RE = re.compile(r"\s*&&\s*")
+_L1_SOURCE_BY_RANK = ("rule_whitelist", "rule_workspace", "rule_mcp_allow")
+
+
+def l1_extension_match(command: str, allow_pkgs: frozenset[str]) -> str | None:
+    """L1 扩展面总判定（含 `&&` 复合链逐段）：返回放行 source，None=落 L2。
+
+    任一段不属 L1 允许面（只读 / MCP 前置 / 工作区）→ 整链落 L2；
+    source 取链内最强类别（mcp > workspace > 只读）。
+    """
+    if "'" in command or '"' in command:
+        return None
+    segments = [s for s in _CHAIN_SPLIT_RE.split(command.strip()) if s]
+    if not segments:
+        return None
+    rank = 0
+    for seg in segments:
+        if is_readonly_whitelisted(seg, strict_paths=True):
+            continue
+        if mcp_prereq_whitelisted(seg, allow_pkgs):
+            rank = 2
+        elif workspace_op_whitelisted(seg):
+            rank = max(rank, 1)
+        else:
+            return None
+    return _L1_SOURCE_BY_RANK[rank]
+
+
+def parse_prereq_packages(server_rows: list[dict]) -> frozenset[str]:
+    """mcp_server 行集 → 前置依赖包名集（command/args 中 `--from` / `install`
+    形态，lowercase）。enabled=false 的 server 不参与。"""
+    pkgs: set[str] = set()
+    for row in server_rows or []:
+        if not row.get("enabled", True):
+            continue
+        cfg = row.get("config_json")
+        if not isinstance(cfg, dict):
+            continue
+        tokens = [str(cfg.get("command") or "").strip(), *(str(a) for a in cfg.get("args") or [])]
+        tokens = [t for t in tokens if t]
+        for i, tok in enumerate(tokens):
+            low = tok.lower()
+            if low == "--from":
+                nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+                if _PKG_RE.fullmatch(nxt):
+                    pkgs.add(nxt.lower())
+            elif low == "install":
+                for nxt in tokens[i + 1 :]:
+                    if nxt.startswith("-") or not _PKG_RE.fullmatch(nxt):
+                        break
+                    pkgs.add(nxt.lower())
+    return frozenset(pkgs)
+
+
+def parse_pkg_list(raw: str) -> frozenset[str]:
+    """逗号分隔包名串（JEV_SHELL_ALLOW_PKGS）→ frozenset；非法 token 丢弃并告警。"""
+    out: set[str] = set()
+    for tok in (raw or "").replace("，", ",").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if _PKG_RE.fullmatch(tok):
+            out.add(tok.lower())
+        else:
+            logger.warning("jev_shell_allow_pkgs: 非法包名已忽略 %r", tok)
+    return frozenset(out)
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +470,7 @@ def build_shell_guard(
     settings: Any,
     audit_sink: Callable[[dict], None] | None,
     agent_id: uuid.UUID,
+    allow_pkgs: frozenset[str] = frozenset(),
 ) -> tuple[Callable[[Any], bool], Callable[[Any, Any, Any], str]]:
     """构建 (when_fn, description_fn) 二元组，供 interrupt_on["execute"] 注入。
 
@@ -278,6 +479,8 @@ def build_shell_guard(
             烘焙，改配置需重启后端或等 registry TTL 过期——plan §三/R10）。
         audit_sink: 审计回调（dict → None）；None 时只打日志不落库。
         agent_id: 构建期烘焙（审计表 NOT NULL 列）。
+        allow_pkgs: 在册 MCP 前置依赖包名集（agent_registry 从 mcp_server 表
+            解析注入；与 JEV_SHELL_ALLOW_PKGS 并集后烘焙，TTL 语义同上）。
     """
     client = JevClient(
         base_url=settings.jev_base_url,
@@ -289,6 +492,10 @@ def build_shell_guard(
     mode = settings.jev_mode
     threshold = settings.jev_safe_threshold
     state_max_chars = settings.jev_state_max_chars
+    l1_ext = bool(getattr(settings, "jev_shell_l1_allow", True))
+    pkgs = frozenset(p.lower() for p in allow_pkgs) | parse_pkg_list(
+        getattr(settings, "jev_shell_allow_pkgs", "")
+    )
 
     cache: OrderedDict[str, GuardDecision] = OrderedDict()
     cache_lock = threading.Lock()
@@ -334,8 +541,13 @@ def build_shell_guard(
 
     def _judge(command: str, req: Any) -> GuardDecision:
         # L1 白名单：只读直通（不调 Jev；source=rule_whitelist 落库供灰度对账）
-        if is_readonly_whitelisted(command):
+        if is_readonly_whitelisted(command, strict_paths=l1_ext):
             return GuardDecision(source="rule_whitelist", ask_human=False)
+        # L1 允许项扩展：在册 MCP 前置补齐 / 工作区常规操作（&& 链逐段判定）
+        if l1_ext:
+            src = l1_extension_match(command, pkgs)
+            if src is not None:
+                return GuardDecision(source=src, ask_human=False)
         # L1 黑名单：高危直接问人 + 强标注（省一次调用，人必审）
         hit = dangerous_match(command)
         if hit is not None:

@@ -287,25 +287,29 @@ services:
       # key 缺省为空 → 后端降级：voice 路由不挂载、健康能力位 false（前端无麦克风入口）。
       VOICE_ENABLED: ${VOICE_ENABLED:-false}
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
-      # ---- Jev 守卫（allow_shell HITL 减负，TypeSafe System One；默认关）----
-      # .env 置 JEV_ENABLED=true + TYPESAFE_API_KEY 后重启生效；key 缺失自动
-      # 回落全人工审批（启动警告不崩）。shadow 起步校准后再切 enforce（见 README FAQ）。
+      # ---- Jev 守卫（allow_shell HITL 减负；判决后端 = 内置 laya-serve，Jev wire 协议；默认关）----
+      # .env 置 JEV_ENABLED=true + TYPESAFE_API_KEY（与上方 LAYA_API_KEY 同值）后重启
+      # 生效；key 缺失自动回落全人工审批（启动警告不崩）。laya 停摆按 fail-closed
+      # 回落人工审批（与 tei 同理不设 depends_on，JevClient 懒连接）。
       JEV_ENABLED: ${JEV_ENABLED:-false}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
-      # 端点根改指 compose 内置 laya-serve（Jev 协议兼容端点 POST /v1/systemone，
-      # 开源自托管替代 TypeSafe 云 API）。laya 停摆按 fail-closed 回落人工审批
-      # （与 tei 同理不设 depends_on，JevClient 懒连接）。
+      # 端点根：compose 内置 laya-serve（Jev 协议兼容端点 POST /v1/systemone）。
       JEV_BASE_URL: ${JEV_BASE_URL:-http://laya:8000}
-      JEV_MODE: ${JEV_MODE:-shadow}
+      # 模型名须为 laya 侧注册名（LAYA_EXTRA_MODELS 同名注册）。
+      JEV_MODEL: ${JEV_MODEL:-multilingual}
+      # enforce：灰区自动放行生效（L1 确定性层先行减负；laya 置信轴未校准时
+      # 灰区自然回落人工）；shadow=只判只落审计，行为与现状一致。
+      JEV_MODE: ${JEV_MODE:-enforce}
       JEV_RUBRIC_ENABLED: ${JEV_RUBRIC_ENABLED:-false}
       JEV_KB_RERANK_ENABLED: ${JEV_KB_RERANK_ENABLED:-false}
-      # Jev 专用 HTTP 代理（如 http://proxy:7890；空=直连）。仅注入 Jev 调用的
-      # httpx client，不影响 LLM/ES/MinIO 等其余出网流量。供应商按出口 IP 地域
-      # 封锁（451），国内部署经海外代理出口可达；经代理时建议同步
-      # 调大 JEV_TIMEOUT_SECONDS / JEV_KB_TIMEOUT_SECONDS（代理 RTT 约为直连 2~3 倍）。
+      # L1 允许项扩展：在册 MCP 前置依赖补齐 + 工作区常规操作零审批直通
+      # （mcp_server 表登记包 + JEV_SHELL_ALLOW_PKGS 并集）；false=一键回退。
+      # 变更随图构建烘焙（重启后端或等 registry TTL 过期再生效）。
+      JEV_SHELL_L1_ALLOW: ${JEV_SHELL_L1_ALLOW:-true}
+      JEV_SHELL_ALLOW_PKGS: ${JEV_SHELL_ALLOW_PKGS:-}
+      # JEV_PROXY_URL 已退役（laya 自托管无 451 地域封锁），保留 passthrough 兼容旧 .env。
       JEV_PROXY_URL: ${JEV_PROXY_URL:-}
-      # 超时预算：经 JEV_PROXY_URL 代理时建议调大（代理 RTT 约为直连 2~3 倍）。
-      # 缺省与 app/config.py 默认值对齐（float 字段不接受空串，必须带值缺省）。
+      # 超时预算：缺省与 app/config.py 默认值对齐（float 字段不接受空串，必须带值缺省）。
       JEV_TIMEOUT_SECONDS: ${JEV_TIMEOUT_SECONDS:-5.0}
       JEV_KB_TIMEOUT_SECONDS: ${JEV_KB_TIMEOUT_SECONDS:-2.0}
     expose: ["8000"]                       # 仅内部网络可见，不对宿主发布

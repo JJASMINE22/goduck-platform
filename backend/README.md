@@ -63,7 +63,7 @@ backend/
 │   │   ├── cron_service.py / cron_scheduler.py  # 定时任务 CRUD + 周期调度 + 失败熔断
 │   │   ├── run_manager.py / run_source.py       # 会话/定时统一回合运行管理
 │   │   ├── queue_service.py #   会话排队发送：入队/FIFO 排水/暂停态（on_final 自推进）
-│   │   ├── jev_client.py    #   TypeSafe Jev REST 客户端（概率判决）
+│   │   ├── jev_client.py    #   Jev wire 判决客户端（laya-serve 兼容端点，概率判决）
 │   │   ├── attachment_policy.py / vision_describer.py / tool_content.py
 │   │   │                    #   附件能力判定 / 视觉模型识图 / 工具消息内容组装
 │   │   ├── doc_convert.py   #   office 文档 → Markdown 预览（markitdown）

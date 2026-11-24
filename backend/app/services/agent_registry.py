@@ -60,15 +60,33 @@ class AgentRegistry:
         s = self.settings
         return bool(s.jev_enabled and s.typesafe_api_key and self.jev_audit is not None)
 
-    def _jev_gate_factory(self, agent_id: uuid.UUID):
+    async def _shell_allow_pkgs(self) -> frozenset[str]:
+        """在册 MCP 前置依赖包名集（mcp_server 表 → command/args 解析）。
+
+        读取失败回落空集（L1 扩展面中在册包直通退化为不匹配，其余面不受
+        影响）——构建绝不因数据源故障而失败。
+        """
+        if not (self._jev_capable() and self.settings.jev_shell_l1_allow):
+            return frozenset()
+        from app.core.jev_gate import parse_prereq_packages
+
+        try:
+            rows = await dbmod.list_mcp_servers(self.pool)
+        except Exception:
+            logger.exception("jev shell guard: load mcp servers failed (empty allow set)")
+            return frozenset()
+        return parse_prereq_packages(rows)
+
+    def _jev_gate_factory(self, agent_id: uuid.UUID, allow_pkgs: frozenset[str] = frozenset()):
         """Jev 守卫工厂（能力缺失时返回 None，构建回落 {'execute': True} 现状
-        行为）。agent_id 烘焙进闭包供审计列。"""
+        行为）。agent_id 烘焙进闭包供审计列；allow_pkgs 随图构建烘焙（改 MCP
+        配置需重启或等 registry TTL 过期——与阈值烘焙同语义）。"""
         if not self._jev_capable():
             return None
         from app.core.jev_gate import build_shell_guard
 
         s = self.settings
-        return lambda: build_shell_guard(s, self.jev_audit.submit, agent_id)
+        return lambda: build_shell_guard(s, self.jev_audit.submit, agent_id, allow_pkgs=allow_pkgs)
 
     def _jev_rubric_factory(self, agent_id: uuid.UUID):
         """Jev rubric 门控工厂（能力缺失/jev_rubric_enabled=false 时返回 None，
@@ -107,7 +125,12 @@ class AgentRegistry:
 
         return lambda: build_jev_kb_gate(s, self.jev_audit.submit, agent_id)
 
-    def _ctx(self, model, agent_id: Optional[uuid.UUID] = None) -> BuildContext:
+    def _ctx(
+        self,
+        model,
+        agent_id: Optional[uuid.UUID] = None,
+        allow_pkgs: frozenset[str] = frozenset(),
+    ) -> BuildContext:
         s = self.settings
         return BuildContext(
             model=model,
@@ -118,7 +141,7 @@ class AgentRegistry:
             memories_dir=str(s.memories_dir),
             workspace_dir=str(s.workspace_dir),
             skills_dir=str(s.skills_dir),
-            jev_gate_factory=self._jev_gate_factory(agent_id) if agent_id else None,
+            jev_gate_factory=self._jev_gate_factory(agent_id, allow_pkgs) if agent_id else None,
             jev_rubric_factory=self._jev_rubric_factory(agent_id) if agent_id else None,
             jev_kb_factory=self._jev_kb_factory(agent_id) if agent_id else None,
         )
@@ -157,11 +180,12 @@ class AgentRegistry:
         all_tools = list(await self.mcp.get_tools())
         middleware = [ToolErrorHandlingMiddleware()]
 
+        allow_pkgs = await self._shell_allow_pkgs()
         agent = create_agent_recursive(
             agent_config,
             all_tools,
             middleware=middleware,
-            ctx=self._ctx(model, agent_id=agent_id),
+            ctx=self._ctx(model, agent_id=agent_id, allow_pkgs=allow_pkgs),
         )
         logger.info("built agent '%s' (id=%s)", agent_row["name"], agent_id)
         return agent

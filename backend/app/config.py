@@ -195,15 +195,18 @@ class Settings(BaseSettings):
     )
     typesafe_api_key: str = Field(
         default="",
-        description="TypeSafe AI API key（jev_enabled=true 时必填；缺失→不启用+启动警告，不崩）。",
+        description="Jev 判决端点认证 key（jev_enabled=true 时必填；缺失→不启用+启动警告，不崩）。"
+        "laya 部署下与 compose 的 LAYA_API_KEY 同值（一把钥匙两端），字段名沿用历史契约。",
     )
     jev_base_url: str = Field(
-        default="https://api.typesafe.ai",
-        description="TypeSafe REST 端点根（POST {base}/v1/systemone）。",
+        default="http://laya:8000",
+        description="Jev wire 端点根（POST {base}/v1/systemone）。缺省指 compose 内置"
+        " laya-serve；laya 停摆按 fail-closed 回落人工审批（懒连接，无启动依赖）。",
     )
     jev_model: str = Field(
-        default="jev-1.13.0",
-        description="Jev 模型版本。锁具体版本号、不用 jev-latest 别名（防静默行为漂移）。",
+        default="multilingual",
+        description="判决模型名：须为 laya 侧注册名（LAYA_EXTRA_MODELS 同名注册），"
+        "名称不匹配按当次不可用 fail-closed 处理。",
     )
     jev_timeout_seconds: float = Field(
         default=5.0,
@@ -231,12 +234,19 @@ class Settings(BaseSettings):
     jev_proxy_url: str = Field(
         default="",
         description=(
-            "Jev 专用 HTTP 代理（如 http://proxy:7890；空=直连）。仅注入 Jev 调用的"
-            " httpx2 client，不设进程级 HTTP(S)_PROXY——LLM/ES/MinIO 等其余出网流量"
-            "不受影响。供应商按出口 IP 做地域封锁（HTTP 451），国内部署经海外代理"
-            "出口可达；经代理时注意同步放宽 jev_timeout_seconds / jev_kb_timeout_seconds"
-            "（代理链路 RTT 约为直连的 2~3 倍）。"
+            "已退役（自托管 laya 无 451 地域封锁），保留字段兼容旧 .env；设值仅注入"
+            " Jev 调用的 httpx2 client，不影响其余出网流量。"
         ),
+    )
+    jev_shell_l1_allow: bool = Field(
+        default=True,
+        description="L1 允许项扩展总开关（在册 MCP 前置依赖补齐 + 工作区常规操作直通，"
+        "含只读白名单路径收紧与 && 复合链拆段）；False = 行为回到扩展前。",
+    )
+    jev_shell_allow_pkgs: str = Field(
+        default="",
+        description="额外放行包名（逗号分隔；与 mcp_server 表登记的前置包并集）。"
+        "改配置需重启后端或等 registry TTL 过期。",
     )
 
     # ---- Jev Rubric 门控（grader 分诊；plan: jev-rubric-grader-gate）----
@@ -312,6 +322,12 @@ class Settings(BaseSettings):
         ge=0,
         description="两段式检索（默认关）：>0 时 pre-wrap 改写 args.k 过采、post-wrap 筛回"
         "——recall 净增；Jev 不可用时按 ES 序截回原始 k（故障形态=现状）。",
+    )
+    jev_kb_state_max_chars: int = Field(
+        default=12000,
+        ge=1000,
+        description="kb 送判 state 本地上限（字符，≈8k token 安全界）：超限不送判，"
+        "按 unavailable 透传（宁拒不发残卷，对齐 rubric 纪律）。",
     )
 
     # ---- AgentRegistry cache tuning ----

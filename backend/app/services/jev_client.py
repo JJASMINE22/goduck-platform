@@ -1,8 +1,9 @@
-"""Jev (TypeSafe System One) client + shell-guard audit sink.
+"""Jev wire 判决客户端（laya-serve / TypeSafe 兼容端点）+ shell-guard audit sink.
 
 传输层基于 LangChain 官方集成 langchain-typesafe（`TypeSafeClassifier`，
 Runnable invoke/ainvoke），本模块是其门面：保留 `judge(state) → JevVerdict`
-契约与 fail-closed 语义，上层（jev_gate / 审计 / 测试）零改动。
+契约与 fail-closed 语义，上层（jev_gate / 审计 / 测试）零改动。判决后端由
+`JEV_BASE_URL` 决定（compose 缺省指内置 laya-serve，Jev wire 协议兼容）。
 
 官方库与手写客户端的三处差异，均由本门面吸收：
 - 响应经 pydantic 校验为类型化对象（NoulAnswer/ChoiceAnswer，吸收手写 normalize

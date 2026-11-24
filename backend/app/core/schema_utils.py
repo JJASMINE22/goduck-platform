@@ -25,8 +25,9 @@ class JevCriterion(BaseModel):
 
     statement: str = Field(
         min_length=1,
-        description="陈述性达标断言：可从当前回合 transcript 判真假，"
-        "如'回答中每个统计数据均标注了来源'（非形容词、非否定句）。",
+        description="陈述性达标断言：仅凭当前回合 transcript 即可核实答案的可观察属性，"
+        "如'回答中每个统计数据均标注了来源'（非形容词、非否定句；不要写需要访问"
+        "项目文件或外部事实才能验证的准则——无状态判决器本质不可验证）。",
     )
     threshold: Optional[float] = Field(
         default=None,

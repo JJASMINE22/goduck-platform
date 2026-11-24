@@ -26,7 +26,7 @@ from deepagents.middleware.rubric import GraderResponse, RUBRIC_GRADER_MESSAGE_S
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.errors import GraphBubbleUp
-from langchain_typesafe import Noul
+from langchain_typesafe import Noul, NoulCriteria
 
 from app.core.user_scoped_backend import TrackedUserScopedFilesystemBackend
 from app.core.user_scoped_shell_backend import UserScopedLocalShellBackend
@@ -251,6 +251,9 @@ def render_jev_criteria(criteria, node_threshold: float | None = None):
     """JevCriterion[] → (API 问题集, 逐题合成元数据)。
 
     单一语义：每条准则一个 noul 题（statement=达标断言，P(yes) 高=满足）。
+    问题措辞锚定 transcript 可观察属性（plan: laya-jev-migration W2）：instructions
+    限定"仅依据 <transcript>"，criteria 把"需对话之外的事实才能核实"显式归入
+    no 侧——无状态判决器本质不可验证的准则不产生快道放行。
     qid 稳定为 c{index}（配置顺序即问题顺序；qid 只在单次判决内使用、
     不跨配置持久化，无迁移问题）。行级 threshold 覆盖节点级；None 交给
     build_rubric_judge 以平台级默认补齐（三级解析的最后一跳）。
@@ -264,7 +267,14 @@ def render_jev_criteria(criteria, node_threshold: float | None = None):
     crit_meta: dict[str, dict] = {}
     for i, c in enumerate(criteria):
         qid = f"c{i}"
-        questions[qid] = Noul(instructions=c.statement)
+        questions[qid] = Noul(
+            instructions=f"仅依据 <transcript> 中助手的最终回答判定：{c.statement}",
+            criteria=NoulCriteria(
+                true="该属性在回答中明确成立，且仅凭对话记录即可核实",
+                false="回答未体现该属性，或该属性需要对话之外的事实"
+                "（项目文件、外部来源）方可核实",
+            ),
+        )
         crit_meta[qid] = {
             "threshold": c.threshold if c.threshold is not None else node_threshold,
             "statement": c.statement,

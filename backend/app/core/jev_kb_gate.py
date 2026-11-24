@@ -42,7 +42,7 @@ from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
-from langchain_typesafe import Noul, NoulCriteria
+from langchain_typesafe import Choice
 from langgraph.errors import GraphBubbleUp
 
 from app.services.jev_client import JevClient, JevUnavailable
@@ -63,34 +63,36 @@ def is_kb_tool(name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 问题模板（plan §二定稿）——定标产物，逐字保留，评审防措辞漂移
+# 问题模板——定标产物，评审防措辞漂移
 # ---------------------------------------------------------------------------
 # 绑定机制：qid 不上送模型（wire 契约，jev_client.py），问题与具体 chunk 的
 # 绑定必须写在 instructions 文本里——以反引号 state 路径显式引用（`query` /
 # `chunks[i].text` / `chunks[i].source`，官方 skill 指南形态）。shell/rubric
 # 均为整卷判决无需绑定，本出口是首个逐条判决出口。
+# 形态：两选项 choice 中性键 yes/no（laya #156 官方缓解——noul 长文概率
+# 饱和无区分度；choice 概率由 API 原生返回，无需本地推导）。措辞取原
+# NoulCriteria true/false 原文，替换式改写、不并存双形态。
 # 极性登记（沿用 jev_gate.py 注释纪律）：
-# - c{i}__rel：正向题，高 P = 与问题相关 = 保留侧；
-# - c{i}__info：正向题，高 P = 含具体事实信息 = 保留侧；
-# - drop 条件在两题同时高置信为否侧（反向合成，见 ChunkJudgment.drop）。
-KB_Q_REL = Noul(
+# - c{i}__rel / c{i}__info：yes = 保留侧（相关 / 含具体信息）；
+# - drop 条件在两题同时高置信选 no 侧才成立（反向合成，见 ChunkJudgment.drop）。
+KB_Q_REL = Choice(
     instructions=(
         "查询 `query` 与片段 `chunks[{i}]`（`chunks[{i}].text`，来源 "
         "`chunks[{i}].source`）讨论的是同一对象或同一主题"
     ),
-    criteria=NoulCriteria(
-        true="片段内容针对查询所问的具体对象或主题，或直接提供其相关信息",
-        false="片段仅与查询同属一个更大类别或领域（如同品牌的其它型号、"
+    criteria={
+        "yes": "片段内容针对查询所问的具体对象或主题，或直接提供其相关信息",
+        "no": "片段仅与查询同属一个更大类别或领域（如同品牌的其它型号、"
         "同行业的其它公司、同一文档库的其它主题），或与查询主题无关",
-    ),
+    },
 )
-KB_Q_INFO = Noul(
+KB_Q_INFO = Choice(
     instructions="片段 `chunks[{i}].text` 包含具体、可用的信息内容",
-    criteria=NoulCriteria(
-        true="事实、数据、定义、论证、操作步骤，或带实质细节的描述",
-        false="页眉页脚页码、目录条目、孤立标题行、版权或法律声明、"
+    criteria={
+        "yes": "事实、数据、定义、论证、操作步骤，或带实质细节的描述",
+        "no": "页眉页脚页码、目录条目、孤立标题行、版权或法律声明、"
         "重复的导航文字、表格格式残片、OCR 乱码、纯占位符",
-    ),
+    },
 )
 
 
@@ -126,19 +128,19 @@ def render_state(query: str, hits: list[dict]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def render_questions(num_chunks: int) -> dict[str, Noul]:
+def render_questions(num_chunks: int) -> dict[str, Choice]:
     """按 chunk 数实例化问题集（qid：c{i}__rel / c{i}__info，i 为 ES 序下标）。
 
     qid 只在单次判决内使用、不跨调用持久化（与 rubric c{i} 同语义）。
     criteria 复用模板常量对象（不可变值对象，无共享状态风险）。
     """
-    questions: dict[str, Noul] = {}
+    questions: dict[str, Choice] = {}
     for i in range(num_chunks):
-        questions[f"c{i}__rel"] = Noul(
+        questions[f"c{i}__rel"] = Choice(
             instructions=KB_Q_REL.instructions.format(i=i),
             criteria=KB_Q_REL.criteria,
         )
-        questions[f"c{i}__info"] = Noul(
+        questions[f"c{i}__info"] = Choice(
             instructions=KB_Q_INFO.instructions.format(i=i),
             criteria=KB_Q_INFO.criteria,
         )
@@ -204,7 +206,7 @@ def parse_kb_result(content: Any) -> dict | None:
 
 @dataclass
 class ChunkJudgment:
-    """单 chunk 的 rel/info 双题概率（缓存与改写的载荷）。"""
+    """单 chunk 的 rel/info 双题判决（P = choice yes 侧概率，conf 为 API 原生值）。"""
 
     rel_p: float
     rel_conf: float
@@ -214,8 +216,8 @@ class ChunkJudgment:
     def drop(self, drop_p: float, drop_conf: float) -> bool:
         """不对称 drop 规则（举证责任在"滤"侧）：
 
-        两题同时高置信为否才 drop（p ≤ drop_p ∧ conf ≥ drop_conf 双条且）；
-        任一维度存疑（p 中间 / conf 低）→ 保留（歧义 = 维持现状）。
+        两题同时高置信为 no 侧才 drop（p(yes) ≤ drop_p ∧ conf ≥ drop_conf
+        双条且）；任一维度存疑（p 中间 / conf 低）→ 保留（歧义 = 维持现状）。
         """
         return (
             self.rel_p <= drop_p
@@ -231,9 +233,12 @@ class ChunkJudgment:
 
 def _chunk_answer(answers: dict, qid: str) -> tuple[float, float]:
     ans = answers.get(qid)
-    if not isinstance(ans, dict) or "noul" not in ans or "confidence" not in ans:
+    if not isinstance(ans, dict) or ans.get("type") != "choice":
         raise ValueError(f"答案缺失或畸形: {qid}")
-    return float(ans["noul"]), float(ans["confidence"])
+    probs = ans.get("probabilities") or {}
+    if "yes" not in probs:
+        raise ValueError(f"答案缺少 yes 概率: {qid}")
+    return float(probs["yes"]), float(ans.get("confidence", 0.0))
 
 
 def synthesize_kb(answers: dict, num_chunks: int) -> list[ChunkJudgment]:
@@ -320,6 +325,7 @@ class KbRerankGate:
         drop_conf: float = 0.90,
         keep_floor: int = 2,
         k_boost: int = 0,
+        state_max_chars: int = 12000,
     ):
         self._client = client
         self._audit_submit = audit_submit
@@ -329,6 +335,7 @@ class KbRerankGate:
         self._drop_conf = drop_conf
         self._keep_floor = keep_floor
         self._k_boost = k_boost
+        self._state_max_chars = state_max_chars
         self._cache: OrderedDict[str, tuple[list[ChunkJudgment], dict, dict, int, str]] = (
             OrderedDict()
         )
@@ -374,6 +381,34 @@ class KbRerankGate:
         new_call = {**tool_call, "args": {**args, "k": self._k_boost}}
         return request.override(tool_call=new_call), k0
 
+    # ---------------- 判决不可用统一出口（audit + 观测标记 + 透传/k0 截回）----------------
+    def _unavailable_outcome(
+        self,
+        result: Any,
+        payload: dict,
+        hits: list[dict],
+        k0: int | None,
+        *,
+        query: str,
+        tool_call_id: str,
+        thread_id: str,
+        state_text: str | None = None,
+        annotation: str = "",
+    ) -> Any:
+        logger.warning("jev kb judge unavailable (fail-closed → passthrough): %s", annotation)
+        self._audit(
+            source="unavailable",
+            verdict="unavailable",
+            query=query,
+            tool_call_id=tool_call_id,
+            thread_id=thread_id,
+            state_text=state_text,
+            annotation=annotation or None,
+        )
+        if k0 is not None and len(hits) > k0:
+            return _stamp_jev_unavailable(self._rewrite(result, payload, hits[:k0]))
+        return _stamp_jev_unavailable(result)
+
     # ---------------- 主入口（永不抛出）----------------
     async def process(self, request: Any, result: Any, k0: int | None = None) -> Any:
         try:
@@ -414,9 +449,25 @@ class KbRerankGate:
                 thread_id=_thread_id(request),
             )
             return result
-        # 4. 判决（缓存查询 → 命中或新判）；只判前 KB_JUDGE_MAX_CHUNKS 条
+        # 4. 判决（缓存查询 → 命中或新判）；只判前 KB_JUDGE_MAX_CHUNKS 条。
+        #    state 超长本地拦截（宁拒不发残卷，对齐 rubric 纪律）：超限不送判，
+        #    直接按 unavailable 透传——不缓存，超长诱因消失后即时恢复。
         judged = hits[:KB_JUDGE_MAX_CHUNKS]
         state_text = render_state(query, judged)
+        if len(state_text) > self._state_max_chars:
+            return self._unavailable_outcome(
+                result,
+                payload,
+                hits,
+                k0,
+                query=query,
+                tool_call_id=tool_call_id,
+                thread_id=_thread_id(request),
+                annotation=(
+                    f"state {len(state_text)} chars > jev_kb_state_max_chars"
+                    f"({self._state_max_chars})，本地拦截不送判"
+                ),
+            )
         key = _cache_key(query, judged)
         thread_id = _thread_id(request)
         cached = self._cache_get(key)
@@ -451,21 +502,18 @@ class KbRerankGate:
                 latency_ms, model = verdict.latency_ms, verdict.model
             except (JevUnavailable, ValueError) as e:
                 # 判决不可用（含畸形答案）→ 透传；k_boost 生效时按 ES 序截回
-                # k0——不可用时上下文形态也必须等于现状。返回值统一打
-                # response_metadata 观测标记（UI 显示「jev 未介入」；LLM 不可见）
-                logger.warning("jev kb judge unavailable (fail-closed → passthrough): %s", e)
-                self._audit(
-                    source="unavailable",
-                    verdict="unavailable",
+                # k0——不可用时上下文形态也必须等于现状。
+                return self._unavailable_outcome(
+                    result,
+                    payload,
+                    hits,
+                    k0,
                     query=query,
                     tool_call_id=tool_call_id,
                     thread_id=thread_id,
                     state_text=state_text,
                     annotation=str(e),
                 )
-                if k0 is not None and len(hits) > k0:
-                    return _stamp_jev_unavailable(self._rewrite(result, payload, hits[:k0]))
-                return _stamp_jev_unavailable(result)
             self._cache_put(key, (judgments, answers, raw, latency_ms, model))
         # 5. 本地合成 → 三态出口
         raw_drops = [j.drop(self._drop_p, self._drop_conf) for j in judgments]
@@ -673,5 +721,6 @@ def build_jev_kb_gate(
         drop_conf=float(settings.jev_kb_drop_confidence),
         keep_floor=int(settings.jev_kb_keep_floor),
         k_boost=int(settings.jev_kb_k_boost),
+        state_max_chars=int(getattr(settings, "jev_kb_state_max_chars", 12000)),
     )
     return JevKbRerankMiddleware(gate)

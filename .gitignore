@@ -98,5 +98,7 @@ demo/
 /backend/app/scripts/
 /backend/scripts/
 /backend/tests/
-# 平台工作目录
+# laya 冒烟脚本（生产容器 /tmp 即用即弃，不入库）
+/laya-test-demo/
+# backend 本地运行数据（cache/memories/skills/workspace 全量）
 /backend/data/

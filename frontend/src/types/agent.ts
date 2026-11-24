@@ -4,9 +4,10 @@
 import type { ISODateTime, UUID } from './common'
 
 /** 一条结构化判决准则（grader=jev 时渲染为 Jev 二元问题，与后端 JevCriterion 对齐）。
- *  单一"满足时通过"语义：statement 为可判真假的达标断言（非否定句），P(yes) 高 = 满足。 */
+ *  单一"满足时通过"语义：statement 为可判真假的达标断言（非否定句），P(yes) 高 = 满足。
+ *  准则须为仅凭当前回合 transcript 即可核实的可观察属性（无状态判决器不可验证外部事实）。 */
 export interface JevCriterion {
-  /** 陈述性达标断言：可从当前回合 transcript 判真假，如"回答中每个统计数据均标注了来源" */
+  /** 陈述性达标断言：仅凭当前回合 transcript 即可核实，如"回答中每个统计数据均标注了来源" */
   statement: string
   /** 行级阈值覆盖（0.5 ≤ t < 1，P 与 conf 双轴同值）；缺省回落节点级→平台级 */
   threshold?: number | null

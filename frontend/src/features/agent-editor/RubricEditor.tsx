@@ -146,7 +146,7 @@ export function RubricEditor({
                       <Input
                         value={c.statement}
                         onChange={(e) => patchCriterion(i, { statement: e.target.value })}
-                        placeholder="达标断言，如：回答中每个统计数据均标注了来源"
+                        placeholder="达标断言（仅凭对话记录可核实），如：回答中每个统计数据均标注了来源"
                         style={{ flex: 1 }}
                       />
                       <Tooltip title="行级阈值覆盖（P 与 conf 双轴同值），留空继承节点/平台阈值">
