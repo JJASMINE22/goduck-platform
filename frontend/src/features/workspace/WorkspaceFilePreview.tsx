@@ -7,7 +7,10 @@
    - pdf → <iframe>（下载直链，浏览器原生）
    - office(docx/xlsx/pptx/csv…) → /preview 取 markitdown Markdown 渲染；503 降级
    - binary/未知/失败 → 降级卡片（元信息 + 下载）
-   任何预览失败都回退卡片，杜绝破图/空白。 */
+   任何预览失败都回退卡片，杜绝破图/空白。
+   chrome 已入右侧浮层族：头部玻璃延续 + Drawer 头部节奏（index.css
+   .ws-preview__bar / .ws-view__resizer::before），结构（浮层遮挡/拖宽/铺满）
+   维持伴随层语义不动。 */
 import { Alert, Button, Segmented, Skeleton, Space, Tooltip, Typography } from 'antd'
 import { type ReactNode, useState } from 'react'
 import { Download, FileText, Maximize2, Minimize2, X } from 'lucide-react'
@@ -21,6 +24,9 @@ import { classifyFile, formatSize } from './fileKind'
 
 const { Text } = Typography
 
+/* 头部条（chrome 入族，视觉规格见 index.css .ws-preview__bar）：
+   玻璃延续 + Drawer header 节奏；左：文件名/体积/时间，右：视图切换、
+   铺满、下载、关闭。铺满层复用同一头部（props 注入差异行为） */
 function DownloadBar({
   sessionId,
   path,
@@ -37,12 +43,12 @@ function DownloadBar({
   modifiedAt?: string | null
   extra?: ReactNode
   onClose?: () => void
-}) {
+}): ReactNode {
   return (
     <div className="ws-preview__bar">
       <Space size={4}>
         <FileText size={14} />
-        <Text strong style={{ fontSize: 13 }}>{name}</Text>
+        <Text strong style={{ fontSize: 14 }}>{name}</Text>
         {size != null ? <Text type="secondary" style={{ fontSize: 12 }}>{formatSize(size)}</Text> : null}
         {modifiedAt ? <Text type="secondary" style={{ fontSize: 12 }}>{modifiedAt.slice(0, 19).replace('T', ' ')}</Text> : null}
       </Space>

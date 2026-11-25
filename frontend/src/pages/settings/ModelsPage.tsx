@@ -1,11 +1,15 @@
 /* 模型管理页（DESIGN §10.6）—— 注册表的增删改查 + 保存前 /test 连通探测。
    api_key 列表永不返回；编辑时留空 = 保留旧 key（轮换密钥）。
    端点（base_url）列仅管理员可见：普通用户只读预览不暴露端点地址。
-   删除被引用模型 → 后端 409 含 referencing_agents，弹窗提示先解绑。 */
-import { App as AntApp, Button, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Select, Switch, Table, Tag, Tooltip } from 'antd'
+   删除被引用模型 → 后端 409 含 referencing_agents，弹窗提示先解绑。
+   编辑面板对齐标准注册页排版：身份/凭据字段垂直单列、说明收敛进
+   placeholder 与 label tooltip；api_key 用 SecretInput（* 紧凑掩码）；
+   参数区为行式配置面板（paramRow：label 定宽列 + 控件紧随，现代 LLM
+   配置风格），思考模式三态用 Radio 按钮组。 */
+import { App as AntApp, Button, Divider, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Radio, Switch, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState, type ReactNode } from 'react'
-import { Eye, Pencil, Plug, Plus, Trash2 } from 'lucide-react'
+import { Pencil, Plug, Plus, Trash2 } from 'lucide-react'
 import {
   useCreateModel,
   useDeleteModel,
@@ -15,6 +19,7 @@ import {
 } from '@/hooks/useModels'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
+import { SecretInput } from '@/components/form/SecretInput'
 import { ApiError } from '@/api/client'
 import { formatDateTime } from '@/lib/format'
 import { toastError, toastSuccess } from '@/lib/antdStatic'
@@ -46,6 +51,17 @@ const emptyForm: FormValues = {
   enable_thinking: null,
   enabled: true,
 }
+
+/* 参数区行式布局（现代 LLM 配置面板风格）：label 定宽列、控件紧随其后
+   而非两端拉开，行距 12px；覆盖在垂直表单内（antd Form.Item layout） */
+const paramRow = {
+  layout: 'horizontal',
+  labelCol: { flex: '112px' },
+  wrapperCol: { flex: 'auto' },
+  style: { marginBottom: 12 },
+} as const
+
+const numWidth = { width: 132 }
 
 export function ModelsPage(): ReactNode {
   // 写操作（注册/编辑/删除/连通测试）为管理员专属；非管理员只读预览
@@ -287,7 +303,7 @@ export function ModelsPage(): ReactNode {
         width={480}
         destroyOnClose
         extra={
-          <Tooltip title="保存前测试连通性（不落库）">
+          <Tooltip title="测试连通性，不落库">
             <Button icon={<Plug size={14} />} loading={testModel.isPending} onClick={handleTest}>
               测试连接
             </Button>
@@ -302,69 +318,63 @@ export function ModelsPage(): ReactNode {
           </Flex>
         }
       >
-        <Form<FormValues> form={form} layout="vertical" initialValues={emptyForm}>
-          <Form.Item name="name" label="展示名" rules={[{ required: true, message: '请输入展示名' }]}>
-            <Input placeholder="如 我的OpenAI" />
+        <Form<FormValues> form={form} layout="vertical" requiredMark={false} labelAlign="left" colon={false} initialValues={emptyForm}>
+          {/* 客户端族当前唯一取值：收为隐藏字段，保留提交与 /test 语义 */}
+          <Form.Item name="provider_kind" hidden>
+            <Input />
           </Form.Item>
-          <Form.Item name="provider_kind" label="客户端族">
-            <Select
-              options={[{ value: 'openai_compatible', label: 'OpenAI 兼容' }]}
-              disabled
-            />
+          <Form.Item name="name" label="展示名" rules={[{ required: true, message: '请输入展示名' }]}>
+            <Input placeholder="如 我的OpenAI" allowClear />
           </Form.Item>
           <Form.Item name="model_type" label="模型型号" rules={[{ required: true, message: '请输入模型型号' }]}>
-            <Input placeholder="如 gpt-4o-mini" />
+            <Input placeholder="如 gpt-4o-mini" allowClear />
           </Form.Item>
           <Form.Item
             name="api_key"
             label="API Key"
-            rules={editing ? [] : [{ required: true, message: '请输入 api_key' }]}
-            extra={editing ? '留空表示保留旧 key（轮换密钥时填新值）' : undefined}
+            rules={editing ? [] : [{ required: true, message: '请输入 API Key' }]}
           >
-            <Input.Password
-              autoComplete="new-password"
-              placeholder={editing ? '留空保留旧 key' : 'sk-...'}
-              prefix={<Eye size={14} />}
-            />
+            <SecretInput autoComplete="new-password" placeholder={editing ? '留空保留原 Key' : 'sk-...'} />
           </Form.Item>
-          <Form.Item name="base_url" label="Base URL" extra="OpenAI 兼容端点；原生 OpenAI 留空">
-            <Input placeholder="如 https://api.deepseek.com/v1" />
+          <Form.Item name="base_url" label="Base URL">
+            <Input placeholder="如 https://api.deepseek.com/v1，原生 OpenAI 留空" allowClear />
           </Form.Item>
-          <Flex gap={24}>
-            <Form.Item name="temperature" label="温度（temperature）" extra="0–2，留空=默认">
-              <InputNumber min={0} max={2} step={0.1} style={{ width: 150 }} placeholder="默认" />
-            </Form.Item>
-            <Form.Item name="top_p" label="Top P" extra="0–1，留空=默认">
-              <InputNumber min={0} max={1} step={0.05} style={{ width: 150 }} placeholder="默认" />
-            </Form.Item>
-          </Flex>
+          <Divider
+            plain
+            orientation="left"
+            orientationMargin={0}
+            style={{ margin: '4px 0 16px', color: 'var(--color-text-tertiary)', fontSize: 12 }}
+          >
+            参数
+          </Divider>
+          <Form.Item {...paramRow} name="temperature" label="温度">
+            <InputNumber min={0} max={2} step={0.1} style={numWidth} placeholder="默认" />
+          </Form.Item>
+          <Form.Item {...paramRow} name="top_p" label="Top P">
+            <InputNumber min={0} max={1} step={0.05} style={numWidth} placeholder="默认" />
+          </Form.Item>
           <Form.Item
+            {...paramRow}
             name="enable_thinking"
             label="思考模式"
-            extra="三态：默认=不注入（服务端默认）；开启/关闭显式注入 thinking 请求体。注：GLM V 系列等服务端默认开启思考，需关闭请选「显式关闭」；被用作视觉下挂描述器时系统将强制关闭"
+            tooltip="跟随服务端默认；GLM V 系列等服务端默认开启思考，需关闭请选「关闭」"
           >
-            <Select
-              style={{ width: 200 }}
+            <Radio.Group
+              optionType="button"
+              buttonStyle="solid"
               options={[
-                { value: null, label: '默认（不注入）' },
-                { value: true, label: '显式开启' },
-                { value: false, label: '显式关闭' },
+                { value: null, label: '默认' },
+                { value: true, label: '开启' },
+                { value: false, label: '关闭' },
               ]}
             />
           </Form.Item>
-          <Flex gap={24}>
-            <Form.Item
-              name="supports_vision"
-              label="多模态（视觉）"
-              valuePropName="checked"
-              extra="开启后可直传图像，或被下挂为视觉描述器（下挂须将思考模式设为「显式关闭」——描述任务开思考徒增延迟与成本）"
-            >
-              <Switch />
-            </Form.Item>
-            <Form.Item name="enabled" label="启用" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-          </Flex>
+          <Form.Item {...paramRow} name="supports_vision" label="视觉支持" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item {...paramRow} name="enabled" label="启用" valuePropName="checked" style={{ marginBottom: 0 }}>
+            <Switch />
+          </Form.Item>
         </Form>
       </Drawer>
     </PageContainer>

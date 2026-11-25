@@ -3,13 +3,15 @@
       回退；错误按后端状态化提示（凭据失败按锚点统一文案防枚举）
     - 注册：弹窗提交（审批制，提交后等待管理员批准方可登录）
     - 欢迎过渡层：登录成功后品牌全屏一瞥（"xxx 欢迎使用 / xxx 管理员，你好"），
-      淡出后回来源页；视觉沿用平台玻璃卡片 + 品牌语言 */
+      淡出后回来源页；视觉沿用平台玻璃卡片 + 品牌语言
+    - 密码输入统一 SecretInput：* 紧凑掩码替代浏览器大间距圆点 */
 import { App as AntApp, Button, Flex, Form, Input, Modal, Segmented, Typography } from 'antd'
 import { useEffect, useState, type ReactNode } from 'react'
 import { useLocation, useNavigate, Navigate } from 'react-router-dom'
 import { LogIn, UserPlus } from 'lucide-react'
 import { authApi } from '@/api/auth'
 import { ApiError } from '@/api/client'
+import { SecretInput } from '@/components/form/SecretInput'
 import { useCurrentUser } from '@/store/userStore'
 import type { LoginMode } from '@/types/auth'
 
@@ -154,7 +156,7 @@ export function LoginPage(): ReactNode {
             />
           </Form.Item>
           <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }]}>
-            <Input.Password placeholder="密码" autoComplete="current-password" size="large" />
+            <SecretInput placeholder="密码" autoComplete="current-password" size="large" />
           </Form.Item>
           <Button
             type="primary"
@@ -214,7 +216,7 @@ export function LoginPage(): ReactNode {
               { min: 6, message: '密码不得少于 6 位' },
             ]}
           >
-            <Input.Password placeholder="至少 6 位" autoComplete="new-password" />
+            <SecretInput placeholder="至少 6 位" autoComplete="new-password" />
           </Form.Item>
           <Form.Item
             name="confirm"
@@ -230,7 +232,7 @@ export function LoginPage(): ReactNode {
               }),
             ]}
           >
-            <Input.Password placeholder="再次输入密码" autoComplete="new-password" />
+            <SecretInput placeholder="再次输入密码" autoComplete="new-password" />
           </Form.Item>
         </Form>
       </Modal>

@@ -1,7 +1,8 @@
 /* 个人中心 —— 已登录态的自助资料修改（默认填入当前值）。
     - 用户名只读展示（登录锚点不可改，disabled 输入框视觉传达）
     - 昵称：即时查重 + 保留词黑名单（后端本体），提交即生效
-    - 密码：验旧密 + 两次新密确认；成功即吊销全部会话 → 回登录页重新认证 */
+    - 密码：验旧密 + 两次新密确认；成功即吊销全部会话 → 回登录页重新认证
+      （密码输入统一 SecretInput：* 紧凑掩码） */
 import { App as AntApp, Button, Card, Col, Form, Input, Row, Tag, Typography } from 'antd'
 import { useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -9,6 +10,7 @@ import { KeyRound, UserRound } from 'lucide-react'
 import { authApi } from '@/api/auth'
 import { ApiError } from '@/api/client'
 import { PageContainer } from '@/components/layout/PageContainer'
+import { SecretInput } from '@/components/form/SecretInput'
 import { useCurrentUser } from '@/store/userStore'
 
 type NicknameForm = { nickname: string }
@@ -108,7 +110,7 @@ export function ProfilePage(): ReactNode {
                 label="当前密码"
                 rules={[{ required: true, message: '请输入当前密码' }]}
               >
-                <Input.Password placeholder="当前密码" autoComplete="current-password" />
+                <SecretInput placeholder="当前密码" autoComplete="current-password" />
               </Form.Item>
               <Form.Item
                 name="new_password"
@@ -118,7 +120,7 @@ export function ProfilePage(): ReactNode {
                   { min: 6, message: '密码不得少于 6 位' },
                 ]}
               >
-                <Input.Password placeholder="至少 6 位" autoComplete="new-password" />
+                <SecretInput placeholder="至少 6 位" autoComplete="new-password" />
               </Form.Item>
               <Form.Item
                 name="confirm_password"
@@ -134,7 +136,7 @@ export function ProfilePage(): ReactNode {
                   }),
                 ]}
               >
-                <Input.Password placeholder="再次输入新密码" autoComplete="new-password" />
+                <SecretInput placeholder="再次输入新密码" autoComplete="new-password" />
               </Form.Item>
               <Button type="primary" htmlType="submit" danger loading={savingPassword}>
                 确认修改密码

@@ -4021,6 +4021,19 @@ body .ant-drawer .ant-drawer-mask {
   body .ant-drawer .ant-drawer-content { background: var(--glass-solid); }
 }
 
+/* ===== SecretInput（密文输入）眼睛钮 =====
+   掩码层 / 透明文字等成像由组件内联完成，这里只管眼睛钮的形态与悬停。 */
+.secret-input__eye {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--color-text-tertiary);
+  transition: color 0.15s ease;
+}
+.secret-input__eye:hover {
+  color: var(--color-text-secondary);
+}
+
 /* 节点详情面板（工作区卡内右区）：透明嵌入，无独立卡壳；flex:1 撑满列高（空态垂直居中） */
 .node-detail {
   width: 100%;
@@ -4538,6 +4551,16 @@ body .ant-drawer .ant-drawer-mask {
   bottom: 0;
   z-index: 4;
 }
+/* 拖宽手柄指示与右侧抽屉 .drawer-resizer__grip 同款（居中 36px 短胶囊）：
+   .panel-resizer 默认的全高细线是编辑器模块分隔条的语言，此处按浮层族
+   覆写归族——本规则在 .panel-resizer::before 之后，同特异性靠源序生效；
+   hover/resizing 的透明度规则（更高特异性）不受影响，只覆几何 */
+.ws-view__resizer::before {
+  top: 50%;
+  bottom: auto;
+  height: 36px;
+  transform: translate(-50%, -50%);
+}
 
 /* 预览铺满层（WorkspaceView PreviewStage）：ZoomStage 同构 portal 浮层——
    dock 带 transform，树内 fixed 会错位，必须 portal 到 body 后再 fixed。
@@ -4773,9 +4796,15 @@ body .ant-drawer .ant-drawer-mask {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 16px;
+  /* 头部节奏向右侧任务卡（Drawer header）看齐收一档；元信息密度高，钮保持 small */
+  padding: 12px 20px;
   border-bottom: 1px solid var(--color-border-soft);
-  background: var(--color-bg-elevated);
+  /* 玻璃延续（与 .ws-view__tree-header 同配方）：原实白头带会打断卡壳磨砂景，
+     半透薄底随行后预览卡与右侧抽屉族同一观感。body 自身滚动，内容不会钻到
+     头带之下，半透底无可读性风险；无 backdrop-filter 环境半透底仍可读 */
+  background: var(--glass-bg-soft);
+  backdrop-filter: blur(10px) saturate(1.5);
+  -webkit-backdrop-filter: blur(10px) saturate(1.5);
   flex-shrink: 0;
 }
 .ws-preview__body {

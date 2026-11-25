@@ -2,8 +2,11 @@
    api_key 列表永不返回；编辑时留空 = 保留旧 key。
    端点（base_url）列仅管理员可见：普通用户只读预览不暴露端点地址。
    语义字段（端点/型号/维度）被知识库引用 → 后端 409 含 referencing_kbs，
-   弹窗提示先换绑。镜像 ModelsPage。 */
-import { App as AntApp, Button, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Select, Switch, Table, Tag, Tooltip } from 'antd'
+   弹窗提示先换绑。镜像 ModelsPage：编辑面板对齐标准注册页排版
+   （身份/凭据字段垂直单列、说明收敛进 placeholder 与 label tooltip），
+   api_key 用 SecretInput（* 紧凑掩码）；参数区为行式配置面板
+   （paramRow：label 定宽列 + 控件紧随，现代 LLM 配置风格）。 */
+import { App as AntApp, Button, Divider, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Switch, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState, type ReactNode } from 'react'
 import { Pencil, Plug, Plus, Trash2 } from 'lucide-react'
@@ -16,6 +19,7 @@ import {
 } from '@/hooks/useEmbeddings'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
+import { SecretInput } from '@/components/form/SecretInput'
 import { ApiError } from '@/api/client'
 import { formatDateTime } from '@/lib/format'
 import { toastError, toastSuccess } from '@/lib/antdStatic'
@@ -47,6 +51,17 @@ const emptyForm: FormValues = {
   check_ctx_length: false,
   enabled: true,
 }
+
+/* 参数区行式布局（现代 LLM 配置面板风格）：label 定宽列、控件紧随其后
+   而非两端拉开，行距 12px；与 ModelsPage 同款 */
+const paramRow = {
+  layout: 'horizontal',
+  labelCol: { flex: '112px' },
+  wrapperCol: { flex: 'auto' },
+  style: { marginBottom: 12 },
+} as const
+
+const numWidth = { width: 132 }
 
 export function EmbeddingsPage(): ReactNode {
   // 写操作为管理员专属；非管理员只读预览
@@ -263,7 +278,7 @@ export function EmbeddingsPage(): ReactNode {
         width={480}
         destroyOnClose
         extra={
-          <Tooltip title="保存前测试连通性并实测维度（不落库）">
+          <Tooltip title="测试连通性并实测维度，不落库">
             <Button icon={<Plug size={14} />} loading={testEmbedding.isPending} onClick={handleTest}>
               测试连接
             </Button>
@@ -278,69 +293,79 @@ export function EmbeddingsPage(): ReactNode {
           </Flex>
         }
       >
-        <Form<FormValues> form={form} layout="vertical" initialValues={emptyForm}>
-          <Form.Item name="name" label="展示名" rules={[{ required: true, message: '请输入展示名' }]}>
-            <Input placeholder="如 Qwen3-Embedding-0.6B（TEI 内置）" />
+        <Form<FormValues> form={form} layout="vertical" requiredMark={false} labelAlign="left" colon={false} initialValues={emptyForm}>
+          {/* 客户端族当前唯一取值：收为隐藏字段，保留提交语义 */}
+          <Form.Item name="provider_kind" hidden>
+            <Input />
           </Form.Item>
-          <Form.Item name="provider_kind" label="客户端族">
-            <Select options={[{ value: 'openai_compatible', label: 'OpenAI 兼容' }]} disabled />
+          <Form.Item name="name" label="展示名" rules={[{ required: true, message: '请输入展示名' }]}>
+            <Input placeholder="如 Qwen3-Embedding（TEI 内置）" allowClear />
           </Form.Item>
           <Form.Item
             name="model_type"
             label="模型型号"
             rules={[{ required: true, message: '请输入模型型号' }]}
-            extra="本地 TEI 忽略此值（部署时已定）；云端填真实型号"
+            tooltip="本地 TEI 忽略此值（部署时已定），云端填真实型号"
           >
-            <Input placeholder="如 Qwen3-Embedding-0.6B" />
+            <Input placeholder="如 Qwen3-Embedding-0.6B" allowClear />
           </Form.Item>
           <Form.Item
             name="api_key"
             label="API Key"
-            rules={editing ? [] : [{ required: true, message: '请输入 api_key' }]}
-            extra={editing ? '留空表示保留旧 key' : '本地 TEI 填任意非空值（如 dummy）'}
+            rules={editing ? [] : [{ required: true, message: '请输入 API Key' }]}
           >
-            <Input.Password autoComplete="new-password" placeholder={editing ? '留空保留旧 key' : 'dummy'} />
+            <SecretInput
+              autoComplete="new-password"
+              placeholder={editing ? '留空保留原 Key' : '本地 TEI 填 dummy'}
+            />
           </Form.Item>
           <Form.Item
             name="base_url"
             label="Base URL"
             rules={[{ required: true, message: '请输入端点地址' }]}
-            extra="OpenAI 兼容端点，含 /v1；compose 内 TEI 为 http://tei:8082/v1"
+            tooltip="OpenAI 兼容端点，含 /v1；compose 内 TEI 为 http://tei:8082/v1"
           >
-            <Input placeholder="如 http://tei:8082/v1" />
+            <Input placeholder="如 http://tei:8082/v1" allowClear />
           </Form.Item>
-          <Flex gap={24}>
-            <Form.Item
-              name="dims"
-              label="维度"
-              tooltip="MRL 截断维度（如 Qwen3 原生 1024 → 512）；留空=模型原生。保存时经端点实测校验"
-              rules={[{ type: 'number', min: 2, max: 4096, message: '维度范围 2–4096' }]}
-            >
-              <InputNumber min={2} max={4096} precision={0} style={{ width: 150 }} placeholder="原生" />
-            </Form.Item>
-            <Form.Item
-              name="batch_size"
-              label="批大小"
-              tooltip="单请求文本数，须 ≤ TEI --max-client-batch-size"
-              rules={[{ required: true }]}
-            >
-              <InputNumber min={1} max={128} precision={0} style={{ width: 150 }} />
-            </Form.Item>
-          </Flex>
-          <Flex gap={24}>
-            <Form.Item name="timeout" label="超时（秒）" rules={[{ required: true }]}>
-              <InputNumber min={1} max={600} precision={0} style={{ width: 150 }} />
-            </Form.Item>
-            <Form.Item
-              name="check_ctx_length"
-              label="ctx 长度校验"
-              valuePropName="checked"
-              tooltip="TEI 必须关闭（tiktoken 规避）；真实 OpenAI 云端开启"
-            >
-              <Switch />
-            </Form.Item>
-          </Flex>
-          <Form.Item name="enabled" label="启用" valuePropName="checked">
+          <Divider
+            plain
+            orientation="left"
+            orientationMargin={0}
+            style={{ margin: '4px 0 16px', color: 'var(--color-text-tertiary)', fontSize: 12 }}
+          >
+            参数
+          </Divider>
+          <Form.Item
+            {...paramRow}
+            name="dims"
+            label="维度"
+            tooltip="MRL 截断维度；留空=模型原生，保存时经端点实测校验"
+            rules={[{ type: 'number', min: 2, max: 4096, message: '维度范围 2–4096' }]}
+          >
+            <InputNumber min={2} max={4096} precision={0} style={numWidth} placeholder="原生" />
+          </Form.Item>
+          <Form.Item
+            {...paramRow}
+            name="batch_size"
+            label="批大小"
+            tooltip="单请求文本数，须 ≤ TEI --max-client-batch-size"
+            rules={[{ required: true }]}
+          >
+            <InputNumber min={1} max={128} precision={0} style={numWidth} />
+          </Form.Item>
+          <Form.Item {...paramRow} name="timeout" label="超时（秒）" rules={[{ required: true }]}>
+            <InputNumber min={1} max={600} precision={0} style={numWidth} />
+          </Form.Item>
+          <Form.Item
+            {...paramRow}
+            name="check_ctx_length"
+            label="ctx 长度校验"
+            valuePropName="checked"
+            tooltip="TEI 必须关闭；真实 OpenAI 云端开启"
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item {...paramRow} name="enabled" label="启用" valuePropName="checked" style={{ marginBottom: 0 }}>
             <Switch />
           </Form.Item>
         </Form>

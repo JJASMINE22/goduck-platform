@@ -11,6 +11,7 @@ import { Check, KeyRound, LockOpen, ShieldOff, Trash2, X } from 'lucide-react'
 import { authApi } from '@/api/auth'
 import { PageContainer } from '@/components/layout/PageContainer'
 import { EmptyState, ErrorState, PageLoading } from '@/components/feedback/states'
+import { SecretInput } from '@/components/form/SecretInput'
 import { formatRelative } from '@/lib/format'
 import { toastSuccess } from '@/lib/antdStatic'
 import type { AdminUser, AuthRequestOut } from '@/types/auth'
@@ -356,7 +357,7 @@ function UsersPanel(): ReactNode {
               { min: 6, message: '密码不得少于 6 位' },
             ]}
           >
-            <Input.Password placeholder="至少 6 位" autoComplete="new-password" />
+            <SecretInput placeholder="至少 6 位" autoComplete="new-password" />
           </Form.Item>
           <Form.Item
             name="confirm"
@@ -372,7 +373,7 @@ function UsersPanel(): ReactNode {
               }),
             ]}
           >
-            <Input.Password placeholder="再次输入新密码" autoComplete="new-password" />
+            <SecretInput placeholder="再次输入新密码" autoComplete="new-password" />
           </Form.Item>
         </Form>
       </Modal>
