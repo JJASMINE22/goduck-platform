@@ -220,8 +220,8 @@ class Settings(BaseSettings):
         "必须用 shadow 期分歧样本重标定 jev_safe_threshold 后才可切 enforce。",
     )
     jev_safe_threshold: float = Field(
-        default=0.6,
-        ge=0.5,
+        default=0.45,
+        ge=0.3,
         le=1.0,
         description="自动放行阈值 T：概率落在安全侧且该题置信度达标的票数全过才放行。"
         "占位值，切 enforce 前须重标定。",

@@ -300,6 +300,10 @@ services:
       # enforce：灰区自动放行生效（L1 确定性层先行减负；laya 置信轴未校准时
       # 灰区自然回落人工）；shadow=只判只落审计，行为与现状一致。
       JEV_MODE: ${JEV_MODE:-enforce}
+      # L2 自动放行阈值 T（P 与 conf 双轴同值）：调低=放行面更宽、反向否决线
+      # 前移（touches_system / installs_packages 更易否决）。变更随图构建烘焙
+      # （重启后端或等 registry TTL 过期再生效）。
+      JEV_SAFE_THRESHOLD: ${JEV_SAFE_THRESHOLD:-0.45}
       JEV_RUBRIC_ENABLED: ${JEV_RUBRIC_ENABLED:-false}
       JEV_KB_RERANK_ENABLED: ${JEV_KB_RERANK_ENABLED:-false}
       # L1 允许项扩展：在册 MCP 前置依赖补齐 + 工作区常规操作零审批直通
