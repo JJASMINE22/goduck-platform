@@ -4518,6 +4518,61 @@ body .ant-drawer .ant-drawer-mask {
   align-items: center;
   justify-content: center;
 }
+
+/* 文件树曲线连线：不开 antd showLine（其直角线占用缩进单元 ::before 与
+   switcher-leaf-line 伪元素，会与下方规则冲突），改用 rc-tree 恒有的逐层标记自绘——
+   缩进单元 k 的 -end 即「深度 k 的祖先是末子」，末子行另带 -leaf-last 行类。
+   几何（列距 = 缩进单元宽 = 折叠箭头宽 = antd titleHeight，故横向全用百分比）：
+   - 每层干线在该层折叠箭头正下方，子行由干线经四分之一圆弧右弯引入、止于箭头左缘
+     （弯头：末缩进单元 ::after）；
+   - 非末子行的干线贯穿整行（箭头 ::after，行类由 toTreeData 下发——仅子行需要
+     本层干线），末子行只有弯头，干线在此收束；
+   - 上层干线画在单元 k 的左邻列（left:-50%），该层祖先是末子则不在本行延续；
+   - 首子的干线向上引到父行箭头下方（父行带 -switcher-open）。
+   行距 4px = antd treeNodePadding（paddingXS / 2）。线色实色，故相邻行的线段
+   互相压入 4px（--ws-tree-line-join = 行距 + 压入）消除接缝处的亚像素缺口。 */
+.ws-view__tree-body {
+  --ws-tree-line: color-mix(in srgb, var(--color-text) 16%, var(--color-bg-elevated));
+  --ws-tree-line-r: 9px;
+  --ws-tree-line-end: 30px;
+  --ws-tree-line-join: 8px;
+  --ws-tree-line-rise: 12px;
+}
+.ws-view__tree-body .ant-tree .ant-tree-indent-unit {
+  position: relative;
+  height: 100%;
+}
+.ws-view__tree-body .ant-tree .ant-tree-indent-unit:not(:first-child):not(.ant-tree-indent-unit-end)::before {
+  content: '';
+  position: absolute;
+  left: -50%;
+  top: 0;
+  bottom: calc(var(--ws-tree-line-join) * -1);
+  border-left: 1px solid var(--ws-tree-line);
+}
+.ws-view__tree-body .ant-tree .ant-tree-indent-unit:last-child::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: calc(var(--ws-tree-line-end) - 50%);
+  height: 50%;
+  border-left: 1px solid var(--ws-tree-line);
+  border-bottom: 1px solid var(--ws-tree-line);
+  border-bottom-left-radius: var(--ws-tree-line-r);
+}
+.ws-view__tree-body .ant-tree .ant-tree-treenode-switcher-open + .ant-tree-treenode .ant-tree-indent-unit:last-child::after {
+  top: calc(var(--ws-tree-line-rise) * -1);
+  height: calc(50% + var(--ws-tree-line-rise));
+}
+.ws-view__tree-body .ant-tree .ws-tree-row--child:not(.ant-tree-treenode-leaf-last) > .ant-tree-switcher::after {
+  content: '';
+  position: absolute;
+  left: -50%;
+  top: 0;
+  bottom: calc(var(--ws-tree-line-join) * -1);
+  border-left: 1px solid var(--ws-tree-line);
+}
 /* 右侧预览卡（布局属性；卡壳见上方两卡共用规则） */
 .ws-view__preview {
   flex: 1;
@@ -4564,7 +4619,11 @@ body .ant-drawer .ant-drawer-mask {
 
 /* 预览铺满层（WorkspaceView PreviewStage）：ZoomStage 同构 portal 浮层——
    dock 带 transform，树内 fixed 会错位，必须 portal 到 body 后再 fixed。
-   面板复用 .ws-view__preview 玻璃卡壳（本规则在其后，定位覆写生效）；
+   面板复用 .ws-view__preview 卡壳，但底色改近实底（本规则在其后，覆写生效）：
+   卡壳 44% 半透玻璃底落在 66% 压暗遮罩上被染成中灰（亮色正文面 ≈ #a4a6aa，
+   次级/三级文字对比仅 2.5:1 / 1.5:1），而文字/代码高亮色均按亮纸面设计；
+   铺满后遮罩下无景可取，取景只剩压暗副作用——近实底同 .app-drawer-sider 先例，
+   底不透明后 backdrop-filter 空转，一并摘除省整视口 blur 合成开销。
    分栏实例同步 masked（visibility 保滚动位，退铺满无感回归） */
 .ws-full {
   position: fixed;
@@ -4581,6 +4640,9 @@ body .ant-drawer .ant-drawer-mask {
 .ws-full__panel {
   position: absolute;
   inset: 16px;
+  background: var(--glass-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .ws-view__preview--masked {
   visibility: hidden;

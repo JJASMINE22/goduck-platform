@@ -1,6 +1,8 @@
 /* 会话页「工作区」视图（与会话同级的页内页面）—— 树卡全宽 + 预览浮层遮挡：
-    - 文件树：AntD Tree 无连线纯缩进 + 按文件类型着色的类型图标（fileIcon），
-      递归渲染（后端已限条目/深度）。
+    - 文件树：AntD Tree + 曲线连线（index.css 缩进单元/折叠箭头伪元素）+ 按文件
+      类型着色的类型图标（fileIcon），递归渲染（后端已限条目/深度）。
+    - 展开态：默认全折叠，点目录名或箭头展开；选中文件自动展开其所在目录链；
+      展开态按用户记在内存（workspaceTreeStore），组件重挂恢复、刷新回默认。
     - 行内悬停操作：下载（文件直链 / 目录 zip）、删除（Popconfirm，递归删目录）。
     - 选中文件 → 右侧浮起预览卡（按类型分派）覆盖在树卡右段之上：树始终全宽、
       排版恒定（不因打开/拖拽而重排换行），拖拽仅改变遮挡范围，可拖至近全宽
@@ -21,6 +23,8 @@ import { workspaceApi } from '@/api/workspace'
 import { useDeleteWorkspaceItem, useWorkspaceTree } from '@/hooks/useWorkspace'
 import { useDragResize } from '@/hooks/useDragResize'
 import { useChatStore } from '@/store/chatStore'
+import { useCurrentUser } from '@/store/userStore'
+import { useWorkspaceTreeStore } from '@/store/workspaceTreeStore'
 import { mergeFileChangesByPath, type MergedFileChange } from '@/lib/fileChanges'
 import type { UUID, WorkspaceNode } from '@/types'
 import { dirTreeIcon, fileTreeIcon } from './fileIcon'
@@ -138,20 +142,28 @@ function toTreeData(
   sessionId: UUID,
   onDelete: (n: WorkspaceNode) => void,
   badges: Map<string, MergedFileChange>,
+  depth = 0,
 ): DataNode[] {
   return nodes.map((n) => ({
     key: n.path,
+    className: depth > 0 ? 'ws-tree-row--child' : undefined,
     title: <NodeTitle node={n} sessionId={sessionId} onDelete={onDelete} badge={badges.get(n.path)} />,
     icon: n.is_dir ? dirTreeIcon() : fileTreeIcon(n.name),
     isLeaf: !n.is_dir,
-    children: n.is_dir && n.children?.length ? toTreeData(n.children, sessionId, onDelete, badges) : undefined,
+    children:
+      n.is_dir && n.children?.length
+        ? toTreeData(n.children, sessionId, onDelete, badges, depth + 1)
+        : undefined,
   }))
 }
 
-/** 顶层目录 key（用于默认展开首层）。 */
-function rootKeys(data: DataNode[]): React.Key[] {
-  return data.filter((d) => d.children?.length).map((d) => d.key)
+/** 选中文件的祖先目录键链（a/b/c.md → ['a', 'a/b']），展开它们文件才在树中可见。 */
+function ancestorKeys(path: string): string[] {
+  const parts = path.split('/')
+  return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'))
 }
+
+const NO_KEYS: React.Key[] = []
 
 /** 在嵌套树里按 path 查节点。 */
 function findNode(nodes: WorkspaceNode[], path: string): WorkspaceNode | undefined {
@@ -252,6 +264,22 @@ export function WorkspaceView({
     [treeQ.data, sessionId, handleDelete, badges],
   )
 
+  // 工作区目录按用户共享（各会话同一棵树），展开态作用域随之取用户；身份未就绪
+  // 时退回会话 id（工作区面板只挂在受保护路由内，属理论路径）
+  const treeScope = useCurrentUser((s) => s.userId) ?? sessionId
+  const expandedKeys = useWorkspaceTreeStore((s) => s.expanded[treeScope]) ?? NO_KEYS
+  const setExpanded = useWorkspaceTreeStore((s) => s.setExpanded)
+  // 选中可由时间线卡片跨视图直达（绕过本组件的树点击回调）：在此展开所在目录链，
+  // 只并入不替换——其后用户仍可手动收起
+  useEffect(() => {
+    if (!selected) return
+    const chain = ancestorKeys(selected.path)
+    if (!chain.length) return
+    const cur = useWorkspaceTreeStore.getState().expanded[treeScope] ?? []
+    if (chain.every((k) => cur.includes(k))) return
+    setExpanded(treeScope, [...cur, ...chain.filter((k) => !cur.includes(k))])
+  }, [selected, treeScope, setExpanded])
+
   return (
     <div className="ws-view" ref={viewRef}>
       <aside className="ws-view__tree" style={{ flex: 1, minWidth: 0 }}>
@@ -284,8 +312,10 @@ export function WorkspaceView({
             <Tree
               showIcon
               blockNode
+              expandAction="click"
               treeData={treeData}
-              defaultExpandedKeys={rootKeys(treeData)}
+              expandedKeys={expandedKeys}
+              onExpand={(keys) => setExpanded(treeScope, keys)}
               selectedKeys={selected ? [selected.path] : []}
               switcherIcon={
                 <span className="ws-view__switcher">
