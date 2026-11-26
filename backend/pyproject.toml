@@ -23,7 +23,7 @@ dependencies = [
     # 新一代 HTTP 客户端），与既有 httpx 并存、互不干涉。
     "langchain-typesafe>=0.0.1a3,<0.0.2",
     "deepagents>=0.7",
-    "fastmcp>=2.0",
+    "fastmcp>=2.0,<4",
     "tavily-python>=0.5",
     "python-dotenv>=1.0",
     "python-multipart>=0.0.9",

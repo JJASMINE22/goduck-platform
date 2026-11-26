@@ -20,7 +20,10 @@ langchain-typesafe>=0.0.1a3,<0.0.2
 # >=0.7: 任务规划（TodoListMiddleware）为 opt-in——显式挂载不会与其旧版默认注入的
 # 实例重复注册 write_todos（task_planning per-node 开关依赖此语义）
 deepagents>=0.7
-fastmcp>=2.0
+# <4：4.x 的 http_app() 挂载语义变化（streamable 端点不再位于子应用根路径，
+# mount("/mcp") 后 POST /mcp 307→/mcp/ 404，自连 Session terminated）；
+# 平台同进程 FastMCP 挂载契约（main.py /mcps/core/server.py）按 3.x 语义编写。
+fastmcp>=2.0,<4
 tavily-python>=0.5
 python-dotenv>=1.0
 python-multipart>=0.0.9
