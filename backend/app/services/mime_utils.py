@@ -69,6 +69,21 @@ _FILE_EXT_BY_MIME = {
     "text/markdown": "md",
 }
 
+# 运行期图像对象（image_understand 内容寻址产物 {sha}.{ext}）的扩展名 → mime
+# 白名单：runtime-image 端点（api/uploads.py 鉴权放行 + Content-Type）与持久
+# 渲染 URL 构造（mcps/routers/vision.py）两处共用，防扩展名集漂移——不在表
+# 内的扩展名走端点 404 / 工具侧回落预签名短链。
+RUNTIME_IMAGE_EXT_MIME = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+}
+
 
 def allowed_file_extensions() -> list[str]:
     """白名单派生的可上传文档扩展名（如 ['csv', 'docx', 'html', 'md', 'pdf', 'txt', 'xlsx']）。

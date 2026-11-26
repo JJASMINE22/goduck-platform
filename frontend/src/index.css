@@ -1638,6 +1638,38 @@ pre,
   color: var(--color-danger);
 }
 
+/* ===== image_understand 工具卡：原图 + 描述 ===== */
+/* 原图容器：等比 contain、高度封顶（放大走 ZoomStage），内嵌底色衬托
+   透明 PNG；hover 外描边亮起提示可点 */
+.tc-figure {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--color-bg-inset);
+  margin: 4px 0;
+  transition: border-color 0.15s ease;
+}
+.tc-figure img {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  cursor: zoom-in;
+}
+.tc-figure:hover {
+  border-color: color-mix(in srgb, var(--color-card-tool) 55%, var(--color-border));
+}
+/* 视觉模型描述：markdown 渲染（表格/列表/行内代码），弱化框承载 */
+.tc-figure__desc {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 4px 0;
+  background: color-mix(in srgb, var(--color-bg-inset) 60%, transparent);
+}
+
 /* 工具"执行中"脉动 */
 .executing {
   animation: exec-pulse 1.1s infinite ease-in-out;

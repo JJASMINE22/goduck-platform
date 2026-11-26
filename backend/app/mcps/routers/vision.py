@@ -5,8 +5,14 @@
 栅栏）→ 内容寻址落 MinIO（`runtime/{session}/{sha256}.{ext}`，同图去重、
 与 shell 解耦）→ 视觉模型解析链（调用时刻现查：下挂 vision_model_id →
 平台默认（model.is_default_vision）→ 基座 supports_vision；全无 = 结构化
-退化信封，回合不断）→ 描述 + 1h 现签 image_url（照抄 knowledge_service
-"存 ref、读取时签"模式，持久化签名 URL 属违例）。
+退化信封，回合不断）→ 描述 + 渲染链接。
+
+渲染链接形态（持久优先）：会话锚定（_gd_ctx.session_id 可解析会话行）且
+扩展名在 runtime-image 端点白名单 → `/api/sessions/{id}/runtime-image/
+{sha}.{ext}`（cookie 鉴权、永不过期，历史回放 / 终答 markdown 内嵌同链）；
+图外调用 / 会话解析失败 / 扩展名不在白名单 → 1h 预签名回落（短时观看可用）。
+持久 URL 是平台边缘契约（nginx /api → backend、Vite /api 代理），由工具
+结果注入 LLM 上下文、终答以 markdown 内嵌，前端同源直取。
 
 实际 model_id 随调用日志落盘（会话/调用 → 模型成本归因）；base64 仅在
 送视觉模型那一刻临时生成，永不入 LLM 上下文。
@@ -130,6 +136,29 @@ def _resolve_vision_model(st, agent_row: dict | None) -> tuple[uuid_mod.UUID | N
     return None, "none"
 
 
+async def _render_url(st, thread_id: str | None, filename: str) -> str | None:
+    """持久渲染链接：/api/sessions/{id}/runtime-image/{sha}.{ext}。
+
+    thread_id（= _gd_ctx.session_id）解析到会话行 ∧ 扩展名在端点白名单
+    （RUNTIME_IMAGE_EXT_MIME）才产出；否则返回 None（调用方回落预签名）。
+    会话查库失败仅损失持久形态，不影响主链路。
+    """
+    if not thread_id:
+        return None
+    from app.services.mime_utils import RUNTIME_IMAGE_EXT_MIME
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in RUNTIME_IMAGE_EXT_MIME:
+        return None
+    try:
+        row = await dbmod.get_session_by_thread(st.pool, str(thread_id))
+    except Exception:  # noqa: BLE001 — 会话解析失败回落预签名
+        row = None
+    if row is None:
+        return None
+    return f"/api/sessions/{row['id']}/runtime-image/{filename}"
+
+
 def register(mcp: FastMCP) -> None:
     """把图像理解工具注册到 FastMCP 实例上。"""
 
@@ -205,7 +234,7 @@ def register(mcp: FastMCP) -> None:
                 ref=ref,
             )
 
-        # ⑤ 描述（base64 仅此处临时生成）+ 1h 现签渲染令牌
+        # ⑤ 描述（base64 仅此处临时生成）+ 渲染链接（持久端点优先，预签名回落）
         data_url = f"data:{guessed.mime};base64,{base64.b64encode(raw).decode('ascii')}"
         try:
             description = await st.vision_describer.describe(
@@ -213,10 +242,14 @@ def register(mcp: FastMCP) -> None:
             )
         except Exception as e:  # noqa: BLE001 — DescriberError 等统一退化
             return _err(f"图像描述失败: {e}", ref=ref)
-        try:
-            image_url = await asyncio.to_thread(st.minio_storage.presign_get, ref)
-        except Exception:  # noqa: BLE001 — 签名失败仅失去渲染令牌
-            image_url = None
+        image_url = await _render_url(
+            st, _gd_ctx.session_id if _gd_ctx else None, f"{sha}.{ext}"
+        )
+        if image_url is None:
+            try:
+                image_url = await asyncio.to_thread(st.minio_storage.presign_get, ref)
+            except Exception:  # noqa: BLE001 — 签名失败仅失去渲染令牌
+                image_url = None
 
         logger.info(
             "image_understand ok agent=%s model=%s source=%s ref=%s bytes=%d",
@@ -230,5 +263,9 @@ def register(mcp: FastMCP) -> None:
         }
         if image_url:
             out["image_url"] = image_url
-            out["image_url_hint"] = "1 小时内有效的渲染链接；回答中须以 markdown ![](image_url) 内嵌展示"
+            out["image_url_hint"] = (
+                "前端渲染链接；最终回答中必须以 markdown 图像语法内嵌展示该图"
+                "（如 ![分析图像](image_url)），供前端直接渲染原图，不要仅以纯"
+                "文本链接呈现，也不要省略"
+            )
         return out

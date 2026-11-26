@@ -22,7 +22,9 @@ import { MessageAttachments } from './MessageAttachments'
 import { FileChangesCard } from './FileChangesCard'
 import { ToolCallCard } from './ToolCallCard'
 import { KbSearchToolCard } from './KbSearchToolCard'
+import { ImageUnderstandToolCard } from './ImageUnderstandToolCard'
 import { isKbSearchTool } from './kbSearchTool'
+import { isImageUnderstandTool } from './imageUnderstandTool'
 import type { KbRef, UUID } from '@/types'
 
 type TimelineItem =
@@ -104,14 +106,17 @@ export const MessageList = memo(function MessageList({
 
   // 统一时间线：三源按 createdAt 归并排序（useMemo——每个 token 合并批都会
   // 触发本组件重渲染，避免重复建数组 + 排序）。简洁模式跳过工具卡源
-  //（kind:'tool'，含 kb_search 专属卡——同属工具执行观测）
+  //（kind:'tool'）——唯 image_understand 卡除外：图像是该工具的交付物
+  //（内容载体，近于附件而非观测），两种阅读模式均保留
   const timeline: TimelineItem[] = useMemo(
     () =>
       [
         ...messages.map((m) => ({ kind: 'msg' as const, ts: m.createdAt, data: m })),
         ...(displayMode === 'detailed'
           ? toolCalls.map((t) => ({ kind: 'tool' as const, ts: t.createdAt, data: t }))
-          : []),
+          : toolCalls
+              .filter((t) => isImageUnderstandTool(t.name))
+              .map((t) => ({ kind: 'tool' as const, ts: t.createdAt, data: t }))),
         // 单张本回合聚合卡：ts 取末条记录到达时间，随流式新增记录自然贴近时间线底部
         ...(fileChanges.length
           ? [{ kind: 'files' as const, ts: fileChanges[fileChanges.length - 1].createdAt, data: fileChanges }]
@@ -131,11 +136,14 @@ export const MessageList = memo(function MessageList({
         </div>
       ) : null}
       {timeline.map((item) => {
-        // kb_search 专属卡：结构化摘要 + 证据锚定入口（替代平铺 JSON 观测）；
-        // 通用工具卡透传 onOpenFile：diff 结果的文件总览行可跳工作区
+        // 专属卡分派：kb_search（结构化摘要 + 证据锚定）/ image_understand
+        // （原图 + 描述）替代平铺 JSON 观测；通用工具卡透传 onOpenFile：
+        // diff 结果的文件总览行可跳工作区
         if (item.kind === 'tool')
           return isKbSearchTool(item.data.name) ? (
             <KbSearchToolCard key={`t-${item.data.id}`} entry={item.data} />
+          ) : isImageUnderstandTool(item.data.name) ? (
+            <ImageUnderstandToolCard key={`t-${item.data.id}`} entry={item.data} />
           ) : (
             <ToolCallCard key={`t-${item.data.id}`} entry={item.data} onOpenFile={onOpenFile} />
           )

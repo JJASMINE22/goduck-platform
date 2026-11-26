@@ -21,3 +21,14 @@ export interface AttachmentCapability {
   allow_file: string[] // 后端白名单派生（mime_utils 单一来源），当前 csv/docx/html/md/pdf/txt/xlsx
   max_size_mb: number
 }
+
+/** mcp image_understand 工具结果的载荷形状（backend/app/mcps/routers/vision.py 契约） */
+export interface ImageUnderstandToolPayload {
+  result: 'ok' | 'error'
+  description?: string // 视觉模型解析描述（markdown 文本）
+  ref?: string // MinIO 内容寻址对象键 runtime/{session}/{sha}.{ext}
+  model?: string
+  message?: string // result=error 时的失败说明
+  image_url?: string // 渲染链接：持久 /api/sessions/{id}/runtime-image/... 或 1h 预签名回落
+  image_url_hint?: string
+}

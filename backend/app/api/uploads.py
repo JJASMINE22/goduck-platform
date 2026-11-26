@@ -1,12 +1,15 @@
 """上传接口 + 附件能力查询（plan §5）。
 
 - POST /sessions/{id}/uploads : multipart 上传，服务端魔数判定 mime，存 MinIO + DB
+- GET  /sessions/{id}/uploads/{upload_id}/preview : 附件缩略图字节
+- GET  /sessions/{id}/runtime-image/{filename} : image_understand 运行期图像字节
 - GET  /sessions/{id}/attachment-capability : 前端控制上传组件可见性
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -17,6 +20,7 @@ from app.models import db as dbmod
 from app.models.schemas import AttachmentCapability, UploadOut
 from app.services.attachment_policy import AttachmentPolicyService
 from app.services.mime_utils import (
+    RUNTIME_IMAGE_EXT_MIME,
     allowed_file_extensions,
     detect_kind,
     detect_mime,
@@ -27,7 +31,16 @@ from app.services.session_service import SessionService
 
 logger = logging.getLogger(__name__)
 
+
 router = APIRouter(prefix="/sessions", tags=["附件管理"])
+
+
+# 运行期图像对象名：内容寻址 {sha256}.{ext}（vision 工具写入契约），
+# 扩展名须在 RUNTIME_IMAGE_EXT_MIME 白名单内（mime 同表取）
+_RUNTIME_IMAGE_NAME_RE = re.compile(r"^[0-9a-f]{64}\.[a-z0-9]+$")
+# 会话段归一（与 vision 工具 _SESSION_KEY_RE 同规则）：thread_id 生成侧恒为
+# thread-<hex>，但创建接口接受自定义 thread_id——两端同归一防前缀漂移
+_THREAD_KEY_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 
 def _appstate(request: Request):
@@ -148,6 +161,46 @@ async def preview_upload(
         raise HTTPException(status_code=404, detail="非图片附件无二进制预览")
     raw = await asyncio.to_thread(st.minio_storage.get_object, upload["bucket_key"])
     return Response(content=raw, media_type=upload["mime"])
+
+
+@router.get("/{session_id}/runtime-image/{filename}")
+async def get_runtime_image(
+    session_id: uuid.UUID,
+    filename: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """运行期图像字节（image_understand 落档产物，内容寻址、长期有效）。
+
+    image_understand 的渲染链接（/api/sessions/{id}/runtime-image/{sha}.{ext}）
+    指向本端点：cookie 鉴权 + 会话归属校验，无过期签名——历史回放与终答内嵌
+    均可用（替代 1h 预签名 URL 的持久形态）。
+
+    - 对象键：runtime/{thread_id}/{filename}（thread_id 经与 vision 工具相同
+      的字符归一，两侧同一字符串）；
+    - 对象名仅放行白名单扩展名（RUNTIME_IMAGE_EXT_MIME），未知扩展 404——
+      同时防任意对象名探测；
+    - 内容寻址（sha256）→ Cache-Control private + max-age 一天（浏览器复取
+      免网络往返；私有防共享缓存留存鉴权内容）。
+    """
+    st = _appstate(request)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    mime = RUNTIME_IMAGE_EXT_MIME.get(ext)
+    if mime is None or not _RUNTIME_IMAGE_NAME_RE.fullmatch(filename):
+        raise HTTPException(status_code=404, detail="image not found")
+    svc = SessionService(st.pool)
+    session = await svc.get(session_id)
+    if session is None or session["user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="image not found")
+    bucket_key = f"runtime/{_THREAD_KEY_RE.sub('_', session['thread_id'])}/{filename}"
+    if not await asyncio.to_thread(st.minio_storage.object_exists, bucket_key):
+        raise HTTPException(status_code=404, detail="image not found")
+    raw = await asyncio.to_thread(st.minio_storage.get_object, bucket_key)
+    return Response(
+        content=raw,
+        media_type=mime,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @router.get("/{session_id}/attachment-capability", response_model=AttachmentCapability)

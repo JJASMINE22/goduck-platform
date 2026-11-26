@@ -53,7 +53,7 @@ class BuildContext:
     # （TTL 语义同上）。plan: jev-kb-rerank-middleware。
     jev_kb_factory: Optional[Callable[[], AgentMiddleware]] = None
     # 知识集卡片（agent 级 kb_ids → {id,name,description}，构建期现查）：
-    # 提示面注入与检索前置门挂载的共用前置（空卡片 = 未绑定，两者均不生效）。
+    # 知识检索纪律提示注入的唯一前置（空卡片 = 未绑定，不注入）。
     kb_cards: Optional[List[dict]] = None
 
 
@@ -207,8 +207,10 @@ def _kb_capability_prompt(
 
     前置：tool_names 持有 {server}__kb_search ∧ 知识集非空（kb_cards，kb_ids
     现查解析的卡片）才注入——空集注入点名反而诱导编造。提示面列出绑定知识
-    库（名称/kb_id/描述），白话提示驱动 LLM 按相关性自主触发；强制兜底在
-    门控面（KbPrerequisiteMiddleware：无检索证据不得直接作答）。
+    库（名称/kb_id/描述），白话提示驱动 LLM 按相关性自主触发；是否检索、
+    检索几次由 agent 自主判断（提示已明示无关问题可直接作答——强制检索
+    回环门已退役：回答结束后重复提醒/强迫无关检索，观感差，见
+    _maybe_append_jev_kb_gate 注释）。
     """
     kb_tool = next((n for n in tool_names if str(n).endswith("__kb_search")), None)
     if not kb_tool or not kb_cards:
@@ -232,29 +234,30 @@ def _kb_capability_prompt(
     )
 
 
-def _maybe_append_kb_gate(
+def _maybe_append_jev_kb_gate(
     agentic_middleware: list,
     ctx: BuildContext,
     cfg_allow_knowledge: bool,
     tool_names: List[str],
 ) -> None:
-    """kb 门控挂载（主代理独占，v2：确定性检索前置门 + 可选 jev 重排门）。
+    """jev kb 重排门挂载（主代理独占，v2）。
 
-    前置门（KbPrerequisiteMiddleware）：allow_knowledge ∧ 持有 {server}__
-    kb_search ∧ 知识集非空（ctx.kb_cards）——无检索证据不得直接作答，
-    100% 触发率的唯一真保障（plan 门控面；纯确定性，不依赖 Jev/提示服从）。
-    jev 重排门（factory 就绪时追加）：高置信无关才滤的保守过滤，与前
-    置门互补（一个保触发、一个保信噪）。置于列表末尾=最内侧（first
-    defined = outermost，ToolErrorHandlingMiddleware 在最外层兜底）。
+    检索触发由系统提示的知识集纪律驱动、agent 自主决定；本门只做检索结果的
+    相关性降噪（高置信无关才滤，JEV_KB_RERANK_ENABLED，默认关），置于列表
+    末尾=最内侧（first defined = outermost，ToolErrorHandlingMiddleware 在
+    最外层兜底）。前置：allow_knowledge ∧ 持有 {server}__kb_search ∧ 知识集
+    非空（ctx.kb_cards）。
+
+    退役注记：KbPrerequisiteMiddleware（无检索证据 → 注入提醒回环强制检索）
+    已删除——终答后最多两轮系统提醒会迫使 agent 对无关问题强行 kb_search
+    并整段重述回答（实测 9 库绑定的机器视觉 agent 被迫检索 GLM-5.4 问题），
+    提示面已含"无关免检"纪律，由 agent 自主决策即可。
     """
     if not cfg_allow_knowledge:
         return
     kb_tool = next((n for n in (tool_names or []) if str(n).endswith("__kb_search")), None)
     if kb_tool is None or not getattr(ctx, "kb_cards", None):
         return
-    from app.core.kb_gate import KbPrerequisiteMiddleware
-
-    agentic_middleware.append(KbPrerequisiteMiddleware(kb_tool))
     factory = getattr(ctx, "jev_kb_factory", None)
     if factory is not None:
         kb_mw = factory()
@@ -390,8 +393,8 @@ def create_agent_recursive(
             )
             if _kb:
                 agent_config["system_prompt"] += _kb
-            # kb 门控挂载与纪律提示同点位同条件（allow_knowledge 主代理独占）
-            _maybe_append_kb_gate(
+            # jev kb 重排门挂载与纪律提示同点位同条件（allow_knowledge 主代理独占）
+            _maybe_append_jev_kb_gate(
                 agentic_middleware, ctx, cfg_allow_knowledge,
                 agent_config.get("tool_names", []),
             )
@@ -538,8 +541,8 @@ def create_agent_dictionary(
         if _kb:
             agent_config["system_prompt"] += _kb
 
-    # kb 门控挂载（主代理；与 recursive 路径同点位同条件）
-    _maybe_append_kb_gate(
+    # jev kb 重排门挂载（主代理；与 recursive 路径同点位同条件）
+    _maybe_append_jev_kb_gate(
         main_middleware, ctx, cfg_allow_knowledge, agent_config.get("tool_names", [])
     )
 
