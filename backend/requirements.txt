@@ -2,7 +2,12 @@
 # 仅运行依赖，不含 dev 依赖。如需可复现的精确锁定版本：
 #   uv pip compile pyproject.toml -o requirements.txt
 fastapi>=0.115
-uvicorn[standard]>=0.30
+# ---- web 运行时栈上界锁定（dev 实测矩阵；漂移即破坏内置 MCP 挂载）----
+# starlette 1.10 / uvicorn 0.54 / mcp 1.30 / adapters 0.3 的自由解析实测使
+# mount("/mcp") + http_app(path="/") 的挂载契约整体失效（POST /mcp 307→404，
+# 子应用任意路径均 404，goduck 自连 Session terminated 判 down）；锁定至
+# 生产实测通过的版本带，升级须重验内置 MCP 自连（握手 list_tools 冒烟）。
+uvicorn[standard]>=0.30,<0.48
 sse-starlette>=2.1
 asyncpg>=0.29
 psycopg[binary]>=3.2
@@ -11,7 +16,11 @@ pydantic>=2.7
 pydantic-settings>=2.3
 langchain>=0.3
 langchain-openai>=0.2
-langchain-mcp-adapters>=0.1
+langchain-mcp-adapters>=0.1,<0.3
+# starlette 经 fastapi 传递，显式声明上界防解析漂移（见上注）
+starlette>=1.0,<1.1
+# mcp SDK 经 fastmcp/adapters 传递，显式声明上界防解析漂移（见上注）
+mcp>=1.20,<1.28
 langgraph>=0.2
 langgraph-checkpoint-postgres>=2.0
 # ---- Jev (TypeSafe System One) 官方 LangChain 集成：shell 守卫传输层。

@@ -5,7 +5,7 @@ description = "Agent orchestration / session / management platform"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
+    "uvicorn[standard]>=0.30,<0.48",
     "sse-starlette>=2.1",
     "asyncpg>=0.29",
     "psycopg[binary]>=3.2",
@@ -14,7 +14,10 @@ dependencies = [
     "pydantic-settings>=2.3",
     "langchain>=0.3",
     "langchain-openai>=0.2",
-    "langchain-mcp-adapters>=0.1",
+    # web 运行时栈上界锁定（见 requirements.txt 同名注）：漂移破坏内置 MCP 挂载
+    "langchain-mcp-adapters>=0.1,<0.3",
+    "starlette>=1.0,<1.1",
+    "mcp>=1.20,<1.28",
     "langgraph>=0.2",
     "langgraph-checkpoint-postgres>=2.0",
     # Jev (TypeSafe System One) 官方 LangChain 集成：shell 守卫传输层
