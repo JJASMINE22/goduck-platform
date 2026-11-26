@@ -84,7 +84,7 @@ class ModelStore:
 
     def __init__(self, pool: AsyncConnectionPool):
         self.pool = pool
-        # model_id (uuid) -> {client, supports_vision, model_type}
+        # model_id (uuid) -> {client, supports_vision, is_default_vision, model_type}
         self._models: dict[uuid.UUID, dict] = {}
         self._started = False
 
@@ -116,6 +116,7 @@ class ModelStore:
                 entry = {
                     "client": client,
                     "supports_vision": row["supports_vision"],
+                    "is_default_vision": row.get("is_default_vision", False),
                     "model_type": row["model_type"],
                     "name": row["name"],
                 }
@@ -136,6 +137,17 @@ class ModelStore:
     def supports_vision(self, model_id: uuid.UUID) -> bool:
         entry = self._models.get(model_id)
         return bool(entry and entry["supports_vision"])
+
+    def default_vision_model(self) -> Optional[uuid.UUID]:
+        """平台默认视觉模型（is_default_vision ∧ supports_vision ∧ enabled 入缓存）。
+
+        供 image_understand 解析链第二级；写路径单默认约束由 ModelService
+        维护，此处多命中时取注册顺序首个（防御性，非故障）。
+        """
+        for mid, entry in self._models.items():
+            if entry.get("is_default_vision") and entry["supports_vision"]:
+                return mid
+        return None
 
     def has(self, model_id: uuid.UUID) -> bool:
         return model_id in self._models

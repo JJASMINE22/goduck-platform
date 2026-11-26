@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.deps import get_appstate, get_current_user
 from app.models.schemas import CronJobCreate, CronJobOut, CronJobUpdate, CronRunOut

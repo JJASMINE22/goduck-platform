@@ -76,5 +76,10 @@ include = ["app*"]
 line-length = 110
 target-version = "py310"
 
+[tool.ruff.lint]
+# 显式锁定历史默认规则集：ruff 0.13+ 起默认集大幅扩张（UP/BLE/S1xx 等），
+# 不锁定会使同一份代码的门禁结果随 ruff 版本漂移。收紧规则请在此显式追加。
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

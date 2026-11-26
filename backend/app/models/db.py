@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS model (
     api_key         TEXT NOT NULL,
     base_url        TEXT,
     supports_vision BOOLEAN NOT NULL DEFAULT false,
+    -- 平台默认视觉模型（image_understand 解析链第二级；写路径单值约束
+    -- 由 service 维护：置 true 时清除其余行）
+    is_default_vision BOOLEAN NOT NULL DEFAULT false,
     temperature     REAL,                                  -- 可空：None=用 provider 默认
     top_p           REAL,                                  -- 可空：None=用 provider 默认
     enable_thinking BOOLEAN,                               -- 三态：NULL=不注入(provider默认)/true=enabled/false=disabled
@@ -397,6 +400,7 @@ _MIGRATIONS = [
     "ALTER TABLE agent ADD COLUMN IF NOT EXISTS vision_model_id UUID",
     "ALTER TABLE agent_config_history ADD COLUMN IF NOT EXISTS model_id UUID",
     "ALTER TABLE agent_config_history ADD COLUMN IF NOT EXISTS vision_model_id UUID",
+    "ALTER TABLE model ADD COLUMN IF NOT EXISTS is_default_vision BOOLEAN NOT NULL DEFAULT false",
     "ALTER TABLE model ADD COLUMN IF NOT EXISTS temperature REAL",
     "ALTER TABLE model ADD COLUMN IF NOT EXISTS top_p REAL",
     "ALTER TABLE model ADD COLUMN IF NOT EXISTS enable_thinking BOOLEAN",
@@ -1443,6 +1447,24 @@ async def delete_mcp_server(pool: AsyncConnectionPool, server_id: uuid.UUID) -> 
             return cur.rowcount > 0
 
 
+async def seed_builtin_mcp_server(
+    pool: AsyncConnectionPool, name: str, config_json: dict
+) -> bool:
+    """幂等播种内置 MCP 行（ON CONFLICT DO NOTHING，绝不覆写用户修改）。
+
+    返回是否新播种。已存在（含用户改过配置）原样保留——改 URL/关行都是
+    用户的明确意图，重启不得回写。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO mcp_server (name, kind, config_json, enabled) "
+                "VALUES (%s, 'http', %s, true) ON CONFLICT (name) DO NOTHING",
+                (name, Json(config_json)),
+            )
+            return cur.rowcount > 0
+
+
 # ============================ Upload ops ==================================
 
 async def insert_upload(
@@ -1869,7 +1891,8 @@ async def delete_kb_document(pool: AsyncConnectionPool, doc_id: uuid.UUID) -> bo
 
 _MODEL_COLUMNS = (
     "id, name, provider_kind, model_type, base_url, supports_vision, "
-    "temperature, top_p, enable_thinking, enabled, created_at, updated_at"
+    "is_default_vision, temperature, top_p, enable_thinking, enabled, "
+    "created_at, updated_at"
 )
 
 
@@ -1885,6 +1908,7 @@ async def insert_model(
     top_p: Optional[float],
     enable_thinking: Optional[bool],
     enabled: bool,
+    is_default_vision: bool = False,
 ) -> dict:
     """Insert a registered model definition. api_key stored at the row level."""
     async with pool.connection() as conn:
@@ -1892,17 +1916,31 @@ async def insert_model(
             try:
                 await cur.execute(
                     f"INSERT INTO model (name, provider_kind, model_type, api_key, base_url, "
-                    f"supports_vision, temperature, top_p, enable_thinking, enabled) "
-                    f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    f"supports_vision, temperature, top_p, enable_thinking, enabled, "
+                    f"is_default_vision) "
+                    f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                     f"RETURNING {_MODEL_COLUMNS}",
                     (name, provider_kind, model_type, api_key, base_url, supports_vision,
-                     temperature, top_p, enable_thinking, enabled),
+                     temperature, top_p, enable_thinking, enabled, is_default_vision),
                 )
                 row = await cur.fetchone()
             except UniqueViolation:
                 # 并发兜底：service 预检通过后、INSERT 落地前的同名竞态 → 归一 409
                 raise FileExistsError(name)
     return row
+
+
+async def clear_other_default_vision(
+    pool: AsyncConnectionPool, keep_model_id: uuid.UUID
+) -> None:
+    """单默认约束：置默认时清除其余行的 is_default_vision（写路径调用）。"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE model SET is_default_vision = false, updated_at = now() "
+                "WHERE is_default_vision AND id <> %s",
+                (keep_model_id,),
+            )
 
 
 async def update_model(
@@ -1919,6 +1957,7 @@ async def update_model(
     top_p: Optional[float],
     enable_thinking: Optional[bool],
     enabled: bool,
+    is_default_vision: bool = False,
 ) -> Optional[dict]:
     """Update a registered model's mutable fields. model_id (PK) never changes.
 
@@ -1929,7 +1968,7 @@ async def update_model(
         async with conn.cursor(row_factory=dict_row) as cur:
             params = (
                 [name, provider_kind, model_type, base_url, supports_vision,
-                 temperature, top_p, enable_thinking, enabled]
+                 temperature, top_p, enable_thinking, enabled, is_default_vision]
                 + ([api_key] if api_key is not None else [])
                 + [model_id]
             )
@@ -1937,7 +1976,8 @@ async def update_model(
                 await cur.execute(
                     f"UPDATE model SET name = %s, provider_kind = %s, model_type = %s, "
                     f"base_url = %s, supports_vision = %s, temperature = %s, top_p = %s, "
-                    f"enable_thinking = %s, enabled = %s, {set_api_key}, "
+                    f"enable_thinking = %s, enabled = %s, is_default_vision = %s, "
+                    f"{set_api_key}, "
                     f"updated_at = now() WHERE id = %s RETURNING {_MODEL_COLUMNS}",
                     tuple(params),
                 )

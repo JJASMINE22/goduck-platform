@@ -69,6 +69,7 @@ async def create_model(
             top_p=body.top_p,
             enable_thinking=body.enable_thinking,
             enabled=body.enabled,
+            is_default_vision=body.is_default_vision,
         )
     except FileExistsError:
         raise HTTPException(status_code=409, detail=f"模型名 '{body.name}' 已存在")
@@ -100,6 +101,7 @@ async def update_model(
             top_p=body.top_p,
             enable_thinking=body.enable_thinking,
             enabled=body.enabled,
+            is_default_vision=body.is_default_vision,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="model not found")

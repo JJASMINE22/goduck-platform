@@ -6,8 +6,9 @@ Depends, no module-level mutable singletons (plan §11.3.4).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import Depends, FastAPI
 
@@ -16,6 +17,38 @@ from app.deps import AppState
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("goduck")
+
+
+async def _converge_builtin_mcp(st: AppState, settings) -> None:
+    """内置 MCP 自连接收敛（plan W4：loopback 互等死锁规避）。
+
+    eager startup 跑在 lifespan 内、uvicorn 此时尚未绑端口 → builtin 回环
+    连接被拒（快速失败、标记 down，非互等挂死）。serve 就绪后重连一次 +
+    失效全部缓存图（warmup 期构建的图缺 goduck__* 工具；不失效则要等
+    registry TTL 自愈）。收敛失败仅损失收敛速度（TTL 兜底），绝不阻断。
+    """
+    import httpx
+
+    base = f"http://127.0.0.1:{settings.app_port}"
+    try:
+        async with httpx.AsyncClient() as cli:
+            for _ in range(60):
+                try:
+                    if (await cli.get(f"{base}/health", timeout=1.0)).status_code == 200:
+                        break
+                except Exception:  # noqa: BLE001 — 未就绪继续轮询
+                    pass
+                await asyncio.sleep(1.0)
+            else:
+                logger.warning("builtin MCP 收敛放弃：/health 60s 未就绪（等待 TTL 自愈）")
+                return
+        await st.mcp_lifecycle.refresh()
+        st.agent_registry.invalidate()
+        logger.info("builtin MCP 已收敛（goduck__* 工具就绪，agent 缓存已失效）")
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.warning("builtin MCP 收敛失败（TTL 自愈兜底）", exc_info=True)
 
 
 @asynccontextmanager
@@ -33,6 +66,21 @@ async def lifespan(app: FastAPI):
     st = AppState(settings)
     # 1. infra: pool + checkpointer + store + business tables
     await st.startup()
+
+    # 1a. 内置 MCP 行幂等播种（业务表就绪后、eager 连接前；ON CONFLICT 不
+    #     覆写用户修改）。inject_ctx = _gd_ctx 行级可信门（两级过滤第一级）。
+    from app.models import db as dbmod
+
+    builtin_url = settings.builtin_mcp_url or f"http://127.0.0.1:{settings.app_port}/mcp"
+    if await dbmod.seed_builtin_mcp_server(
+        st.pool,
+        settings.builtin_mcp_name,
+        {"url": builtin_url, "inject_ctx": True, "stdout_guard": False},
+    ):
+        logger.info(
+            "builtin MCP 行已播种（name=%s url=%s）", settings.builtin_mcp_name, builtin_url
+        )
+
     # 2. MCP lifecycle (connect DB-registered servers, prewarm tools)
     from app.services.mcp_lifecycle import MCPLifecycle
 
@@ -93,7 +141,6 @@ async def lifespan(app: FastAPI):
     await st.run_manager.start()
 
     # 5b. QueueService（会话排队发送，plan: queued-send-messages）
-    from app.models import db as dbmod
     from app.services.queue_service import QueueService
 
     st.queue_service = QueueService(st)
@@ -131,7 +178,6 @@ async def lifespan(app: FastAPI):
 
     # 8. Knowledge base (RAG) — 仅 kb_enabled=true 时装配（入库/管理写路径）
     if settings.kb_enabled:
-        from app.models import db as dbmod
         from app.services.embedding_store import EmbeddingStore
         from app.services.ingest_pool import IngestPool
         from app.services.knowledge_service import KnowledgeService
@@ -222,8 +268,27 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("cron scheduler disabled (cron_enabled=false)")
 
+    # 11. 内置 FastMCP（backend 同进程 MCP 服务端，plan W3/W4）：
+    #     挂载 /mcp + AppState 绑定 + 子应用 lifespan 串联 + 自连接收敛。
+    #     FastMCP 的 StreamableHTTPSessionManager 要求父应用执行其 lifespan，
+    #     否则请求期 "Task group is not initialized"；退出顺序：session
+    #     manager 先收（栈展开），AppState 后收（既有逆序清理段）。
+    from app.mcps.bind import mcps_bind
+    from app.mcps.core.server import build_mcp_http_app
+
+    mcp_app = build_mcp_http_app()
+    app.mount("/mcp", mcp_app)
+    mcps_bind(st)
+
     logger.info("goduck-platform started")
-    yield
+    converge_task = asyncio.create_task(_converge_builtin_mcp(st, settings))
+    try:
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(mcp_app.lifespan(app))
+            yield
+    finally:
+        # 收敛任务先停（可能在轮询/重连中），再收 session manager（栈展开）
+        converge_task.cancel()
     # shutdown: reverse-order cleanup — 调度器最先停（不再派发新运行），
     # 队列续排随之停止，随后 RunManager 取消在飞回合，再拆基础设施。
     if st.cron_scheduler is not None:

@@ -86,6 +86,21 @@ class Settings(BaseSettings):
             "~44s）会把整轮 refresh 乃至保存接口拖到分钟级。"
         ),
     )
+    # ---- 内置 MCP（backend 进程内挂 FastMCP，plan: vision-mcp-gdctx-knowledge W4）----
+    builtin_mcp_name: str = Field(
+        default="goduck",
+        description=(
+            "内置 MCP server 注册名（工具命名空间前缀，如 goduck__kb_search）。"
+            "幂等播种进 mcp_server 表；改名会使既有智能体工具引用失效，慎动。"
+        ),
+    )
+    builtin_mcp_url: str = Field(
+        default="",
+        description=(
+            "内置 MCP 端点 URL。空 = 自动推导 http://127.0.0.1:{APP_PORT}/mcp"
+            "（本地开发）；容器部署须显式指向服务名 http://backend:8000/mcp。"
+        ),
+    )
 
     # ---- MinIO (附件字节持久层) ----
     minio_endpoint: str = "localhost:9000"

@@ -467,11 +467,11 @@ async def get_knowledge_capability(
     agent_id: Optional[uuid.UUID] = Query(default=None, description="当前选中智能体；缺省回落 last_agent_id"),
     user: dict = Depends(get_current_user),
 ):
-    """前端据此渲染会话框 KB 选择器（DESIGN 准则 F2 能力驱动 UI）。
+    """前端据此渲染会话框「知识增强」徽标（DESIGN 准则 F2 能力驱动 UI）。
 
-    allow_knowledge = 智能体配置允许 AND 全局 KB 能力已启用（kb_enabled）。
-    kb_enabled=false 时直接 false（不查 agent 配置）。解析落空（未选/悬空/
-    选择失效）→ 全关降级（capability_agent_row，§4.4）。
+    kb v2：知识集为 agent 配置项——能力位 = allow_knowledge ∧ kb_ids 非空
+    （空集无以检索，不显示徽标）。会话级 KB 选择器已退役；会话锚点
+    API 路径保留休眠（可逆）。
     """
     from app.services.session_service import SessionService
 
@@ -484,7 +484,8 @@ async def get_knowledge_capability(
     if st.knowledge_service is not None:  # kb_enabled
         agent_row = await capability_agent_row(st, session, agent_id)
         if agent_row is not None:
-            allow = AgentConfig.model_validate(agent_row["config_json"]).allow_knowledge
+            cfg = AgentConfig.model_validate(agent_row["config_json"])
+            allow = cfg.allow_knowledge and bool(cfg.kb_ids)
     return KnowledgeCapability(allow_knowledge=allow)
 
 

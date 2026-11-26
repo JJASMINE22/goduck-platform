@@ -82,6 +82,8 @@ class MCPLifecycle:
         self._tools: list[BaseTool] = []
         self._per_server_tools: dict[str, list[BaseTool]] = {}
         self._per_server_status: dict[str, dict] = {}  # name -> {status, tool_count, kind}
+        # 声明 config_json.inject_ctx=true 的 server 名集合（_gd_ctx 行级可信门）
+        self._ctx_inject_servers: frozenset[str] = frozenset()
         self._lock = asyncio.Lock()
         self._started = False
         self._bg_tasks: set[asyncio.Task] = set()
@@ -119,8 +121,20 @@ class MCPLifecycle:
             # langchain-mcp-adapters SDK 仅识别 "streamable_http"（非 "http"）。
             # 项目内 FastMCP 的 transport="http" 即 streamable HTTP，故两者都映射到它。
             url = cfg.get("url", "")
-            _validate_http_url(url, allow_loopback=self.settings.mcp_allow_loopback)
-            return {name: {"transport": "streamable_http", **cfg}}
+            # 内置 server 由平台播种（回环端点可信），不受 SSRF 回环开关约束——
+            # 关闭回环的部署仍能自连接；其余 http server 走统一守卫。
+            allow_loopback = (
+                name == self.settings.builtin_mcp_name
+                or self.settings.mcp_allow_loopback
+            )
+            _validate_http_url(url, allow_loopback=allow_loopback)
+            # 连接参数白名单：config_json 允许混有行级治理位（inject_ctx /
+            # stdout_guard），仅透传 SDK 认识的键——未知键会被
+            # _create_streamable_http_session(**params) 以 TypeError 拒绝
+            conn = {"transport": "streamable_http", "url": url}
+            if isinstance(cfg.get("headers"), dict):
+                conn["headers"] = cfg["headers"]
+            return {name: conn}
         raise ValueError(f"未知 MCP server kind: {kind}")
 
     @staticmethod
@@ -168,6 +182,10 @@ class MCPLifecycle:
         """
         async with self._lock:
             rows = await self._load_server_rows()
+            # 行级可信门快照：声明 inject_ctx 的 server（构图期两级过滤的第一级）
+            self._ctx_inject_servers = frozenset(
+                r["name"] for r in rows if (r["config_json"] or {}).get("inject_ctx")
+            )
             tasks = {r["name"]: self._connect_one(r) for r in rows}
             results = await asyncio.gather(*tasks.values(), return_exceptions=True)
             self._per_server_tools.clear()
@@ -225,6 +243,13 @@ class MCPLifecycle:
     def namespaced_name(self, server_name: str, tool_name: str) -> str:
         return f"{server_name}{TOOL_SEP}{tool_name}"
 
+    def ctx_inject_servers(self) -> frozenset[str]:
+        """声明 inject_ctx 的 server 名集合（agent_registry 两级过滤第一级）。
+
+        值随 refresh 快照（与工具列表同生命周期）：CRUD 后台重连完成即生效。
+        """
+        return self._ctx_inject_servers
+
     async def _connect_one(self, row: dict) -> list[BaseTool]:
         """Connect a single MCP server independently (fault-isolated, timed)."""
         sub_config = self._build_sub_config(row)
@@ -275,5 +300,6 @@ class MCPLifecycle:
         self._tools = []
         self._per_server_tools = {}
         self._per_server_status = {}
+        self._ctx_inject_servers = frozenset()
         self._started = False
         logger.info("MCPLifecycle shut down")

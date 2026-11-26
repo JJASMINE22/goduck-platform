@@ -1,7 +1,10 @@
-/* 聊天输入 composer（AI Studio 风）—— 单一圆角容器，把附件/知识库/语音入口收敛为左下角图标按钮
+/* 聊天输入 composer（AI Studio 风）—— 单一圆角容器，把附件/语音入口收敛为左下角图标按钮
     （Tooltip + 点击打开选择器），已选项以 chip 嵌在容器内。
     发送仅在 status==='idle' 启用；streaming/interrupted 时由消息流/HITL 卡处理。
-    附件图标、知识库图标与麦克风（长按说话）各自独立成入口（准则 F2 能力驱动 UI：未开启时不显示）。
+    附件图标与麦克风（长按说话）各自独立成入口（准则 F2 能力驱动 UI：未开启时不显示）。
+    知识增强徽标（kb v2）：知识集已升格为智能体配置项（agent 级 kb_ids），会话级
+    KB 选择器退役——本入口退化为只读徽标（BookOpen，能力位 = allow_knowledge ∧
+    kb_ids 非空），检索由智能体自主触发；会话锚点 API 路径后端休眠保留（可逆）。
     附件三入口共用 useAttachFiles 编排：选择器（可多选）/ 输入框 Ctrl+V 粘贴（截图、复制的
     图片或文件）；上传未返回时渲染 pending chip（图片本地 objectURL 即时缩略 + spinner，
     失败留驻可点重试），全部落定前发送门关闭（快照发生在点击瞬间，防止漏挂在途文件）。
@@ -11,7 +14,7 @@
     ListChecks 图标开关，发送后随回合折叠清空。能力驱动（准则 F2）：仅当当前智能体
     启用按需 rubric（rubric-capability）时显示——未启用时没有中间件消费该字段，
     常驻模式的准则已写死。 */
-import { Button, Checkbox, Flex, Input, Popover, Select, Tooltip, Typography, Upload } from 'antd'
+import { Button, Flex, Input, Select, Tooltip, Typography, Upload } from 'antd'
 import { type ReactNode, useRef, useState } from 'react'
 import {
   AlertCircle,
@@ -28,13 +31,13 @@ import {
   X,
 } from 'lucide-react'
 import { useAttachmentCapability, useAttachFiles } from '@/hooks/useUploads'
-import { useKnowledgeBases, useKnowledgeCapability } from '@/hooks/useKnowledge'
+import { useKnowledgeCapability } from '@/hooks/useKnowledge'
 import { useRubricCapability } from '@/hooks/useRubric'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { uploadsApi } from '@/api/uploads'
 import { useChatStore, type PendingAttachment } from '@/store/chatStore'
 import { DisplayModeToggle } from './DisplayModeToggle'
-import type { ChatStreamStatus, KnowledgeBaseOut, UUID } from '@/types'
+import type { ChatStreamStatus, UUID } from '@/types'
 import type { SendOptions } from '@/hooks/useStreamChat'
 import type { UseVoiceInput } from '@/hooks/useVoiceInput'
 
@@ -118,7 +121,6 @@ export function ChatInput({
   const setDraft = useChatStore((s) => s.setDraft)
   const [rubric, setRubric] = useState('')
   const [showRubric, setShowRubric] = useState(false)
-  const [kbOpen, setKbOpen] = useState(false)
   // 智能体下拉展开态：展开时强制隐藏外层 Tooltip——composer 钉在页面底部，
   // 下拉向上弹出恰与 placement="top" 的提示浮窗同域重叠（Tooltip 层级 1060 >
   // 下拉 1050，覆盖列表项、抢占点击），"提示与列表同时显示"导致无法选中。
@@ -133,12 +135,8 @@ export function ChatInput({
   const pendingAttachments = useChatStore((s) => s.pendingAttachments)
   const removePending = useChatStore((s) => s.removePending)
 
-  // —— 知识库（同上：能力随选中智能体） ——
+  // —— 知识增强徽标（kb v2：能力随选中智能体 = allow_knowledge ∧ kb_ids 非空） ——
   const kbCap = useKnowledgeCapability(sessionId, selectedAgentId)
-  const { data: kbs, isLoading: kbsLoading } = useKnowledgeBases()
-  const selectedKbs = useChatStore((s) => s.selectedKbs)
-  const addKb = useChatStore((s) => s.addKb)
-  const removeKb = useChatStore((s) => s.removeKb)
 
   // —— rubric（能力随选中智能体）：仅"启用 rubric 且按需模式"的智能体显示入口。
   //    未启用时填了也没有中间件消费（静默丢弃），常驻模式准则已写死——后端发送
@@ -170,7 +168,9 @@ export function ChatInput({
     taRef.current?.focus()
   }
   const canAttach = !!cap.data?.allow_attachments
-  const canUseKb = !!kbCap.data?.allow_knowledge
+  // kb v2：能力位 = allow_knowledge ∧ agent 级 kb_ids 非空（后端同谓词下发），
+  // 入口为只读徽标（选择器退役，检索由智能体自主触发）
+  const kbEnhanced = !!kbCap.data?.allow_knowledge
   // 能力未返回（加载中 / 切换智能体的重拉窗口）按 false 处理：入口先隐藏，宁缺勿滥
   const canUseRubric = !!rubricCap.data?.allow_rubric
   // 智能体选择门（§4.4 空会话）：未选择且无 last_agent_id 时能力端点全关降级，
@@ -179,14 +179,6 @@ export function ChatInput({
   // 麦克风闸门（与 press() 内部守卫同源）：连接就绪 + 会话空闲 + 无进行中的语音回合
   // + 已选智能体（语音回合同走 send 写者解析，空会话无 last 可回落）
   const micDisabled = !voice.ready || voiceState !== 'idle' || status !== 'idle' || !hasAgent
-
-  const toggleKb = (kb: KnowledgeBaseOut) => {
-    if (selectedKbs.some((k) => k.id === kb.id)) {
-      removeKb(kb.id)
-    } else {
-      addKb(kb)
-    }
-  }
 
   const accept = canAttach
     ? [cap.data!.allow_image ? 'image/*' : null, ...cap.data!.allow_file.map((f) => `.${f}`)]
@@ -236,54 +228,12 @@ export function ChatInput({
     }
   }
 
-  const kbPopoverContent = (
-    <div style={{ minWidth: 240, maxWidth: 300 }}>
-      {kbsLoading ? (
-        <Typography.Text type="secondary">加载中…</Typography.Text>
-      ) : !kbs?.length ? (
-        <Typography.Text type="secondary">暂无知识库，请先在知识库页面创建</Typography.Text>
-      ) : (
-        <Flex vertical gap={2}>
-          {kbs.map((kb) => {
-            const checked = selectedKbs.some((k) => k.id === kb.id)
-            return (
-              <div key={kb.id} className="kb-option" onClick={() => toggleKb(kb)}>
-                <Checkbox checked={checked} style={{ pointerEvents: 'none' }} />
-                <span className="kb-option__name" title={kb.description ?? kb.name}>
-                  {kb.name}
-                </span>
-                {kb.chunk_count ? (
-                  <span className="kb-option__meta">{kb.chunk_count} 片段</span>
-                ) : null}
-              </div>
-            )
-          })}
-        </Flex>
-      )}
-    </div>
-  )
-
   return (
     <div className="chat-composer" onPointerDown={focusComposer}>
-      {/* 已选附件（pending 占位 + 已完成）+ 知识库（chip 嵌在 composer 内） */}
-      {attachments.length || pendingAttachments.length || selectedKbs.length ? (
+      {/* 已选附件（pending 占位 + 已完成）chip 嵌在 composer 内；kb chip 已随
+          会话级选择器退役（知识集为 agent 配置项，见文件头注释） */}
+      {attachments.length || pendingAttachments.length ? (
         <Flex gap={8} wrap className="chat-composer__chips">
-          {selectedKbs.map((kb) => (
-            <div key={kb.id} className="kb-chip">
-              <BookOpen size={14} />
-              <span className="kb-chip__name" title={kb.name}>
-                {kb.name}
-              </span>
-              <button
-                type="button"
-                className="kb-chip__close"
-                title="移除"
-                onClick={() => removeKb(kb.id)}
-              >
-                <X size={13} />
-              </button>
-            </div>
-          ))}
           {pendingAttachments.map((p) => (
             <PendingChip key={p.localId} p={p} onRemove={removePending} onRetry={retry} />
           ))}
@@ -422,25 +372,17 @@ export function ChatInput({
               </Tooltip>
             </Upload>
           ) : null}
-          {canUseKb ? (
-            <Popover
-              trigger="click"
-              placement="topLeft"
-              open={kbOpen}
-              onOpenChange={setKbOpen}
-              content={kbPopoverContent}
-            >
-              <Tooltip title="选择知识库" placement="top">
-                <Button
-                  type="text"
-                  shape="circle"
-                  size="middle"
-                  icon={<BookOpen size={16} />}
-                  disabled={!canSend}
-                  style={selectedKbs.length ? { color: 'var(--color-primary)' } : undefined}
-                />
-              </Tooltip>
-            </Popover>
+          {kbEnhanced ? (
+            <Tooltip title="知识增强：本智能体已绑定知识库，相关提问将自动检索" placement="top">
+              <Button
+                type="text"
+                shape="circle"
+                size="middle"
+                icon={<BookOpen size={16} />}
+                disabled={!canSend}
+                style={{ color: 'var(--color-primary)' }}
+              />
+            </Tooltip>
           ) : null}
           {voiceEnabled ? (
             <Tooltip

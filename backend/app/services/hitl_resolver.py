@@ -9,7 +9,6 @@ Resume contract (plan §11.1):
 """
 from __future__ import annotations
 
-import uuid
 from typing import Optional
 
 from langgraph.graph.state import CompiledStateGraph

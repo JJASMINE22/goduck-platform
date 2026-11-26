@@ -25,7 +25,7 @@ from app.core.graph_utils import BuildContext, create_agent_recursive
 from app.core.schema_utils import AgentConfig
 from app.models import db as dbmod
 from app.services.jev_client import JevAuditSink
-from app.services.mcp_lifecycle import MCPLifecycle
+from app.services.mcp_lifecycle import MCPLifecycle, TOOL_SEP
 from app.services.model_store import ModelStore
 
 logger = logging.getLogger(__name__)
@@ -130,6 +130,7 @@ class AgentRegistry:
         model,
         agent_id: Optional[uuid.UUID] = None,
         allow_pkgs: frozenset[str] = frozenset(),
+        kb_cards: Optional[list] = None,
     ) -> BuildContext:
         s = self.settings
         return BuildContext(
@@ -144,6 +145,7 @@ class AgentRegistry:
             jev_gate_factory=self._jev_gate_factory(agent_id, allow_pkgs) if agent_id else None,
             jev_rubric_factory=self._jev_rubric_factory(agent_id) if agent_id else None,
             jev_kb_factory=self._jev_kb_factory(agent_id) if agent_id else None,
+            kb_cards=kb_cards,
         )
 
     async def get_or_build(self, agent_id: uuid.UUID) -> CompiledStateGraph:
@@ -164,6 +166,62 @@ class AgentRegistry:
             self._evict()
             return agent
 
+    def _wrap_ctx_tools(self, tools: list, agent_id: uuid.UUID) -> list:
+        """_gd_ctx 注入包装（两级门：server 行 inject_ctx ∧ 工具 schema 声明）。
+
+        copy-on-wrap：原池对象不动（`_rename_tool` 同款语义），各图持独立
+        wrapper 实例（闭包烘焙 agent_id）；wrapper 保留 namespaced 名，三处
+        按名筛选点（graph_utils dicted/compiled/dictionary）自动继承包装
+        副本，graph_utils 零改动。
+        """
+        prefixes = tuple(
+            f"{name}{TOOL_SEP}" for name in self.mcp.ctx_inject_servers()
+        )
+        if not prefixes:
+            return tools
+        from app.mcps.gd_ctx import inject_gd_ctx, needs_ctx
+
+        wrapped, hits = [], 0
+        for t in tools:
+            if needs_ctx(t) and str(t.name).startswith(prefixes):
+                try:
+                    wrapped.append(inject_gd_ctx(t, str(agent_id)))
+                    hits += 1
+                except Exception:  # noqa: BLE001 — 包装失败退回原工具并告警（构建绝不因包装中断）
+                    logger.warning("gd_ctx wrap failed tool=%s（退回原工具）", t.name, exc_info=True)
+                    wrapped.append(t)
+            else:
+                wrapped.append(t)
+        if hits:
+            logger.info("gd_ctx wrapped %d tool(s) for agent %s", hits, agent_id)
+        return wrapped
+
+    async def _kb_cards(self, kb_ids: list) -> list:
+        """知识集卡片（id/name/description，构建期提示面注入用）。
+
+        现查不快照（与能力派生同哲学）：悬空 id（KB 已删）静默滤除并告警，
+        绝不因数据源故障而构建失败。查询失败回落空卡片（提示面退化为无名单）。
+        """
+        if not kb_ids:
+            return []
+        try:
+            rows = await dbmod.get_kbs_by_ids(self.pool, [uuid.UUID(k) for k in kb_ids])
+        except Exception:  # noqa: BLE001
+            logger.warning("kb_cards resolve failed (empty fallback)", exc_info=True)
+            return []
+        found = {str(r["id"]): r for r in rows}
+        missing = [k for k in kb_ids if k not in found]
+        if missing:
+            logger.warning("agent kb_ids 悬空（已删除？）：%s", missing)
+        return [
+            {
+                "id": str(r["id"]),
+                "name": r["name"],
+                "description": (r.get("description") or "").strip(),
+            }
+            for r in (found[k] for k in kb_ids if k in found)
+        ]
+
     async def _build(self, agent_id: uuid.UUID) -> CompiledStateGraph:
         agent_row = await dbmod.get_agent(self.pool, agent_id)
         if agent_row is None:
@@ -177,15 +235,17 @@ class AgentRegistry:
         model = self.model_store.get(model_id)
 
         # tools are 100% MCP-driven (namespaced); no local tools (plan §5)
-        all_tools = list(await self.mcp.get_tools())
+        # _gd_ctx 包装先于图组装：各筛选点拿到的即已剥 schema 的副本
+        all_tools = self._wrap_ctx_tools(list(await self.mcp.get_tools()), agent_id)
         middleware = [ToolErrorHandlingMiddleware()]
 
         allow_pkgs = await self._shell_allow_pkgs()
+        kb_cards = await self._kb_cards(agent_config.kb_ids or [])
         agent = create_agent_recursive(
             agent_config,
             all_tools,
             middleware=middleware,
-            ctx=self._ctx(model, agent_id=agent_id, allow_pkgs=allow_pkgs),
+            ctx=self._ctx(model, agent_id=agent_id, allow_pkgs=allow_pkgs, kb_cards=kb_cards),
         )
         logger.info("built agent '%s' (id=%s)", agent_row["name"], agent_id)
         return agent

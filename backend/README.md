@@ -85,7 +85,7 @@ backend/
 │   │   ├── db.py            #   psycopg3 直连：15 张业务表 DDL + CRUD
 │   │   └── schemas.py       #   pydantic 请求/响应模型（边界校验）
 │   ├── tools/rubric_tools.py#   rubric grader 内部取证工具（仅挂 RubricMiddleware）
-│   └── mcps/                #   内置 UnifiedGateway 网关 + mcp_services/ + stdio_guard 守卫
+│   └── mcps/                #   内置 goduck MCP 服务（FastMCP 挂载 /mcp + gd_ctx 契约 + routers）+ stdio_guard 守卫
 │
 ├── agent_confs/default.yaml # 种子智能体（网关 + researcher/analyzer/artist 子智能体）
 ├── data/skills/             # 技能池种子（本地目录，见“技能目录约定”；镜像构建时烘焙进 /data/skills）
@@ -178,7 +178,7 @@ python -m app.main          # 或 uvicorn app.main:app --reload
 ```
 
 - LLM 与 MCP server 均不在 `.env` 里 —— 模型通过 `/models`、MCP 通过 `/mcp/servers` 运行时注册。
-- 内置 UnifiedGateway 网关（可选）：`python -m app.mcps.mcp_server`（127.0.0.1:8088/mcp）。
+- 内置 MCP 服务 `goduck`：kb_search / image_understand 挂载于本进程 `/mcp`（FastMCP），启动时幂等播种 DB 行自动注册；工具身份经 `_gd_ctx` 通道注入（见 `app/mcps/gd_ctx.py`）。
 - 种子智能体（可选）：`python -m app.seed agent_confs/default.yaml --name "Default Gateway" --creator admin`。
 
 <a id="api"></a>

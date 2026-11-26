@@ -37,6 +37,7 @@ interface FormValues {
   top_p?: number | null
   enable_thinking: boolean | null
   enabled: boolean
+  is_default_vision?: boolean
 }
 
 const emptyForm: FormValues = {
@@ -50,6 +51,7 @@ const emptyForm: FormValues = {
   top_p: null,
   enable_thinking: null,
   enabled: true,
+  is_default_vision: false,
 }
 
 /* 参数区行式布局（现代 LLM 配置面板风格）：label 定宽列、控件紧随其后
@@ -97,6 +99,7 @@ export function ModelsPage(): ReactNode {
       top_p: record.top_p ?? null,
       enable_thinking: record.enable_thinking,
       enabled: record.enabled,
+      is_default_vision: record.is_default_vision ?? false,
     })
     setOpen(true)
   }
@@ -186,9 +189,17 @@ export function ModelsPage(): ReactNode {
       title: '视觉',
       dataIndex: 'supports_vision',
       key: 'supports_vision',
-      width: 90,
+      width: 110,
       align: 'center',
-      render: (v: boolean) => (v ? <Tag color="blue">支持</Tag> : <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>),
+      render: (v: boolean, record) =>
+        v ? (
+          <Flex gap={4} justify="center" wrap>
+            <Tag color="blue">支持</Tag>
+            {record.is_default_vision ? <Tag color="gold">默认</Tag> : null}
+          </Flex>
+        ) : (
+          <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>
+        ),
     },
     {
       title: '思考',
@@ -371,6 +382,23 @@ export function ModelsPage(): ReactNode {
           </Form.Item>
           <Form.Item {...paramRow} name="supports_vision" label="视觉支持" valuePropName="checked">
             <Switch />
+          </Form.Item>
+          {/* 平台默认视觉模型（kb/vision 解析链第二级）：仅视觉模型可设；全平台
+              至多一个（置 true 后端自动清除其余行） */}
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.supports_vision !== cur.supports_vision}>
+            {({ getFieldValue }) =>
+              getFieldValue('supports_vision') ? (
+                <Form.Item
+                  {...paramRow}
+                  name="is_default_vision"
+                  label="默认视觉"
+                  valuePropName="checked"
+                  tooltip="智能体无下挂视觉模型时，图像理解工具回落到本模型（全平台至多一个）"
+                >
+                  <Switch />
+                </Form.Item>
+              ) : null
+            }
           </Form.Item>
           <Form.Item {...paramRow} name="enabled" label="启用" valuePropName="checked" style={{ marginBottom: 0 }}>
             <Switch />

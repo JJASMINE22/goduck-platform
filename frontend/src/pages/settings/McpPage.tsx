@@ -44,7 +44,9 @@ interface FormValues {
 }
 
 const templates: Record<McpKind, string> = {
-  http: JSON.stringify({ url: 'http://127.0.0.1:8088/mcp' }, null, 2),
+  // 平台内置服务 goduck（/mcp 同进程挂载，kb_search / image_understand）已
+  // 自动注册，此处模板仅供第三方 http server 参考
+  http: JSON.stringify({ url: 'https://example.com/mcp' }, null, 2),
   streamable_http: JSON.stringify(
     {
       url: 'https://connect.patsnap.com/mcp/patsnap-search?apikey=YOUR_PATSNAP_API_KEY',
@@ -274,9 +276,9 @@ export function McpPage(): ReactNode {
   const busy = createServer.isPending || updateServer.isPending
 
   return (
-    <PageContainer
-      title="MCP 服务列表"
-      subtitle="工具全 MCP 化；按 {server}__{tool} 命名防跨服务冲突"
+      <PageContainer
+        title="MCP 服务列表"
+        subtitle="工具全 MCP 化；按 {server}__{tool} 命名防跨服务冲突。内置服务 goduck（kb_search / image_understand）随平台自动注册"
       extra={
         isManager ? (
           <Space>

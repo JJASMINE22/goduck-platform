@@ -20,6 +20,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 
 from app.deps import get_appstate, require_manager
+from app.models import db as dbmod
 from app.models.schemas import (
     KbAnchorCard,
     KbAnchorCardsRequest,
@@ -48,6 +49,29 @@ def _appstate(request: Request):
     if not st.settings.kb_enabled or st.knowledge_service is None:
         raise HTTPException(status_code=503, detail="知识库能力未启用")
     return st
+
+
+def _uses_kb_id(node, kb_id: str) -> bool:
+    """config_json 树中任意层级的 kb_ids 是否引用了该知识库（递归全扫描）。"""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "kb_ids" and isinstance(v, list) and kb_id in v:
+                return True
+            if _uses_kb_id(v, kb_id):
+                return True
+    elif isinstance(node, list):
+        return any(_uses_kb_id(item, kb_id) for item in node)
+    return False
+
+
+async def _agents_referencing_kb(st, kb_id: uuid.UUID) -> list[dict]:
+    """知识集引用该库的智能体（id+name），供删除 409 明细展示。"""
+    target = str(kb_id)
+    hits: list[dict] = []
+    for a in await dbmod.list_agent_configs(st.pool):
+        if _uses_kb_id(a["config_json"], target):
+            hits.append({"id": str(a["id"]), "name": a["name"]})
+    return hits
 
 
 def _service(request: Request):
@@ -112,6 +136,20 @@ async def update_kb(
 async def delete_kb(
     kb_id: uuid.UUID, request: Request, _admin: dict = Depends(require_manager)
 ):
+    # 阻断删除：仍有智能体把该库绑进知识集（kb v2 引用扫描，对齐 /mcp 的
+    # tool_names 409 模式——绝不级联改 agent 配置）。先查后删，删除不可逆。
+    referencing = await _agents_referencing_kb(_appstate(request), kb_id)
+    if referencing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"{len(referencing)} 个智能体的知识集仍引用该知识库，"
+                    "请先在其配置中移除该库"
+                ),
+                "referencing_agents": referencing,
+            },
+        )
     svc = _service(request)
     try:
         await svc.delete_kb(kb_id)

@@ -71,14 +71,17 @@ class ModelService:
         top_p: Optional[float],
         enable_thinking: Optional[bool],
         enabled: bool,
+        is_default_vision: bool = False,
     ) -> dict:
         _ensure_buildable(
             provider_kind, model_type, api_key, base_url,
             temperature=temperature, top_p=top_p, enable_thinking=enable_thinking,
         )
+        if is_default_vision and not supports_vision:
+            raise ValueError("is_default_vision=true 要求 supports_vision=true（默认视觉模型必须能看图）")
         if await dbmod.get_model_by_name(self.pool, name) is not None:
             raise FileExistsError(name)  # router maps -> 409
-        return await dbmod.insert_model(
+        row = await dbmod.insert_model(
             self.pool,
             name=name,
             provider_kind=provider_kind,
@@ -90,7 +93,11 @@ class ModelService:
             top_p=top_p,
             enable_thinking=enable_thinking,
             enabled=enabled,
+            is_default_vision=is_default_vision,
         )
+        if is_default_vision:
+            await dbmod.clear_other_default_vision(self.pool, row["id"])
+        return row
 
     async def update(
         self,
@@ -106,10 +113,13 @@ class ModelService:
         top_p: Optional[float],
         enable_thinking: Optional[bool],
         enabled: bool,
+        is_default_vision: bool = False,
     ) -> dict:
         existing = await dbmod.get_model_public(self.pool, model_id)
         if existing is None:
             raise KeyError(f"model {model_id} not found")  # router maps -> 404
+        if is_default_vision and not supports_vision:
+            raise ValueError("is_default_vision=true 要求 supports_vision=true（默认视觉模型必须能看图）")
         # key rotation path: re-validate constructability with the new key
         if api_key is not None:
             _ensure_buildable(
@@ -121,7 +131,7 @@ class ModelService:
             clash = await dbmod.get_model_by_name(self.pool, name)
             if clash is not None:
                 raise FileExistsError(name)  # router maps -> 409
-        return await dbmod.update_model(
+        row = await dbmod.update_model(
             self.pool,
             model_id,
             name=name,
@@ -134,7 +144,11 @@ class ModelService:
             top_p=top_p,
             enable_thinking=enable_thinking,
             enabled=enabled,
+            is_default_vision=is_default_vision,
         )
+        if is_default_vision:
+            await dbmod.clear_other_default_vision(self.pool, model_id)
+        return row
 
     async def delete(self, model_id: uuid.UUID) -> None:
         """Delete a model. Block (ModelInUseError) if agents still reference it."""

@@ -99,7 +99,7 @@ Nginx 边缘网关（容器部署唯一对外入口 :80；本地开发由 Vite p
                     ├── MinIO             附件与知识库原文字节持久层
                     ├── Elasticsearch     知识库向量 / 全文检索
                     ├── TEI（compose 内置） 向量化（OpenAI 兼容 /v1/embeddings）
-                    ├── MCP servers       stdio / http 工具生态（含本仓库 mcp-servers 网关）
+                    ├── MCP servers       stdio / http 工具生态（内置 goduck 服务同进程挂载 kb_search / image_understand）
                     └── AssemblyAI（外部） 语音输入 Streaming STT（可选）
 ```
 
@@ -118,7 +118,7 @@ Nginx 边缘网关（容器部署唯一对外入口 :80；本地开发由 Vite p
 | 后端 | FastAPI · LangGraph · deepagents · langchain-openai · psycopg3 · MinIO · Elasticsearch · pydantic-settings |
 | 前端 | React 19 · TypeScript · Vite · Ant Design · Zustand · TanStack Query · Mermaid · @xyflow/react · react-hook-form |
 | MCP 生态 | fastmcp · langchain-mcp-adapters · uv/uvx · node/npx（镜像内预热 MCP 包缓存） |
-| 基础设施 | PostgreSQL 16 · MinIO · Elasticsearch 8 · TEI · Nginx（docker-compose 编排 8 服务） |
+| 基础设施 | PostgreSQL 16 · MinIO · Elasticsearch 8 · TEI · Nginx（docker-compose 编排） |
 
 <a id="quickstart"></a>
 
@@ -151,7 +151,7 @@ docker run --rm -e HF_ENDPOINT=https://hf-mirror.com -v "$PWD/volumes/tei:/out" 
 # 3)（可选）在 .env 追加覆盖项（数据根 VOLUMES_ROOT 等，默认 ./volumes）
 vi .env
 
-# 4) 构建并启动全部 8 个服务（postgres / minio / elasticsearch / tei / backend / mcp-servers / frontend / nginx）
+# 4) 构建并启动全部服务（postgres / minio / elasticsearch / tei / laya / backend / frontend / nginx）
 docker compose up -d --build
 
 # 5) 就绪检查：日志出现 "goduck-platform started"
@@ -171,7 +171,7 @@ docker compose logs -f backend
 > - 数据持久化：pg / minio / es 用命名卷；**backend 数据、docling 模型、TEI 模型用宿主机 bind mount**（默认 `./volumes/`，`.env` 的 `VOLUMES_ROOT` 可整体挪位，已 gitignore），重打镜像 / 重建容器不丢，且模型预下后重启不再联网下载。
 > - 嵌入服务（TEI）已内置 compose：默认模型 `Qwen/Qwen3-Embedding-0.6B`，首次启动联网拉模型入卷（一次性），此后离线可用；改用外部 OpenAI 兼容端点：`.env` 覆盖 `EMBEDDING_BASE_URL` 并 `docker compose stop tei`（详见[能力开关 · 知识库](#cap-kb)）。
 > - 不需要知识库？设 `KB_ENABLED=false`，可不依赖 TEI / ES。
-> - 知识库检索工具（kb_search）：compose 已内置 `mcp-servers` 网关；部署后到 `/settings/mcp` 注册 HTTP server 指向 `http://mcp-servers:8088/mcp/`（一次性，存 DB 重启自动加载），会话锚定知识库后 agent 即可调用。
+> - 知识库检索工具（kb_search）与图像理解工具（image_understand）：内置 MCP 服务 `goduck` 挂载于 backend 进程内（`/mcp`），启动时自动注册进 DB（幂等播种，状态页首屏可能短暂显示 down，serve 后自动收敛）——无需独立网关容器，无需手动注册。
 
 常用运维命令：
 
@@ -181,7 +181,7 @@ docker compose restart backend          # 重启后端（自动重载 DB 中的�
 docker compose up -d --build backend    # 改后端代码后重建单个服务
 # 版本更新（pull 后按需重建；数据在命名卷 + ./volumes，重建容器不丢）
 git pull
-docker compose up -d --build backend frontend mcp-servers   # 代码服务按需列
+docker compose up -d --build backend frontend   # 代码服务按需列
 docker image prune -f                  # 清理被替换的旧悬空镜像
 docker compose down                     # 停止（保留数据卷）
 docker compose down -v                  # 停止并清空命名卷（volumes/ 另见 FAQ 重置条目）
@@ -265,21 +265,11 @@ npm install
 npm run dev                 # http://localhost:5173 （/api 自动代理到 8000，含 WS）
 ```
 
-#### 4.（可选）启动 mcp-servers 网关（附件解析 + kb_search）
+#### 4. 内置 MCP 工具（kb_search / image_understand）
 
-```powershell
-cd mcp-servers
-copy .env.example .env      # 填 MinIO 凭证、智谱 key（与 backend 的 EMBEDDING / ES 配置一致）
-pip install -r requirements.txt
-python main.py              # 监听 0.0.0.0:8088/mcp
-```
-
-然后在 `/settings/mcp` 注册，或：
-
-```powershell
-curl -X POST http://localhost:8000/mcp/servers -H "Content-Type: application/json" `
-  -d '{\"name\":\"attachment_wrapper\",\"kind\":\"http\",\"config\":{\"url\":\"http://127.0.0.1:8088/mcp\"},\"enabled\":true}'
-```
+无需独立网关进程：backend 启动时自动幂等播种内置 MCP 行（服务名 `goduck`，本地开发
+URL 自动推导 `http://127.0.0.1:8000/mcp`）并在 `/settings/mcp` 可见。智能体在
+`tool_names` 中引用 `goduck__kb_search` / `goduck__image_understand` 即可。
 
 #### 5.（可选）灌入种子智能体
 
@@ -301,7 +291,7 @@ python -m app.seed agent_confs/default.yaml --name "Default Gateway" --creator a
 1. **注册模型**：`/settings/models` → 注册模型 → 填 `model_type` / `api_key` / `base_url`（可先「测试连接」，api_key 永不回显）。任何 OpenAI 兼容端点均可：OpenAI / DeepSeek / Qwen / Ollama / vLLM 等。
 2. **创建智能体**：`/agents/new` → 树形编辑 AgentConfig（主智能体 + 子智能体委派）→「绑定模型」选择 ① 注册的模型 → 保存（右侧实时 Mermaid 拓扑预览）。智能体 `model_id` 必填，**模型必须先于智能体注册**。
 3. **（可选）扩充能力**：
-   - `/settings/mcp`：注册 MCP server（内置网关 `UnifiedGateway` 提供系统状态等工具；`mcp-servers/` 网关提供附件解析与 `kb_search`），注册后在智能体 `tool_names` 中引用 `{server}__{tool}`。
+   - `/settings/mcp`：注册第三方 MCP server；注册后在智能体 `tool_names` 中引用 `{server}__{tool}`。内置服务 `goduck`（kb_search / image_understand）已自动注册，无需手动添加。
    - `/settings/skills`：上传技能（一个技能 = 一个目录，含 SKILL.md），智能体以 `/skills/<name>/` 引用。
    - `/settings/knowledge`：新建知识库 → 上传 pdf/docx → 等待后台向量化完成。
 4. **会话测试**：`/sessions` → 基于智能体创建会话：
@@ -338,11 +328,11 @@ python -m app.seed agent_confs/default.yaml --name "Default Gateway" --creator a
 | `LOCAL_ROOT` | `data` | workspace / memories / skills 三目录的根（容器内 `/data` 命名卷） |
 | `ROOT_PATH` | 空 | 经 nginx 剥 `/api` 时设为 `/api`（compose 已配好） |
 | `MCP_CONNECT_TIMEOUT` | `45` | 单个 MCP server 连接超时（防 uvx 拉包重试拖死接口） |
-| `ATTACHMENT_MAX_SIZE_MB` | `10` | 单附件大小上限 |
+| `ATTACHMENT_MAX_SIZE_MB` | `10` | 单附件大小上限（同 `image_understand` 外链/工作区图上限） |
+| `BUILTIN_MCP_URL` | 空 = `http://127.0.0.1:8000/mcp` | 内置 goduck MCP 端点（容器部署设 `http://backend:8000/mcp`，compose 已配） |
 
-### mcp-servers/.env
-
-`DATABASE_URL`（只读）经 `kb → embedding` 注册表解析各库向量模型；未配置/不可达自动回落 `EMBEDDING_*`（与 backend 同值即可，仅为回落一致性）。详见 [mcp-servers/README.md](./mcp-servers/README.md)。
+> 旧 `mcp-servers/` 网关已退役：kb_search 收敛进 backend 进程（`app/mcps/`，同进程
+> FastMCP 挂载 `/mcp`），嵌入/检索单一实现，`EMBEDDING_DIMS` 两侧对称约束消失。
 
 <a id="capabilities"></a>
 
@@ -587,7 +577,7 @@ goduck-platform/
 │   │   ├── core/             # deepagents 内核（图构建 / 用户隔离文件·shell 后端 / HITL / JEV 门控 / 变更追踪）
 │   │   ├── models/           # 持久化：15 张业务表 DDL+CRUD + pydantic 边界模型
 │   │   ├── streaming/        # SSE 事件契约
-│   │   └── mcps/             # 内置 UnifiedGateway MCP 网关
+│   │   └── mcps/             # 内置 goduck MCP 服务（进程内 FastMCP：kb_search / image_understand）+ gd_ctx 契约
 │   ├── agent_confs/          # 种子智能体 YAML
 │   └── Dockerfile            # 含 uv/uvx/node + MCP 包缓存预热
 ├── frontend/                 # React 19 前端（详见 frontend/README.md）
@@ -595,9 +585,8 @@ goduck-platform/
 │   ├── src/features/         # agent-editor / chat / knowledge / topology / workspace
 │   ├── src/pages/            # agents / sessions / cron / settings(models·mcp·skills·knowledge)
 │   └── Dockerfile            # 多阶段构建 → nginx 静态服务
-├── mcp-servers/              # 本地 MCP 网关集群：附件解析(image/docx) + kb_search 检索
 ├── nginx/                    # 边缘反代配置（SSE 关缓冲 + WebSocket 透传）
-├── docker-compose.yml        # 一键全栈编排（8 服务）
+├── docker-compose.yml        # 一键全栈编排
 ├── LICENSE                   # MIT 许可证
 ├── logo.png                  # 项目图标（README 引用）
 └── README.md
@@ -680,7 +669,6 @@ npm run lint                  # eslint
 |---|---|
 | [backend/README.md](./backend/README.md) | 后端架构、目录、数据模型（8 张表）、API 速览、allow_shell 运行时补依赖、文件变更徽标 |
 | [frontend/README.md](./frontend/README.md) | 前端技术栈、功能、脚本、目录结构、开发约定 |
-| [mcp-servers/README.md](./mcp-servers/README.md) | MCP 网关集群：附件解析 wrapper、kb_search、配置对齐要求 |
 | [frontend/DESIGN.md](./frontend/DESIGN.md) | 前端设计准则与页面结构设计 |
 
 <a id="license"></a>

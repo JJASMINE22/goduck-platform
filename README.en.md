@@ -1,4 +1,4 @@
-<p align="left">
+﻿<p align="left">
   <a href="https://github.com/JJASMINE22/goduck-platform"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-555555?style=for-the-badge" alt="简体中文"></a>
   <img src="https://img.shields.io/badge/English-2EA44F?style=for-the-badge" alt="English">
 </p>
@@ -62,7 +62,7 @@ Nginx edge gateway (the only public entry :80 in container deployment; Vite prox
                     ├── MinIO              attachments & KB raw-file storage
                     ├── Elasticsearch      KB vector / full-text search
                     ├── TEI (in compose)   embeddings (OpenAI-compatible /v1/embeddings)
-                    ├── MCP servers        stdio / http tool ecosystem (incl. the bundled mcp-servers gateway)
+                    ├── MCP servers        stdio / http tool ecosystem (built-in goduck service: kb_search / image_understand)
                     └── AssemblyAI (ext.)  voice streaming STT (optional)
 ```
 
@@ -79,7 +79,7 @@ Key design decisions:
 | Backend | FastAPI · LangGraph · deepagents · langchain-openai · psycopg3 · MinIO · Elasticsearch · pydantic-settings |
 | Frontend | React 19 · TypeScript · Vite · Ant Design · Zustand · TanStack Query · Mermaid · @xyflow/react · react-hook-form |
 | MCP ecosystem | fastmcp · langchain-mcp-adapters · uv/uvx · node/npx (MCP package cache pre-warmed in image) |
-| Infrastructure | PostgreSQL 16 · MinIO · Elasticsearch 8 · TEI · Nginx (8 services via docker-compose) |
+| Infrastructure | PostgreSQL 16 · MinIO · Elasticsearch 8 · TEI · Nginx (docker-compose) |
 
 ## Quick Start
 
@@ -100,8 +100,8 @@ docker run --rm -e HF_ENDPOINT=https://hf-mirror.com -v "$PWD/volumes/tei:/out" 
   python:3.11-slim bash -c "pip -q install huggingface_hub && huggingface-cli download \
    Qwen/Qwen3-Embedding-0.6B --local-dir /out/Qwen3-Embedding-0.6B"
 
-# 3) Build & start all 8 services
-#    (postgres / minio / elasticsearch / tei / backend / mcp-servers / frontend / nginx)
+# 3) Build & start all services
+#    (postgres / minio / elasticsearch / tei / laya / backend / frontend / nginx)
 docker compose up -d --build
 
 # 4) Watch for "goduck-platform started"
@@ -126,8 +126,8 @@ cd backend && cp .env.example .env && pip install -e . && python -m app.main
 # 3) Frontend → http://localhost:5173 (/api proxied to 8000)
 cd frontend && npm install && npm run dev
 
-# 4) (optional) MCP gateway (attachment parsing + kb_search) → :8088/mcp
-cd mcp-servers && cp .env.example .env && pip install -r requirements.txt && python main.py
+# 4) Built-in MCP tools (kb_search / image_understand) are mounted in-process at
+#    backend /mcp and auto-registered on startup (no separate gateway needed)
 ```
 
 All tables (business + LangGraph native) are created automatically on backend startup — no manual migrations.
@@ -159,13 +159,12 @@ Optional capabilities are driven by backend env vars; `/health` reports them and
 goduck-platform/
 ├── backend/        # FastAPI + LangGraph backend (api / services / core / models / streaming / mcps)
 ├── frontend/       # React 19 frontend (api / features / pages)
-├── mcp-servers/    # local MCP gateway: attachment parsing + kb_search
 ├── nginx/          # edge reverse proxy (SSE no-buffering + WebSocket passthrough)
-├── docker-compose.yml  # one-command full-stack orchestration (8 services)
+├── docker-compose.yml  # one-command full-stack orchestration
 └── LICENSE         # MIT
 ```
 
-Module deep-dives: [backend/README.md](backend/README.md) · [frontend/README.md](frontend/README.md) · [mcp-servers/README.md](mcp-servers/README.md)
+Module deep-dives: [backend/README.md](backend/README.md) · [frontend/README.md](frontend/README.md)
 
 ## Quality
 

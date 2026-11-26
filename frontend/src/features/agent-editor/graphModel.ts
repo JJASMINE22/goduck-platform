@@ -58,6 +58,8 @@ export function toConfigTree(nodes: AgentGraphNode[]): AgentConfig {
       rubric: node.rubric,
       allow_attachments: node.allow_attachments,
       allow_knowledge: node.allow_knowledge,
+      // kb v2：智能体级知识集（仅主代理有意义；空数组序列化时省略，见 types 注释）
+      kb_ids: node.kb_ids?.length ? node.kb_ids : undefined,
       allow_shell: node.allow_shell,
       shell_guard: node.shell_guard,
       // 用途声明仅根节点携带（子代理 undefined → 序列化时丢弃）

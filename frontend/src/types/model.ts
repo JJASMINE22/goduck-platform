@@ -19,6 +19,9 @@ export interface ModelCreate {
       （GLM V 系列等服务端默认开思考，关闭须显式 false） */
   enable_thinking: boolean | null
   enabled: boolean
+  /** 平台默认视觉模型（image_understand 解析链第二级兜底；全平台至多一个，
+      置 true 后端自动清除其余行）。要求 supports_vision=true */
+  is_default_vision?: boolean
 }
 
 export interface ModelUpdate {
@@ -32,6 +35,7 @@ export interface ModelUpdate {
   top_p?: number | null
   enable_thinking: boolean | null
   enabled: boolean
+  is_default_vision?: boolean
 }
 
 export interface ModelOut {
@@ -45,6 +49,7 @@ export interface ModelOut {
   top_p?: number | null
   enable_thinking: boolean | null
   enabled: boolean
+  is_default_vision?: boolean
   created_at: ISODateTime
   updated_at: ISODateTime
 }

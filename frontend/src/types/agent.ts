@@ -58,7 +58,10 @@ export interface AgentConfig {
   subagents?: AgentConfig[] | null // ★ 递归
   rubric?: RubricConfig | null
   allow_attachments?: boolean
-  allow_knowledge?: boolean // 会话内知识库（RAG）开关，仅主代理
+  allow_knowledge?: boolean // 知识库能力（RAG）开关，仅主代理
+  /** 智能体级知识集（kb v2）：绑定知识库 id 多选；kb_search 服务端按集合校验
+   *  传入 kb_ids（集合外视为编造拒绝）。仅主代理可设；空集 = 未绑定 */
+  kb_ids?: string[]
   allow_shell?: boolean // 本地 shell 执行（execute 工具）开关，主代理与 compiled 子代理可设（per-node）；dicted 叶子随主代理生效，配置被后端校验层剥离为 false
   shell_guard?: boolean // Jev shell 守卫开关（仅 allow_shell=true 且后端 jev_enabled 时生效；白名单直通 + 灰区概率门控）；dicted 叶子共享父 backend，不生效（剥离为 false）
   /** 用途声明（仅根节点可设，随 config_json 持久化，纯元数据）。'cron'=定时任务智能体，全树禁 allow_shell */

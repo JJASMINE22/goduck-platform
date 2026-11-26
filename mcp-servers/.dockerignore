@@ -1,5 +1,0 @@
-# 密钥/本地配置绝不入镜像（compose 部署经环境变量注入，见 Dockerfile 头注释）
-.env
-__pycache__/
-*.pyc
-.git

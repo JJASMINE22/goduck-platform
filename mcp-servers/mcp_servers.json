@@ -1,3 +1,0 @@
-{
-  "_comment": "第三方 MCP 工具池（原 zai-mcp-server analyze_image 桥接）已随附件解析后端化退役：图像描述改经 backend 下挂视觉模型直调（VisionDescriber）。servers 保留为空占位。"
-}

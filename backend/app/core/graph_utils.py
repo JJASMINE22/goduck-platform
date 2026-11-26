@@ -52,25 +52,31 @@ class BuildContext:
     # 代码常量），消费点（主代理构建）直接实例化；mode/阈值随工厂闭包烘焙
     # （TTL 语义同上）。plan: jev-kb-rerank-middleware。
     jev_kb_factory: Optional[Callable[[], AgentMiddleware]] = None
+    # 知识集卡片（agent 级 kb_ids → {id,name,description}，构建期现查）：
+    # 提示面注入与检索前置门挂载的共用前置（空卡片 = 未绑定，两者均不生效）。
+    kb_cards: Optional[List[dict]] = None
 
 
 def _strip_cron_unattended(root: AgentConfig) -> None:
     """usage=cron 构建期兜底剥离（validator 为第一道门，此处覆盖直写 DB 等旁路）。
 
-    就地清空全树 interrupt_on 与 allow_knowledge：无人值守运行期不触发 HITL
-    中断（interrupt 事件在 cron 下无消费方），不注入 KB 检索纪律提示（固定
-    prompt 无锚点表，注入反而诱导编造 kb_ids）。剥离发生时打 warning
-    （fail-visible）。allow_attachments 不参与图构建，无需剥离。
+    就地清空全树 interrupt_on、allow_knowledge 与 kb_ids：无人值守运行期不
+    触发 HITL 中断（interrupt 事件在 cron 下无消费方），不注入 KB 检索纪律
+    提示（固定 prompt 无知识集语义，注入反而诱导编造 kb_ids）。剥离发生时
+    打 warning（fail-visible）。allow_attachments 不参与图构建，无需剥离。
     """
     labels = _tree_interrupt_labels(root)
     if root.allow_knowledge:
         labels.append("allow_knowledge")
+    if root.kb_ids:
+        labels.append("kb_ids")
     if not labels:
         return
 
     def walk(node: AgentConfig) -> None:
         node.interrupt_on = None
         node.allow_knowledge = False
+        node.kb_ids = []
         for sa in node.subagents or []:
             walk(sa)
 
@@ -194,31 +200,35 @@ def _shell_workspace_note(allow_shell: bool, workspace: bool) -> str | None:
     return head + mapping + tail
 
 
-def _kb_capability_prompt(tool_names: List[str]) -> str | None:
-    """知识库检索纪律（构建期追加到 system_prompt，仅主代理生效）。
+def _kb_capability_prompt(
+    tool_names: List[str], kb_cards: Optional[List[dict]] = None
+) -> str | None:
+    """知识集检索纪律（构建期追加到 system_prompt，kb v2：agent 级知识集）。
 
-    动机：用户自写的系统提示常含强意图路由（如"选型→电商工具/参数→网络搜索"），
-    会压过消息级 KB 锚点的软暗示——锚点不点名工具名时模型按提示词路由，kb_search
-    被跳过（工具 schema 里的描述权重不足以对抗系统提示的显式路由指令）。构建期把
-    真实工具名、锚点格式与优先级写进系统提示，使锚点轮次的检索优先级高于路由规则。
-
-    前置：allow_knowledge=True 且 tool_names 实际持有 {server}__kb_search 才注入
-    （无检索工具时锚点轮次本就按"如实说明+自身能力"降级，注入点名反而误导）。
+    前置：tool_names 持有 {server}__kb_search ∧ 知识集非空（kb_cards，kb_ids
+    现查解析的卡片）才注入——空集注入点名反而诱导编造。提示面列出绑定知识
+    库（名称/kb_id/描述），白话提示驱动 LLM 按相关性自主触发；强制兜底在
+    门控面（KbPrerequisiteMiddleware：无检索证据不得直接作答）。
     """
-    kb_tool = next((n for n in tool_names if n.endswith("__kb_search")), None)
-    if not kb_tool:
+    kb_tool = next((n for n in tool_names if str(n).endswith("__kb_search")), None)
+    if not kb_tool or not kb_cards:
         return None
+    rows = "\n".join(
+        f"| {i + 1} | {c['name']} | {c['id']} | {(c.get('description') or '（无描述）')[:60]} |"
+        for i, c in enumerate(kb_cards)
+    )
     return (
         "\n\n---\n\n## 知识库检索纪律（平台自动注入）\n"
-        f"你持有知识库检索工具 `{kb_tool}`。用户消息开头若出现"
-        "「## 用户选择的知识库」锚点（含 kb_id 表格），表明用户已为该问题指定知识库，"
-        "该轮必须：\n"
-        f"- 优先调用 `{kb_tool}` 检索，kb_ids 参数必须使用锚点表格中的真实 kb_id，"
-        "禁止编造；与问题相关的多个角度可多次检索\n"
-        "- 答案优先依据检索结果作答；**此优先级高于本提示中任何意图路由规则**"
-        "（如按意图选择电商/网络搜索工具的规则，在锚点存在的轮次一律让位）\n"
-        "- 检索未命中或无相关内容时，如实说明后再按原意图路由或自身能力作答，"
-        "不得编造检索结果\n"
+        f"你持有知识库检索工具 `{kb_tool}`，本智能体绑定了以下知识库：\n\n"
+        "| 序号 | 知识库 | kb_id | 描述 |\n|------|--------|-------|------|\n"
+        f"{rows}\n\n"
+        "回答与上述知识库内容相关的问题时：\n"
+        f"- 必须先调用 `{kb_tool}` 检索，kb_ids 参数只使用上表真实 kb_id，禁止编造"
+        "（与问题相关的多个角度可分次检索）；**此优先级高于本提示中任何意图路由"
+        "规则**（如按意图选择电商/网络搜索工具的规则一律让位）\n"
+        "- 答案优先依据检索结果作答并标注来源；检索未命中或无相关内容时，"
+        "如实说明后再按自身能力作答，不得编造检索结果\n"
+        "- 与绑定知识库明显无关的问题可直接回答，无需检索\n"
     )
 
 
@@ -228,25 +238,28 @@ def _maybe_append_kb_gate(
     cfg_allow_knowledge: bool,
     tool_names: List[str],
 ) -> None:
-    """kb 检索门控挂载（主代理独占，与 _kb_capability_prompt 同点位同条件）。
+    """kb 门控挂载（主代理独占，v2：确定性检索前置门 + 可选 jev 重排门）。
 
-    三重前置：cfg_allow_knowledge ∧ tool_names 含 {server}__kb_search 后缀 ∧
-    ctx.jev_kb_factory 就绪（平台级 jev_kb_rerank_enabled ∧ 能力可用）。
-    任一缺失不挂载（行为=现状，无 per-agent warning——kb 门控是平台级自动
-    行为而非 agent 声明式配置，rubric 的 warning 语义不适用；能力缺失已在
-    启动期 fail-visible）。置于中间件列表末尾=最内侧（first defined =
-    outermost，ToolErrorHandlingMiddleware 在最外层兜底全部工具，含 kb）。
+    前置门（KbPrerequisiteMiddleware）：allow_knowledge ∧ 持有 {server}__
+    kb_search ∧ 知识集非空（ctx.kb_cards）——无检索证据不得直接作答，
+    100% 触发率的唯一真保障（plan 门控面；纯确定性，不依赖 Jev/提示服从）。
+    jev 重排门（factory 就绪时追加）：高置信无关才滤的保守过滤，与前
+    置门互补（一个保触发、一个保信噪）。置于列表末尾=最内侧（first
+    defined = outermost，ToolErrorHandlingMiddleware 在最外层兜底）。
     """
     if not cfg_allow_knowledge:
         return
-    if not any(str(n).endswith("__kb_search") for n in (tool_names or [])):
+    kb_tool = next((n for n in (tool_names or []) if str(n).endswith("__kb_search")), None)
+    if kb_tool is None or not getattr(ctx, "kb_cards", None):
         return
+    from app.core.kb_gate import KbPrerequisiteMiddleware
+
+    agentic_middleware.append(KbPrerequisiteMiddleware(kb_tool))
     factory = getattr(ctx, "jev_kb_factory", None)
-    if factory is None:
-        return
-    kb_mw = factory()
-    agentic_middleware.append(kb_mw)
-    logger.info("jev kb gate attached (mode=%s)", getattr(kb_mw, "kb_mode", "unknown"))
+    if factory is not None:
+        kb_mw = factory()
+        agentic_middleware.append(kb_mw)
+        logger.info("jev kb gate attached (mode=%s)", getattr(kb_mw, "kb_mode", "unknown"))
 
 
 def create_agent_recursive(
@@ -372,7 +385,9 @@ def create_agent_recursive(
             agent_config["system_prompt"] += _guard
         # KB 检索纪律：allow_knowledge 仅主代理可开，故只在此注入（与委派纪律同点）
         if cfg_allow_knowledge:
-            _kb = _kb_capability_prompt(agent_config.get("tool_names", []))
+            _kb = _kb_capability_prompt(
+                agent_config.get("tool_names", []), getattr(ctx, "kb_cards", None)
+            )
             if _kb:
                 agent_config["system_prompt"] += _kb
             # kb 门控挂载与纪律提示同点位同条件（allow_knowledge 主代理独占）
@@ -517,7 +532,9 @@ def create_agent_dictionary(
 
     # KB 检索纪律（与 recursive 路径同语义：本函数组装的即主代理）
     if cfg_allow_knowledge:
-        _kb = _kb_capability_prompt(agent_config.get("tool_names", []))
+        _kb = _kb_capability_prompt(
+            agent_config.get("tool_names", []), getattr(ctx, "kb_cards", None)
+        )
         if _kb:
             agent_config["system_prompt"] += _kb
 

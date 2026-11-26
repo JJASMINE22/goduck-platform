@@ -172,8 +172,15 @@ class AgentConfig(BaseModel):
     )
     allow_knowledge: bool = Field(
         default=False,
-        description="是否启用会话内知识库（RAG）。True 时会话框出现 KB 选择器；仅主代理可开。"
-        "检索由 agent 经 MCP 工具 <注册名>__kb_search 自主完成（Agentic RAG）。",
+        description="是否启用知识库能力（Agentic RAG）。仅主代理可开。开启后经"
+        " kb_ids 绑定智能体级知识集，agent 持 MCP 工具 <注册名>__kb_search"
+        " 自主检索（服务端校验 kb_ids 必须落在绑定集合内）。",
+    )
+    kb_ids: List[str] = Field(
+        default_factory=list,
+        description="智能体级知识集（kb_id 多选，kb v2）。仅主代理可设、随配置"
+        "持久化；检索工具按集合校验传入 kb_ids（集合外视为编造拒绝）。"
+        "空集 = 未绑定（能力开启也无从检索）。",
     )
     allow_shell: bool = Field(
         default=False,
@@ -279,6 +286,8 @@ class AgentConfig(BaseModel):
                 raise ValueError("子代理不能设置 allow_attachments 附件能力")
             if self.allow_knowledge:
                 raise ValueError("子代理不能设置 allow_knowledge 知识库能力")
+            if self.kb_ids:
+                raise ValueError("子代理不能设置 kb_ids 知识集（仅主代理可绑定）")
             if self.usage != "chat":
                 raise ValueError(
                     "子代理不能设置 usage 用途声明（仅主代理/根节点可设，整树共用）"
@@ -311,6 +320,11 @@ class AgentConfig(BaseModel):
                 raise ValueError(
                     "定时任务智能体（usage=cron）不允许开启 allow_knowledge 知识库能力"
                     "（定时任务暂不支持知识库，待后续版本设计）"
+                )
+            if self.kb_ids:
+                raise ValueError(
+                    "定时任务智能体（usage=cron）不允许绑定 kb_ids 知识集"
+                    "（定时任务暂不支持知识库）"
                 )
             hitl_labels = _tree_interrupt_labels(self)
             if hitl_labels:
@@ -361,6 +375,8 @@ class AgentConfig(BaseModel):
                     raise ValueError("子代理不能设置 allow_attachments 附件能力")
                 if sa.allow_knowledge:
                     raise ValueError("子代理不能设置 allow_knowledge 知识库能力")
+                if sa.kb_ids:
+                    raise ValueError("子代理不能设置 kb_ids 知识集")
 
         return self
 
@@ -378,6 +394,10 @@ class AgentConfig(BaseModel):
         result = {}
         for key, value in self:
             if value is None:
+                continue
+            # kb_ids 空集不落库：与 skills/None 字段同款省略语义，保持存量
+            # config_json 干净（历史快照/导出 YAML 无空数组噪音）
+            if key == "kb_ids" and not value:
                 continue
             if key == "subagents" and value:
                 result[key] = [sa.to_dict() for sa in value]

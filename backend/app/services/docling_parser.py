@@ -421,16 +421,16 @@ def _normalize_bbox(bbox: object, page_w: float, page_h: float) -> Optional[dict
     try:
         if hasattr(bbox, "to_top_left_origin"):
             tl = bbox.to_top_left_origin(page_h)
-            l, t, r, b = float(tl.l), float(tl.t), float(tl.r), float(tl.b)
+            left, top, right, bottom = float(tl.l), float(tl.t), float(tl.r), float(tl.b)
         else:
-            l, b, r, t = (
+            left, bottom, right, top = (
                 float(bbox.l), float(bbox.b), float(bbox.r), float(bbox.t)
             )
-            t, b = page_h - t, page_h - b  # 左下原点 → 左上原点
+            top, bottom = page_h - top, page_h - bottom  # 左下原点 → 左上原点
         if page_w <= 0 or page_h <= 0:
             return None
-        x0, x1 = sorted((l / page_w, r / page_w))
-        y0, y1 = sorted((t / page_h, b / page_h))
+        x0, x1 = sorted((left / page_w, right / page_w))
+        y0, y1 = sorted((top / page_h, bottom / page_h))
         out = {}
         for k, v in (("x0", x0), ("y0", y0), ("x1", x1), ("y1", y1)):
             out[k] = round(min(1.0, max(0.0, v)), 4)

@@ -584,6 +584,11 @@ class ModelCreate(BaseModel):
         "false=显式关闭。注：GLM V 系列等服务端默认开启思考，关闭须显式 false。",
     )
     enabled: bool = True
+    is_default_vision: bool = Field(
+        default=False,
+        description="平台默认视觉模型（image_understand 解析链第二级兜底；"
+        "全平台至多一个，置 true 自动清除其余）。要求 supports_vision=true。",
+    )
 
 
 class ModelUpdate(BaseModel):
@@ -599,6 +604,7 @@ class ModelUpdate(BaseModel):
     top_p: Optional[float] = Field(default=None, ge=0, le=1)
     enable_thinking: Optional[bool] = None
     enabled: bool = True
+    is_default_vision: bool = False
 
 
 class ModelOut(BaseModel):
@@ -612,6 +618,7 @@ class ModelOut(BaseModel):
     top_p: Optional[float] = None
     enable_thinking: Optional[bool] = None
     enabled: bool
+    is_default_vision: bool = False
     created_at: datetime
     updated_at: datetime
 

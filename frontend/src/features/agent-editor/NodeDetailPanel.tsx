@@ -19,6 +19,7 @@ import { useAgentEditorStore } from '@/store/agentEditorStore'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { useMcpTools } from '@/hooks/useMcp'
 import { useSkills } from '@/hooks/useSkills'
+import { useKnowledgeBases } from '@/hooks/useKnowledge'
 import { RubricEditor } from './RubricEditor'
 import { CheckedToolGroups } from './CheckedToolGroups'
 import { DragTextarea } from './DragTextarea'
@@ -36,6 +37,7 @@ export function NodeDetailPanel(): ReactNode {
   const kind = useAgentEditorStore((s) => s.kind)
   const tools = useMcpTools()
   const skills = useSkills()
+  const kbs = useKnowledgeBases()
   const capabilities = useCapabilities()
 
   const node = nodes?.find((n) => n.id === selectedId) ?? null
@@ -273,6 +275,28 @@ export function NodeDetailPanel(): ReactNode {
               checked={!!node.allow_knowledge}
               onChange={(v) => patch({ allow_knowledge: v })}
             />
+          ) : null}
+          {/* 知识集（kb v2）：能力开启后选择绑定库；服务端按集合校验 kb_search
+              传入 kb_ids（集合外视为编造拒绝）。整行跟随开关显隐 */}
+          {isMain && kind !== 'cron' && node.allow_knowledge ? (
+            <Field label="知识集（kb_ids，检索白名单）" wide>
+              <Select
+                mode="multiple"
+                style={{ width: '100%' }}
+                maxTagCount={3}
+                placeholder={kbs.data?.length ? '选择绑定的知识库（可多选）' : '暂无知识库，请先在知识库页面创建'}
+                value={node.kb_ids ?? []}
+                onChange={(v) => patch({ kb_ids: (v as string[]) ?? [] })}
+                loading={kbs.isLoading}
+                options={(kbs.data ?? []).map((kb) => ({
+                  value: kb.id,
+                  label: kb.name,
+                }))}
+                allowClear
+                showSearch
+                optionFilterProp="label"
+              />
+            </Field>
           ) : null}
           <SwitchField
             label="工作区（workspace）"
